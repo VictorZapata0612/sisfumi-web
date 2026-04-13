@@ -1,4 +1,7 @@
+<<<<<<< HEAD
 <!-- eslint-disable @typescript-eslint/no-explicit-any -->
+=======
+>>>>>>> c933029 (Initial commit)
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import { useAuthStore } from '@/stores/auth'

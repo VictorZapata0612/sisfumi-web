@@ -1,4 +1,7 @@
+<<<<<<< HEAD
 /* eslint-disable @typescript-eslint/no-explicit-any */
+=======
+>>>>>>> c933029 (Initial commit)
 import { ref, computed } from 'vue'
 import { defineStore } from 'pinia'
 import {
@@ -34,7 +37,11 @@ export const useAuthStore = defineStore('auth', () => {
   async function login(email: string, password: string) {
     loading.value = true
     try {
+<<<<<<< HEAD
       await signInWithEmailAndPassword(auth, email, password)
+=======
+      const result = await signInWithEmailAndPassword(auth, email, password)
+>>>>>>> c933029 (Initial commit)
       // ✅ CORRECCIÓN: Después del login, no dependemos del router guard.
       // Esperamos a que el listener 'onAuthStateChanged' (en init) termine su trabajo
       // y luego redirigimos explícitamente.
@@ -55,14 +62,21 @@ export const useAuthStore = defineStore('auth', () => {
    * Conecta la cuenta de Google (OAuth2 Flow)
    * Se solicitan permisos para Calendar y para leer el perfil del usuario (email/nombre/foto)
    */
+<<<<<<< HEAD
   /**
      * Conecta la cuenta de Google (OAuth2 Code Flow para backend/refresh_token)
      */
+=======
+>>>>>>> c933029 (Initial commit)
   async function connectGoogleAccount(clientId: string, targetUid: string): Promise<any> {
     return new Promise((resolve, reject) => {
       try {
         if (!user.value) return reject(new Error('No hay usuario autenticado'))
 
+<<<<<<< HEAD
+=======
+        // Verificación robusta de que el SDK de Google está listo
+>>>>>>> c933029 (Initial commit)
         if (typeof google === 'undefined' || !google.accounts || !google.accounts.oauth2) {
           return reject(
             new Error(
@@ -74,6 +88,7 @@ export const useAuthStore = defineStore('auth', () => {
         const rawClientId = import.meta.env.VITE_GOOGLE_CLIENT_ID
         if (!rawClientId) return reject(new Error('Falta VITE_GOOGLE_CLIENT_ID en el archivo .env'))
 
+<<<<<<< HEAD
         const clientIdClean = rawClientId.trim()
 
         console.log(
@@ -103,13 +118,43 @@ export const useAuthStore = defineStore('auth', () => {
               resolve('OK')
             } catch (error: any) {
               console.error('Error guardando tokens en backend:', error)
+=======
+        // 1. Limpieza crítica
+        const clientId = rawClientId.trim()
+
+        console.log(
+          '🔐 Inicializando Google Auth con Client ID:',
+          clientId.substring(0, 15) + '...',
+        )
+
+        // 2. Configuración PURA (Sin alias cortos, todo URL completa)
+        // Esto suele resolver conflictos de scope en navegadores estrictos
+        const client = google.accounts.oauth2.initTokenClient({
+          client_id: clientId,
+          // ✅ CORRECCIÓN: Añadir el scope de Gmail para poder enviar correos.
+          // 'gmail.send' es el permiso mínimo necesario para enviar correos sin leerlos.
+          scope:
+            'https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile openid https://www.googleapis.com/auth/gmail.send',
+          callback: async (response: any) => {
+            try {
+              const saveTokensFn = httpsCallable(functions, 'saveGoogleTokens')
+              await saveTokensFn({ tokens: response, targetUid: targetUid })
+              resolve('OK')
+            } catch (error: any) {
+              console.error('Error guardando tokens:', error)
+>>>>>>> c933029 (Initial commit)
               reject(error)
             }
           },
         })
 
+<<<<<<< HEAD
         // Solicitar el código de autorización
         client.requestCode()
+=======
+        // Iniciar el flujo para el cliente de tokens
+        client.requestAccessToken()
+>>>>>>> c933029 (Initial commit)
       } catch (error) {
         console.error('Error inicializando cliente Google:', error)
         reject(error)
@@ -222,8 +267,14 @@ export const useAuthStore = defineStore('auth', () => {
     const makePublicFn = httpsCallable(functions, 'makeSupportFilePublic')
     await makePublicFn({ filePath })
 
+<<<<<<< HEAD
     const publicUrl = `https://storage.googleapis.com/${(functions as any).app.options.storageBucket
       }/${filePath}`
+=======
+    const publicUrl = `https://storage.googleapis.com/${
+      (functions as any).app.options.storageBucket
+    }/${filePath}`
+>>>>>>> c933029 (Initial commit)
     await updateUserProfile({ photoURL: publicUrl })
   }
 

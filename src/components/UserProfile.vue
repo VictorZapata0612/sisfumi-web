@@ -1,12 +1,22 @@
+<<<<<<< HEAD
 <!-- eslint-disable @typescript-eslint/no-explicit-any -->
+=======
+>>>>>>> c933029 (Initial commit)
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { useAuthStore } from '@/stores/auth'
 import { updatePassword } from 'firebase/auth'
+<<<<<<< HEAD
 import { doc, getDoc } from 'firebase/firestore'
 import { useToast } from '@/composables/useToast'
 import { useDialog } from '@/composables/useDialog'
 import { db } from '@/firebase/config'
+=======
+import { useToast } from '@/composables/useToast'
+import { useDialog } from '@/composables/useDialog'
+import { httpsCallable } from 'firebase/functions'
+import { functions } from '@/firebase/config'
+>>>>>>> c933029 (Initial commit)
 
 defineOptions({ name: 'UserProfileView' })
 
@@ -28,6 +38,7 @@ const isChangingPassword = ref(false)
 const checkConnection = async () => {
   loadingConnectionStatus.value = true
   try {
+<<<<<<< HEAD
     const uid = authStore.user?.uid
     if (!uid) return
 
@@ -39,6 +50,17 @@ const checkConnection = async () => {
     showToast({
       title: 'Error de Sincronización',
       message: `No se pudo verificar el estado de la conexión: ${error instanceof Error ? error.message : String(error)}`,
+=======
+    // Usamos la función para verificar el estado de la conexión del coordinador actual
+    const checkFn = httpsCallable(functions, 'listCoordinators')
+    const result = (await checkFn()) as { data: { isConnected: boolean; googleEmail: string } }
+    isConnected.value = result.data.isConnected
+    googleEmail.value = result.data.googleEmail
+  } catch (error: any) {
+    showToast({
+      title: 'Error de Sincronización',
+      message: `No se pudo verificar el estado de la conexión: ${error.message}`,
+>>>>>>> c933029 (Initial commit)
       type: 'error',
     })
   } finally {

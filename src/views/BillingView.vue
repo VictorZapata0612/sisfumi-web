@@ -1,4 +1,7 @@
+<<<<<<< HEAD
 <!-- eslint-disable @typescript-eslint/no-explicit-any -->
+=======
+>>>>>>> c933029 (Initial commit)
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
 import { useBillingStore, type BillingGroup } from '@/stores/billing'
@@ -14,6 +17,7 @@ const statusFilter = ref('todos')
 const selectedGroup = ref<BillingGroup | null>(null)
 const selectedServices = ref<Set<string>>(new Set())
 const showInvoiceModal = ref(false)
+<<<<<<< HEAD
 const formError = ref<string | null>(null)
 const isGenerating = ref(false)
 
@@ -25,23 +29,41 @@ const normalizeSearch = (term: string) =>
     .replace(/[\u0300-\u036f]/g, '')
     .toLowerCase()
 
+=======
+
+// Control de vista móvil
+const isMobileDetailOpen = computed(() => !!selectedGroup.value)
+
+>>>>>>> c933029 (Initial commit)
 onMounted(() => {
   billingStore.fetchBillingData()
 })
 
 const filteredPendingGroups = computed(() => {
   if (!pendingSearch.value) return billingStore.pendingGroups
+<<<<<<< HEAD
   const term = normalizeSearch(pendingSearch.value)
   return billingStore.pendingGroups.filter((g: BillingGroup) =>
     normalizeSearch(g.groupName).includes(term),
+=======
+  return billingStore.pendingGroups.filter((g) =>
+    g.groupName.toLowerCase().includes(pendingSearch.value.toLowerCase()),
+>>>>>>> c933029 (Initial commit)
   )
 })
 
 const filteredInvoicedGroups = computed(() => {
+<<<<<<< HEAD
   const term = normalizeSearch(invoicedSearch.value)
   return billingStore.invoicedGroups.filter((g: BillingGroup) => {
     const matchesSearch =
       normalizeSearch(g.groupName).includes(term) || (g.invoiceNumber && normalizeSearch(g.invoiceNumber).includes(term))
+=======
+  const term = invoicedSearch.value.toLowerCase()
+  return billingStore.invoicedGroups.filter((g) => {
+    const matchesSearch =
+      g.groupName.toLowerCase().includes(term) || g.invoiceNumber?.toLowerCase().includes(term)
+>>>>>>> c933029 (Initial commit)
     const matchesStatus = statusFilter.value === 'todos' || g.status === statusFilter.value
     return matchesSearch && matchesStatus
   })
@@ -95,11 +117,17 @@ const openInvoiceModal = () => {
 const handleGenerateInvoice = async (options: { dueDays: number; observations: string }) => {
   if (!selectedGroup.value) return
 
+<<<<<<< HEAD
+=======
+  // ✅ CORRECCIÓN: En lugar de enviar solo los IDs, filtramos y enviamos los objetos de servicio completos.
+  // Esto asegura que el backend reciba el 'valor_servicio' y otros detalles necesarios.
+>>>>>>> c933029 (Initial commit)
   const selectedServiceObjects = selectedGroup.value.services.filter((s) =>
     selectedServices.value.has(s.id),
   )
 
   try {
+<<<<<<< HEAD
     formError.value = null
     isGenerating.value = true
 
@@ -107,13 +135,26 @@ const handleGenerateInvoice = async (options: { dueDays: number; observations: s
       servicesToInvoice: selectedServiceObjects,
       groupName: selectedGroup.value.groupName,
       clientId: selectedGroup.value.clientId,
+=======
+    const result = await billingStore.generateInvoiceReport({
+      // The store expects an array of service IDs.
+      visitIds: selectedServiceObjects.map((s) => s.id),
+      groupName: selectedGroup.value.groupName,
+>>>>>>> c933029 (Initial commit)
       dueDays: options.dueDays,
       observations: options.observations,
     })
 
+<<<<<<< HEAD
     showToast({
       title: 'Éxito',
       message: `Factura ${result.invoiceNumber} generada correctamente.`,
+=======
+    downloadBase64File(result.fileData, `Factura_${result.invoiceNumber}.xlsx`)
+    showToast({
+      title: 'Éxito',
+      message: `Factura ${result.invoiceNumber} generada.`,
+>>>>>>> c933029 (Initial commit)
       type: 'success',
     })
 
@@ -121,6 +162,7 @@ const handleGenerateInvoice = async (options: { dueDays: number; observations: s
     selectedGroup.value = null
     showInvoiceModal.value = false
   } catch (error: any) {
+<<<<<<< HEAD
     const errorMsg = error?.message || 'No se pudo generar la factura'
     formError.value = errorMsg
     showToast({
@@ -130,12 +172,23 @@ const handleGenerateInvoice = async (options: { dueDays: number; observations: s
     })
   } finally {
     isGenerating.value = false
+=======
+    showToast({
+      title: 'Error',
+      message: `No se pudo generar la factura: ${error.message}`,
+      type: 'error',
+    })
+>>>>>>> c933029 (Initial commit)
   }
 }
 
 const handleDownloadInvoice = async (invoiceNumber: string) => {
   try {
+<<<<<<< HEAD
     const result = await billingStore.getInvoiceExcel(invoiceNumber)
+=======
+    const result = await billingStore.downloadExistingInvoice(invoiceNumber)
+>>>>>>> c933029 (Initial commit)
     downloadBase64File(result.fileData, `Factura_${invoiceNumber}.xlsx`)
   } catch (error: any) {
     showToast({
@@ -229,9 +282,15 @@ const formatCurrency = (value: number) => {
         <div class="absolute right-0 top-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
           <i class="fas fa-check-circle text-6xl text-green-500"></i>
         </div>
+<<<<<<< HEAD
         <h3 class="text-xs font-bold text-gray-400 uppercase tracking-wider">Facturas emitidas</h3>
         <p class="mt-1 text-2xl font-bold text-green-400">
           {{ billingStore.kpis.invoicesIssued }}
+=======
+        <h3 class="text-xs font-bold text-gray-400 uppercase tracking-wider">Recaudado</h3>
+        <p class="mt-1 text-2xl font-bold text-green-400">
+          {{ formatCurrency(billingStore.kpis.paid) }}
+>>>>>>> c933029 (Initial commit)
         </p>
       </div>
     </section>
@@ -320,11 +379,19 @@ const formatCurrency = (value: number) => {
                     <span class="text-[10px] text-gray-500 uppercase tracking-wider font-bold">#{{ group.invoiceNumber
                       }}</span>
                   </div>
+<<<<<<< HEAD
                   <span class="text-[10px] px-2 py-0.5 rounded-full font-bold shrink-0 ml-2" :class="                      group.status === 'billed'
                       ? 'bg-green-900/30 text-green-400'
                       : 'bg-yellow-900/30 text-yellow-400'
                     ">
                     {{ group.status === 'billed' ? 'FACTURADA' : group.status === 'cancelled' ? 'ANULADA' : 'PENDIENTE' }}
+=======
+                  <span class="text-[10px] px-2 py-0.5 rounded-full font-bold shrink-0 ml-2" :class="group.status === 'paid'
+                      ? 'bg-green-900/30 text-green-400'
+                      : 'bg-yellow-900/30 text-yellow-400'
+                    ">
+                    {{ group.status === 'paid' ? 'PAGADO' : 'PENDIENTE' }}
+>>>>>>> c933029 (Initial commit)
                   </span>
                 </div>
               </div>
@@ -448,8 +515,12 @@ const formatCurrency = (value: number) => {
     </main>
 
     <InvoiceModal :show="showInvoiceModal" :selected-count="selectedServices.size"
+<<<<<<< HEAD
       :client-name="selectedGroup?.groupName || ''" :total-amount="selectedTotal" :error="formError"
       :loading="isGenerating" @close="showInvoiceModal = false"
+=======
+      :client-name="selectedGroup?.groupName || ''" :total-amount="selectedTotal" @close="showInvoiceModal = false"
+>>>>>>> c933029 (Initial commit)
       @generate="handleGenerateInvoice" />
   </div>
 </template>

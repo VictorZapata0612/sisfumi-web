@@ -76,7 +76,11 @@ const renderCharts = () => {
         labels,
         datasets: [
           {
+<<<<<<< HEAD
             label: 'Facturación emitida',
+=======
+            label: 'Ingresos Pagados',
+>>>>>>> c933029 (Initial commit)
             data: annualReportData.value.monthlyTrend,
             borderColor: '#22d3ee', // cyan-400
             backgroundColor: 'rgba(34, 211, 238, 0.1)',
@@ -208,16 +212,27 @@ watch(annualReportData, (newData) => {
     <div v-else-if="annualReportData" class="space-y-6 animate-fade-in">
       <!-- KPIs -->
       <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+<<<<<<< HEAD
         <!-- Total facturado -->
+=======
+        <!-- Total Pagado -->
+>>>>>>> c933029 (Initial commit)
         <div class="bg-[#151515] p-6 rounded-xl border border-white/10 shadow-lg relative overflow-hidden group">
           <div class="absolute right-0 top-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
             <i class="fas fa-coins text-6xl text-emerald-500"></i>
           </div>
           <h3 class="text-sm font-bold text-gray-400 uppercase tracking-wider">
+<<<<<<< HEAD
             Facturación total
           </h3>
           <p class="text-3xl font-bold text-white mt-2">
             {{ formatCurrency(annualReportData.kpis.totalInvoiced) }}
+=======
+            Ingresos Totales (Pagado)
+          </h3>
+          <p class="text-3xl font-bold text-white mt-2">
+            {{ formatCurrency(annualReportData.kpis.totalPaid) }}
+>>>>>>> c933029 (Initial commit)
           </p>
           <div class="mt-4 h-1 w-full bg-white/10 rounded-full overflow-hidden">
             <div class="h-full bg-emerald-500 w-full"></div>
@@ -230,26 +245,44 @@ watch(annualReportData, (newData) => {
             <i class="fas fa-file-invoice-dollar text-6xl text-yellow-500"></i>
           </div>
           <h3 class="text-sm font-bold text-gray-400 uppercase tracking-wider">
+<<<<<<< HEAD
             Pendiente de facturar
           </h3>
           <p class="text-3xl font-bold text-white mt-2">
             {{ formatCurrency(annualReportData.kpis.totalPendingBilling) }}
+=======
+            Facturado (Pendiente Pago)
+          </h3>
+          <p class="text-3xl font-bold text-white mt-2">
+            {{ formatCurrency(annualReportData.kpis.totalBilledUnpaid) }}
+>>>>>>> c933029 (Initial commit)
           </p>
           <div class="mt-4 h-1 w-full bg-white/10 rounded-full overflow-hidden">
             <div class="h-full bg-yellow-500 w-2/3"></div>
           </div>
         </div>
 
+<<<<<<< HEAD
         <!-- Visitas realizadas -->
+=======
+        <!-- Pendiente de Facturar -->
+>>>>>>> c933029 (Initial commit)
         <div class="bg-[#151515] p-6 rounded-xl border border-white/10 shadow-lg relative overflow-hidden group">
           <div class="absolute right-0 top-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
             <i class="fas fa-clock text-6xl text-red-500"></i>
           </div>
           <h3 class="text-sm font-bold text-gray-400 uppercase tracking-wider">
+<<<<<<< HEAD
             Visitas realizadas
           </h3>
           <p class="text-3xl font-bold text-white mt-2">
             {{ annualReportData.kpis.totalVisits }}
+=======
+            Pendiente de Facturar
+          </h3>
+          <p class="text-3xl font-bold text-white mt-2">
+            {{ formatCurrency(annualReportData.kpis.totalPendingBilling) }}
+>>>>>>> c933029 (Initial commit)
           </p>
           <div class="mt-4 h-1 w-full bg-white/10 rounded-full overflow-hidden">
             <div class="h-full bg-red-500 w-1/3"></div>
@@ -299,7 +332,11 @@ watch(annualReportData, (newData) => {
                 <span class="text-gray-300 text-sm font-medium">{{ client.clientName }}</span>
               </div>
               <span class="font-bold text-white text-sm">{{
+<<<<<<< HEAD
                 formatCurrency(client.totalInvoiced)
+=======
+                formatCurrency(client.totalPaid)
+>>>>>>> c933029 (Initial commit)
               }}</span>
             </div>
           </div>

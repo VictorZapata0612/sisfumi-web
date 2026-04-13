@@ -1,4 +1,7 @@
+<<<<<<< HEAD
 <!-- eslint-disable @typescript-eslint/no-explicit-any -->
+=======
+>>>>>>> c933029 (Initial commit)
 <script setup lang="ts">
 import { ref, onMounted, watch } from 'vue'
 import { useTechniciansStore, type Technician } from '@/stores/technicians'
@@ -40,6 +43,7 @@ const googleCalendarColors: Record<string, string> = {
   '11': '#d60000', // Tomate
 }
 
+<<<<<<< HEAD
 const normalizeSearch = (term: string) =>
   term
     .normalize('NFD')
@@ -50,6 +54,12 @@ const fetchData = (direction: 'next' | 'prev' | 'reset' = 'reset') => {
   techniciansStore.fetchTechnicians({
     zoneFilter: zoneFilter.value === 'Todos' ? null : zoneFilter.value,
     searchTerm: searchTerm.value ? normalizeSearch(searchTerm.value) : '',
+=======
+const fetchData = (direction: 'next' | 'prev' | 'reset' = 'reset') => {
+  techniciansStore.fetchTechnicians({
+    zoneFilter: zoneFilter.value === 'Todos' ? null : zoneFilter.value,
+    searchTerm: searchTerm.value,
+>>>>>>> c933029 (Initial commit)
     direction,
   })
 }
@@ -83,8 +93,25 @@ const openProfileModal = (technicianId: string) => {
   showProfileModal.value = true
 }
 
+<<<<<<< HEAD
 const handleRefresh = () => {
   fetchData('reset')
+=======
+const handleSave = async (technician: Omit<Technician, 'id'> & { id?: string }) => {
+  try {
+    if (technician.id) {
+      await techniciansStore.updateTechnician(technician.id, technician)
+      showToast({ title: 'Éxito', message: 'Técnico actualizado.', type: 'success' })
+    } else {
+      await techniciansStore.addTechnician(technician)
+      showToast({ title: 'Éxito', message: 'Técnico creado.', type: 'success' })
+    }
+    showFormModal.value = false
+    fetchData('reset')
+  } catch (error: any) {
+    showToast({ title: 'Error', message: `No se pudo guardar: ${error.message}`, type: 'error' })
+  }
+>>>>>>> c933029 (Initial commit)
 }
 
 const handleDelete = async (technicianId: string) => {
@@ -285,7 +312,11 @@ const handleDelete = async (technicianId: string) => {
 
     <!-- Modales -->
     <TechnicianFormModal :show="showFormModal" :technician="editingTechnician" @close="showFormModal = false"
+<<<<<<< HEAD
       @refresh="handleRefresh" />
+=======
+      @save="handleSave" @delete="handleDelete" />
+>>>>>>> c933029 (Initial commit)
     <TechnicianProfileModal :show="showProfileModal" :technician-id="viewingTechnicianId"
       @close="showProfileModal = false" @edit="openEditModal" />
   </main>

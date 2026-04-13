@@ -1,5 +1,6 @@
 # sisfumi-web
 
+<<<<<<< HEAD
 Sisfumi APP es una plataforma web para la gestión integral de servicios de fumigación. Permite centralizar clientes, planeación de visitas, facturación, permisos, técnicos, notificaciones y configuración operativa en una sola interfaz.
 
 ## Características principales
@@ -46,17 +47,48 @@ El archivo `.env.local` no debe publicarse ni subirse al repositorio. El Client 
 - npm
 
 ## Instalación
+=======
+This template should help get you started developing with Vue 3 in Vite.
+
+## Recommended IDE Setup
+
+[VS Code](https://code.visualstudio.com/) + [Vue (Official)](https://marketplace.visualstudio.com/items?itemName=Vue.volar) (and disable Vetur).
+
+## Recommended Browser Setup
+
+- Chromium-based browsers (Chrome, Edge, Brave, etc.):
+  - [Vue.js devtools](https://chromewebstore.google.com/detail/vuejs-devtools/nhdogjmejiglipccpnnnanhbledajbpd) 
+  - [Turn on Custom Object Formatter in Chrome DevTools](http://bit.ly/object-formatters)
+- Firefox:
+  - [Vue.js devtools](https://addons.mozilla.org/en-US/firefox/addon/vue-js-devtools/)
+  - [Turn on Custom Object Formatter in Firefox DevTools](https://fxdx.dev/firefox-devtools-custom-object-formatters/)
+
+## Type Support for `.vue` Imports in TS
+
+TypeScript cannot handle type information for `.vue` imports by default, so we replace the `tsc` CLI with `vue-tsc` for type checking. In editors, we need [Volar](https://marketplace.visualstudio.com/items?itemName=Vue.volar) to make the TypeScript language service aware of `.vue` types.
+
+## Customize configuration
+
+See [Vite Configuration Reference](https://vite.dev/config/).
+
+## Project Setup
+>>>>>>> c933029 (Initial commit)
 
 ```sh
 npm install
 ```
 
+<<<<<<< HEAD
 ## Desarrollo
+=======
+### Compile and Hot-Reload for Development
+>>>>>>> c933029 (Initial commit)
 
 ```sh
 npm run dev
 ```
 
+<<<<<<< HEAD
 La aplicación se ejecuta normalmente en `http://localhost:5173`.
 
 ## Scripts disponibles
@@ -78,3 +110,16 @@ La configuración de Firebase está centralizada en [src/firebase/config.ts](src
 - `src/stores`: estado global con Pinia.
 - `src/router`: rutas de la aplicación.
 - `src/firebase`: inicialización de Firebase.
+=======
+### Type-Check, Compile and Minify for Production
+
+```sh
+npm run build
+```
+
+### Lint with [ESLint](https://eslint.org/)
+
+```sh
+npm run lint
+```
+>>>>>>> c933029 (Initial commit)

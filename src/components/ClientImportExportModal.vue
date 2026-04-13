@@ -1,4 +1,7 @@
+<<<<<<< HEAD
 <!-- eslint-disable @typescript-eslint/no-explicit-any -->
+=======
+>>>>>>> c933029 (Initial commit)
 <script setup lang="ts">
 import { ref } from 'vue'
 import { httpsCallable } from 'firebase/functions'
@@ -14,7 +17,11 @@ import {
   DEPARTAMENTOS, CIUDADES_POR_DEP
 } from '@/data/catalogs'
 
+<<<<<<< HEAD
 defineProps<{
+=======
+const props = defineProps<{
+>>>>>>> c933029 (Initial commit)
   show: boolean
 }>()
 
@@ -34,11 +41,17 @@ const importPreview = ref<{
   total: number
 } | null>(null)
 const importProgress = ref(0)
+<<<<<<< HEAD
 const MAX_BRANCHES = 50
 const MAX_TEMPLATE_ROWS = 5000
 
 // Cabeceras EXACTAS de la hoja "Plantilla Clientes"
 const BASE_EXCEL_HEADERS = [
+=======
+
+// Cabeceras EXACTAS de la hoja "Plantilla Clientes"
+const EXCEL_HEADERS = [
+>>>>>>> c933029 (Initial commit)
   'nombreComercial',                 // 0
   'razonSocial',                     // 1
   'nit',                             // 2
@@ -57,6 +70,7 @@ const BASE_EXCEL_HEADERS = [
   'contactoFinanciero_nombre',       // 15
   'contactoFinanciero_celular',      // 16
   'contactoFinanciero_email',        // 17
+<<<<<<< HEAD
 ]
 
 const createExcelHeaders = (branchCount: number) => [
@@ -69,12 +83,32 @@ const createExcelHeaders = (branchCount: number) => [
 
 const EXCEL_HEADERS = createExcelHeaders(MAX_BRANCHES)
 
+=======
+  'sucursal1_nombre',                // 18
+  'sucursal1_direccion',             // 19
+  'sucursal1_zona',                  // 20
+  'sucursal2_nombre',                // 21
+  'sucursal2_direccion',             // 22
+  'sucursal2_zona',                  // 23
+  'sucursal3_nombre',                // 24
+  'sucursal3_direccion',             // 25
+  'sucursal3_zona',                  // 26
+  'sucursal4_nombre',                // 27
+  'sucursal4_direccion',             // 28
+  'sucursal4_zona',                  // 29
+  'sucursal5_nombre',                // 30
+  'sucursal5_direccion',             // 31
+  'sucursal5_zona'                   // 32
+]
+
+>>>>>>> c933029 (Initial commit)
 
 // Mapeo de filas de Excel a Objeto Cliente
 const mapRowToClient = (row: any[]) => {
   // Validaciones básicas: Nombre y NIT son obligatorios
   if (!row[0] || !row[2]) return null
 
+<<<<<<< HEAD
   const sucursales = []
   const branchCount = Math.floor(Math.max(0, row.length - 18) / 3)
   for (let index = 0; index < branchCount; index++) {
@@ -86,6 +120,29 @@ const mapRowToClient = (row: any[]) => {
       direccion: String(row[branchOffset + 1]).trim(),
       zona: row[branchOffset + 2] ? String(row[branchOffset + 2]).trim() : String(row[3]).trim(),
     })
+=======
+  // Procesar sucursales (hasta 5)
+  const sucursales = []
+  // Sucursal 1
+  if (row[18] && row[19]) {
+    sucursales.push({ nombre: String(row[18]).trim(), direccion: String(row[19]).trim(), zona: row[20] ? String(row[20]).trim() : String(row[3]).trim() })
+  }
+  // Sucursal 2
+  if (row[21] && row[22]) {
+    sucursales.push({ nombre: String(row[21]).trim(), direccion: String(row[22]).trim(), zona: row[23] ? String(row[23]).trim() : String(row[3]).trim() })
+  }
+  // Sucursal 3
+  if (row[24] && row[25]) {
+    sucursales.push({ nombre: String(row[24]).trim(), direccion: String(row[25]).trim(), zona: row[26] ? String(row[26]).trim() : String(row[3]).trim() })
+  }
+  // Sucursal 4
+  if (row[27] && row[28]) {
+    sucursales.push({ nombre: String(row[27]).trim(), direccion: String(row[28]).trim(), zona: row[29] ? String(row[29]).trim() : String(row[3]).trim() })
+  }
+  // Sucursal 5
+  if (row[30] && row[31]) {
+    sucursales.push({ nombre: String(row[30]).trim(), direccion: String(row[31]).trim(), zona: row[32] ? String(row[32]).trim() : String(row[3]).trim() })
+>>>>>>> c933029 (Initial commit)
   }
 
   return {
@@ -117,11 +174,17 @@ const mapRowToClient = (row: any[]) => {
 }
 
 const sanitizeName = (name: string) =>
+<<<<<<< HEAD
   name
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
     .replace(/[^A-Za-z0-9_]/g, '')
     .trim()
+=======
+  // Eliminar espacios y puntos para asegurar compatibilidad total con nombres de rango y evitar errores de columna
+  // Ejemplo: "Bogotá D.C." -> "BogotáDC"
+  name.trim().replace(/\./g, '').replace(/\s+/g, '')
+>>>>>>> c933029 (Initial commit)
 
 const downloadTemplate = async () => {
   loading.value = true
@@ -147,12 +210,21 @@ const downloadTemplate = async () => {
       { width: 30 }, { width: 30 }, { width: 18 }, { width: 20 }, { width: 22 }, { width: 22 },
       { width: 40 }, { width: 14 }, { width: 16 }, { width: 26 }, { width: 18 }, { width: 22 },
       { width: 26 }, { width: 16 }, { width: 30 }, { width: 26 }, { width: 16 }, { width: 30 },
+<<<<<<< HEAD
       ...Array.from({ length: MAX_BRANCHES }, () => [
         { width: 26 }, { width: 40 }, { width: 20 },
       ]).flat(),
     ]
 
     const MAX_ROWS = MAX_TEMPLATE_ROWS
+=======
+      { width: 26 }, { width: 40 }, { width: 20 }, { width: 26 }, { width: 40 }, { width: 20 },
+      { width: 26 }, { width: 40 }, { width: 20 }, { width: 26 }, { width: 40 }, { width: 20 },
+      { width: 26 }, { width: 40 }, { width: 20 }
+    ]
+
+    const MAX_ROWS = 5000
+>>>>>>> c933029 (Initial commit)
 
     // Helper seguro para validaciones simples
     const addListDV = (sheetName: string, count: number, colIdx1Based: number) => {
@@ -191,10 +263,19 @@ const downloadTemplate = async () => {
     addListDV('Datos_Estados', ESTADOS.length, 8)   // estado
     addListDV('Datos_Tipos', TIPOS.length, 9)       // tipo
 
+<<<<<<< HEAD
     // Validaciones para las zonas de todas las sucursales.
     for (let index = 0; index < MAX_BRANCHES; index++) {
       addListDV('Datos_Zonas', ZONAS.length, 21 + index * 3)
     }
+=======
+    // Validaciones para Zonas de Sucursales (Columnas 21, 24, 27, 30, 33 - índices 1-based)
+    addListDV('Datos_Zonas', ZONAS.length, 21)
+    addListDV('Datos_Zonas', ZONAS.length, 24)
+    addListDV('Datos_Zonas', ZONAS.length, 27)
+    addListDV('Datos_Zonas', ZONAS.length, 30)
+    addListDV('Datos_Zonas', ZONAS.length, 33)
+>>>>>>> c933029 (Initial commit)
 
     // --- VALIDACIONES CONDICIONALES (Protegidas) ---
 
@@ -245,7 +326,11 @@ const downloadTemplate = async () => {
 
         try {
           // Referencia segura con comillas simples
+<<<<<<< HEAD
           wb.definedNames.add(`'${wsDepsByZone.name}'!$${colLetter}$2:$${colLetter}$${lastRow}`, zonaKey)
+=======
+          wb.definedNames.add(zonaKey, `'${wsDepsByZone.name}'!$${colLetter}$2:$${colLetter}$${lastRow}`)
+>>>>>>> c933029 (Initial commit)
         } catch (e: any) { console.warn(`Error agregando nombre zona ${zonaKey}:`, e.message) }
 
         colZ++
@@ -254,18 +339,32 @@ const downloadTemplate = async () => {
     wsDepsByZone.state = 'hidden'
 
     // --- FÓRMULAS AUTOMÁTICAS ---
+<<<<<<< HEAD
     for (let i = 2; i <= MAX_TEMPLATE_ROWS; i++) {
+=======
+    for (let i = 2; i <= 1000; i++) {
+>>>>>>> c933029 (Initial commit)
       // Uso de INDIRECT para evitar errores de referencia (#REF!) si el usuario mueve filas
       ws.getCell(`D${i}`).value = {
         formula: `IF(INDIRECT("E"&ROW())="Valle del Cauca", "Valle del Cauca", IF(INDIRECT("E"&ROW())="Norte de Santander", "Norte de Santander", IF(INDIRECT("E"&ROW())<>"", "Nacionales", "")))`
       }
 
+<<<<<<< HEAD
       // Zonas de sucursales: prellenado automático con la zona principal.
       const zonaRef = `INDIRECT("D"&ROW())`
       for (let index = 0; index < MAX_BRANCHES; index++) {
         const zoneColumn = ws.getColumn(21 + index * 3).letter
         ws.getCell(`${zoneColumn}${i}`).value = { formula: `IF(${zonaRef}<>"", ${zonaRef}, "")` }
       }
+=======
+      // Zonas de Sucursales (Prellenado automático con la zona principal si existe)
+      const zonaRef = `INDIRECT("D"&ROW())`
+      ws.getCell(`U${i}`).value = { formula: `IF(${zonaRef}<>"", ${zonaRef}, "")` }   // Sucursal 1 Zona
+      ws.getCell(`X${i}`).value = { formula: `IF(${zonaRef}<>"", ${zonaRef}, "")` }   // Sucursal 2 Zona
+      ws.getCell(`AA${i}`).value = { formula: `IF(${zonaRef}<>"", ${zonaRef}, "")` }  // Sucursal 3 Zona
+      ws.getCell(`AD${i}`).value = { formula: `IF(${zonaRef}<>"", ${zonaRef}, "")` }  // Sucursal 4 Zona
+      ws.getCell(`AG${i}`).value = { formula: `IF(${zonaRef}<>"", ${zonaRef}, "")` }  // Sucursal 5 Zona
+>>>>>>> c933029 (Initial commit)
     }
 
     // --- DEPARTAMENTOS Y CIUDADES ---
@@ -290,7 +389,11 @@ const downloadTemplate = async () => {
 
       try {
         // Referencia segura con comillas simples
+<<<<<<< HEAD
         wb.definedNames.add(`'${wsCities.name}'!$${colLetter}$2:$${colLetter}$${lastRow}`, depKey)
+=======
+        wb.definedNames.add(depKey, `'${wsCities.name}'!$${colLetter}$2:$${colLetter}$${lastRow}`)
+>>>>>>> c933029 (Initial commit)
       } catch (e: any) { console.warn(`Error agregando nombre ciudad ${depKey}:`, e.message) }
 
       col++
@@ -333,7 +436,10 @@ const downloadTemplate = async () => {
     await ws.protect('controltotal', {
       selectLockedCells: true, selectUnlockedCells: true, formatCells: true,
       formatColumns: true, formatRows: true, insertRows: true, deleteRows: true,
+<<<<<<< HEAD
       insertColumns: true, deleteColumns: true,
+=======
+>>>>>>> c933029 (Initial commit)
       sort: true, autoFilter: true
     })
 
@@ -471,6 +577,7 @@ const confirmImport = async () => {
     errors: importPreview.value.invalidRows.map((r) => `Fila ${r.row}: ${r.errors.join('; ')}`),
   }
 
+<<<<<<< HEAD
   const batchImportClients = httpsCallable(functions, 'batchImportClients')
   const batchSize = 400
   const validRows = importPreview.value.validRows
@@ -490,6 +597,24 @@ const confirmImport = async () => {
       )
     }
     importProgress.value = Math.round(((batchIndex + 1) / totalBatches) * 100)
+=======
+  const addClient = httpsCallable(functions, 'addClient')
+  const totalToProcess = importPreview.value.validRows.length
+  let processedCount = 0
+
+  for (const clientData of importPreview.value.validRows) {
+    try {
+      await addClient({ clientData })
+      importStats.value.success++
+    } catch (error: any) {
+      importStats.value.failed++
+      importStats.value.errors.push(
+        `Error al guardar ${clientData.nombreComercial}: ${error.message}`,
+      )
+    }
+    processedCount++
+    importProgress.value = Math.round((processedCount / totalToProcess) * 100)
+>>>>>>> c933029 (Initial commit)
   }
 
   if (importStats.value.success > 0) {
@@ -512,6 +637,7 @@ const exportClients = async () => {
     }
 
     // Mapear clientes al formato de filas
+<<<<<<< HEAD
     const branchCount = clients.reduce(
       (max: number, client: any) => Math.max(max, Array.isArray(client.sucursales) ? client.sucursales.length : 0),
       0,
@@ -522,6 +648,14 @@ const exportClients = async () => {
         const branch = c.sucursales?.[index] || {}
         return [branch.nombre || '', branch.direccion || '', branch.zona || '']
       }).flat()
+=======
+    const rows = clients.map((c: any) => {
+      const s1 = c.sucursales?.[0] || {}
+      const s2 = c.sucursales?.[1] || {}
+      const s3 = c.sucursales?.[2] || {}
+      const s4 = c.sucursales?.[3] || {}
+      const s5 = c.sucursales?.[4] || {}
+>>>>>>> c933029 (Initial commit)
 
       return [
         c.nombreComercial || '',
@@ -542,15 +676,30 @@ const exportClients = async () => {
         c.contactoFinanciero?.nombre || '',
         c.contactoFinanciero?.celular || '',
         c.contactoFinanciero?.email || '',
+<<<<<<< HEAD
         ...branchCells,
+=======
+        // Sucursales
+        s1.nombre || '', s1.direccion || '', s1.zona || '',
+        s2.nombre || '', s2.direccion || '', s2.zona || '',
+        s3.nombre || '', s3.direccion || '', s3.zona || '',
+        s4.nombre || '', s4.direccion || '', s4.zona || '',
+        s5.nombre || '', s5.direccion || '', s5.zona || ''
+>>>>>>> c933029 (Initial commit)
       ]
     })
 
     // Crear libro y hoja
     const wb = XLSX.utils.book_new()
+<<<<<<< HEAD
     const ws = XLSX.utils.aoa_to_sheet([exportHeaders, ...rows])
 
     // Ajustar anchos para todos los campos y grupos de sucursales.
+=======
+    const ws = XLSX.utils.aoa_to_sheet([EXCEL_HEADERS, ...rows])
+
+    // Ajustar anchos (mismos que en la plantilla)
+>>>>>>> c933029 (Initial commit)
     ws['!cols'] = [
       { wch: 30 }, { wch: 30 }, { wch: 15 }, { wch: 15 }, { wch: 20 },
       { wch: 15 }, { wch: 20 }, { wch: 20 }, { wch: 40 },
@@ -559,7 +708,11 @@ const exportClients = async () => {
       { wch: 20 }, { wch: 30 }, { wch: 20 },
       { wch: 20 }, { wch: 30 }, { wch: 20 },
       { wch: 20 }, { wch: 30 }, { wch: 20 },
+<<<<<<< HEAD
       ...Array.from({ length: branchCount }, () => [{ wch: 20 }, { wch: 30 }, { wch: 20 }]).flat()
+=======
+      { wch: 20 }, { wch: 30 }, { wch: 20 }
+>>>>>>> c933029 (Initial commit)
     ]
 
     XLSX.utils.book_append_sheet(wb, ws, 'Base de Datos Clientes')

@@ -1,4 +1,7 @@
+<<<<<<< HEAD
 <!-- eslint-disable @typescript-eslint/no-explicit-any -->
+=======
+>>>>>>> c933029 (Initial commit)
 <script setup lang="ts">
 import { ref, watch, computed } from 'vue'
 import { httpsCallable } from 'firebase/functions'
@@ -48,7 +51,11 @@ const form = ref({
   direccion: '',
   contactoPrincipal: { nombre: '', celular: '', email: '' },
   contactoFinanciero: { nombre: '', celular: '', email: '' },
+<<<<<<< HEAD
   sucursales: [] as { id?: string; nombre: string; direccion: string; zona: string }[],
+=======
+  sucursales: [] as { nombre: string; direccion: string; zona: string }[],
+>>>>>>> c933029 (Initial commit)
   estado: 'Activo',
 })
 
@@ -137,6 +144,7 @@ const handleSave = async () => {
     errors.push('No puede haber sucursales con el mismo nombre.')
   }
 
+<<<<<<< HEAD
   form.value.sucursales.forEach((sucursal, index) => {
     const hasAnyValue = Boolean(sucursal.nombre.trim() || sucursal.direccion.trim() || sucursal.zona.trim())
     const isComplete = Boolean(sucursal.nombre.trim() && sucursal.direccion.trim() && sucursal.zona.trim())
@@ -145,6 +153,8 @@ const handleSave = async () => {
     }
   })
 
+=======
+>>>>>>> c933029 (Initial commit)
   if (errors.length > 0) {
     errorMessage.value = errors.join('\n')
     loading.value = false
@@ -153,12 +163,16 @@ const handleSave = async () => {
 
   try {
     const saveClient = httpsCallable(functions, props.clientId ? 'updateClient' : 'addClient')
+<<<<<<< HEAD
     const sucursales = form.value.sucursales
       .filter((s) => s.nombre && s.direccion && s.zona)
       .map((s, index) => ({
         ...s,
         id: s.id || `${props.clientId || 'new-client'}-branch-${index + 1}`,
       }))
+=======
+    const sucursales = form.value.sucursales.filter((s) => s.nombre && s.direccion && s.zona)
+>>>>>>> c933029 (Initial commit)
     const zonasDeSucursales = Array.from(
       new Set([form.value.zona, ...sucursales.map((s) => s.zona)]),
     ).filter(Boolean)
@@ -191,12 +205,16 @@ const handleSave = async () => {
 
 const addSucursal = () => {
   // Preseleccionar la zona del cliente principal al agregar sucursal
+<<<<<<< HEAD
   form.value.sucursales.push({
     id: `new-branch-${Date.now()}-${form.value.sucursales.length + 1}`,
     nombre: '',
     direccion: '',
     zona: form.value.zona || '',
   })
+=======
+  form.value.sucursales.push({ nombre: '', direccion: '', zona: form.value.zona || '' })
+>>>>>>> c933029 (Initial commit)
 }
 
 const removeSucursal = (index: number) => {

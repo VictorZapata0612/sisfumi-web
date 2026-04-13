@@ -1,8 +1,16 @@
+<<<<<<< HEAD
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { ref } from 'vue'
 import { defineStore } from 'pinia'
 import { httpsCallable } from 'firebase/functions'
 import { functions } from '@/firebase/config'
+=======
+import { ref, computed } from 'vue'
+import { defineStore } from 'pinia'
+import { httpsCallable } from 'firebase/functions'
+import { functions } from '@/firebase/config'
+import router from '@/router'
+>>>>>>> c933029 (Initial commit)
 
 // Define la estructura de un cliente para que TypeScript nos ayude
 export interface Client {
@@ -13,7 +21,11 @@ export interface Client {
   estado: string
   // Añadimos más campos para el perfil
   departamento?: string
+<<<<<<< HEAD
   sucursales?: { nombre: string; direccion: string; zona?: string }[]
+=======
+  sucursales?: { nombre: string; direccion: string }[]
+>>>>>>> c933029 (Initial commit)
   contactoPrincipal?: { nombre: string; celular: string; email: string }
   contactoFinanciero?: { nombre: string; celular: string; email: string }
 }

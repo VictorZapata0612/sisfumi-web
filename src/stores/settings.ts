@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { ref } from 'vue'
 import { defineStore } from 'pinia'
@@ -15,6 +16,12 @@ import {
   type QueryConstraint,
 } from 'firebase/firestore'
 import { db, functions } from '@/firebase/config'
+=======
+import { ref } from 'vue'
+import { defineStore } from 'pinia'
+import { httpsCallable } from 'firebase/functions'
+import { functions } from '@/firebase/config'
+>>>>>>> c933029 (Initial commit)
 
 export interface CalendarIntegration {
   uid: string
@@ -72,7 +79,10 @@ export const useSettingsStore = defineStore('settings', () => {
   const loadingLogs = ref(false)
   const users = ref<SystemUser[]>([])
   const loadingUsers = ref(false)
+<<<<<<< HEAD
   const ownIntegrationConnected = ref(false)
+=======
+>>>>>>> c933029 (Initial commit)
 
   // --- Actions ---
 
@@ -107,6 +117,7 @@ export const useSettingsStore = defineStore('settings', () => {
   async function fetchBusinessData() {
     loadingBusinessData.value = true
     try {
+<<<<<<< HEAD
       const businessDataSnapshot = await getDoc(doc(db, 'settings', 'businessData'))
       const result = (businessDataSnapshot.data() || {}) as BusinessData
       // Asegurarse de que los arrays existan para evitar errores en la UI
@@ -115,6 +126,16 @@ export const useSettingsStore = defineStore('settings', () => {
         alliesList: result.alliesList || [],
         serviceTypes: result.serviceTypes || [],
         colombiaData: result.colombiaData || {},
+=======
+      const getBusinessDataFn = httpsCallable(functions, 'getBusinessData')
+      const result = (await getBusinessDataFn()) as { data: BusinessData }
+      // Asegurarse de que los arrays existan para evitar errores en la UI
+      businessData.value = {
+        businessZones: result.data.businessZones || [],
+        alliesList: result.data.alliesList || [],
+        serviceTypes: result.data.serviceTypes || [],
+        colombiaData: result.data.colombiaData || {},
+>>>>>>> c933029 (Initial commit)
       }
     } catch (err: any) {
       console.error('Error fetching business data:', err)
@@ -140,6 +161,7 @@ export const useSettingsStore = defineStore('settings', () => {
   }) {
     loadingLogs.value = true
     try {
+<<<<<<< HEAD
       const constraints: QueryConstraint[] = [orderBy('timestamp', 'desc')]
       if (filters.adminEmail && filters.adminEmail !== 'Todos') {
         constraints.push(where('adminEmail', '==', filters.adminEmail))
@@ -171,6 +193,11 @@ export const useSettingsStore = defineStore('settings', () => {
       }
 
       auditLogs.value = logs
+=======
+      const getLogsFn = httpsCallable(functions, 'getAuditLogs')
+      const result = (await getLogsFn(filters)) as { data: { logs: AuditLog[] } }
+      auditLogs.value = result.data.logs
+>>>>>>> c933029 (Initial commit)
     } catch (err: any) {
       console.error('Error fetching audit logs:', err)
       error.value = `No se pudieron cargar los registros de auditoría: ${err.message}`
@@ -214,6 +241,7 @@ export const useSettingsStore = defineStore('settings', () => {
     }
   }
 
+<<<<<<< HEAD
   async function fetchOwnIntegrationStatus(uid: string) {
     try {
       const integrationSnapshot = await getDoc(doc(db, 'calendar_integrations', uid))
@@ -224,6 +252,8 @@ export const useSettingsStore = defineStore('settings', () => {
     }
   }
 
+=======
+>>>>>>> c933029 (Initial commit)
   async function updateUserConfiguration(uid: string, role: string, zona: string, color: string) {
     const updateUserConfigFn = httpsCallable(functions, 'updateUserConfiguration')
     await updateUserConfigFn({ uid, role, zona, color })
@@ -238,6 +268,10 @@ export const useSettingsStore = defineStore('settings', () => {
     // Actualizar el estado local
     const userToUpdate = users.value.find((u) => u.uid === uid)
     if (userToUpdate) {
+<<<<<<< HEAD
+=======
+      // @ts-ignore
+>>>>>>> c933029 (Initial commit)
       userToUpdate.disabled = disabled
     }
   }
@@ -251,7 +285,10 @@ export const useSettingsStore = defineStore('settings', () => {
     loadingLogs,
     users,
     loadingUsers,
+<<<<<<< HEAD
     ownIntegrationConnected,
+=======
+>>>>>>> c933029 (Initial commit)
     error,
     fetchIntegrations,
     disconnectAccount,
@@ -260,7 +297,10 @@ export const useSettingsStore = defineStore('settings', () => {
     fetchAuditLogs,
     undoRoleChange,
     fetchUsers,
+<<<<<<< HEAD
     fetchOwnIntegrationStatus,
+=======
+>>>>>>> c933029 (Initial commit)
     updateUserConfiguration,
     updateUserStatus,
   }

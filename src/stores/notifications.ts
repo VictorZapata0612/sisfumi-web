@@ -1,4 +1,7 @@
+<<<<<<< HEAD
 /* eslint-disable @typescript-eslint/no-explicit-any */
+=======
+>>>>>>> c933029 (Initial commit)
 import { ref } from 'vue'
 import { defineStore } from 'pinia'
 import {
@@ -8,6 +11,10 @@ import {
   where,
   doc,
   updateDoc,
+<<<<<<< HEAD
+=======
+  collectionGroup,
+>>>>>>> c933029 (Initial commit)
   type Unsubscribe,
 } from 'firebase/firestore'
 import { db } from '@/firebase/config'
@@ -83,7 +90,11 @@ export const useNotificationStore = defineStore('notifications', () => {
       (snapshot) => {
         priceRequestsCount.value = snapshot.size
       },
+<<<<<<< HEAD
       () => {
+=======
+      (error) => {
+>>>>>>> c933029 (Initial commit)
         priceRequestsCount.value = 0
       },
     )
@@ -113,7 +124,11 @@ export const useNotificationStore = defineStore('notifications', () => {
         )
         loading.value = false
       },
+<<<<<<< HEAD
       () => {
+=======
+      (error) => {
+>>>>>>> c933029 (Initial commit)
         generalNotificationsCount.value = 0
         loading.value = false
       },

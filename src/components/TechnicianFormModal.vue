@@ -1,8 +1,13 @@
+<<<<<<< HEAD
 <!-- eslint-disable @typescript-eslint/no-explicit-any -->
 <script setup lang="ts">
 import { ref, watch, computed } from 'vue'
 import { useTechniciansStore } from '@/stores/technicians'
 import { useToast } from '@/composables/useToast'
+=======
+<script setup lang="ts">
+import { ref, watch, computed } from 'vue'
+>>>>>>> c933029 (Initial commit)
 import type { Technician } from '@/stores/technicians'
 
 const props = defineProps<{
@@ -12,12 +17,19 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: 'close'): void
+<<<<<<< HEAD
   (e: 'refresh'): void
 }>()
 
 const techniciansStore = useTechniciansStore()
 const { showToast } = useToast()
 
+=======
+  (e: 'save', technician: Omit<Technician, 'id'> & { id?: string }): void
+  (e: 'delete', technicianId: string): void
+}>()
+
+>>>>>>> c933029 (Initial commit)
 const form = ref<Omit<Technician, 'id'> & { id?: string }>({
   nombreCompleto: '',
   email: '',
@@ -27,9 +39,12 @@ const form = ref<Omit<Technician, 'id'> & { id?: string }>({
 })
 
 const isEditing = computed(() => !!props.technician)
+<<<<<<< HEAD
 const isLoading = ref(false)
 const formError = ref<string | null>(null)
 const originalForm = ref<Omit<Technician, 'id'> & { id?: string } | null>(null)
+=======
+>>>>>>> c933029 (Initial commit)
 
 // Mapeo de colores de Google Calendar para previsualización
 const colorOptions = [
@@ -54,10 +69,15 @@ watch(
   () => props.show,
   (newVal) => {
     if (newVal) {
+<<<<<<< HEAD
       formError.value = null
       if (props.technician) {
         form.value = { ...props.technician }
         originalForm.value = { ...props.technician }
+=======
+      if (props.technician) {
+        form.value = { ...props.technician }
+>>>>>>> c933029 (Initial commit)
       } else {
         form.value = {
           nombreCompleto: '',
@@ -66,12 +86,16 @@ watch(
           googleColorId: '1',
           telefono: '',
         }
+<<<<<<< HEAD
         originalForm.value = null
+=======
+>>>>>>> c933029 (Initial commit)
       }
     }
   },
 )
 
+<<<<<<< HEAD
 const handleSubmit = async () => {
   try {
     formError.value = null
@@ -137,6 +161,15 @@ const handleDelete = async () => {
     })
   } finally {
     isLoading.value = false
+=======
+const handleSubmit = () => {
+  emit('save', form.value)
+}
+
+const handleDelete = () => {
+  if (form.value.id) {
+    emit('delete', form.value.id)
+>>>>>>> c933029 (Initial commit)
   }
 }
 </script>
@@ -165,12 +198,15 @@ const handleDelete = async () => {
       <!-- Form Content -->
       <form @submit.prevent="handleSubmit" class="p-4 sm:p-6 overflow-y-auto custom-scrollbar flex flex-col gap-6">
 
+<<<<<<< HEAD
         <!-- Error Message -->
         <div v-if="formError" class="bg-red-500/10 border border-red-500/30 rounded-lg p-4 flex gap-3">
           <i class="fas fa-exclamation-circle text-red-400 flex-shrink-0 mt-0.5"></i>
           <p class="text-red-200 text-sm">{{ formError }}</p>
         </div>
 
+=======
+>>>>>>> c933029 (Initial commit)
         <!-- Sección 1: Información Personal -->
         <div class="bg-white/5 rounded-lg p-4 border border-white/10 space-y-4">
           <h4 class="text-xs font-bold text-[#d60000] uppercase tracking-widest border-b border-white/10 pb-2 mb-4">
@@ -248,21 +284,36 @@ const handleDelete = async () => {
 
       <!-- Footer Actions -->
       <div class="p-4 sm:p-6 border-t border-white/10 bg-[#0a0a0a]/30 flex flex-col sm:flex-row justify-between gap-4">
+<<<<<<< HEAD
         <button v-if="isEditing" @click.prevent="handleDelete" type="button" :disabled="isLoading"
           class="btn btn-danger w-full sm:w-auto flex items-center justify-center gap-2 disabled:opacity-50">
           <i v-if="!isLoading" class="fas fa-trash-alt"></i>
           <i v-else class="fas fa-spinner animate-spin"></i>
           <span>{{ isLoading ? 'Eliminando...' : 'Eliminar' }}</span>
+=======
+        <button v-if="isEditing" @click.prevent="handleDelete" type="button"
+          class="btn btn-danger w-full sm:w-auto flex items-center justify-center gap-2">
+          <i class="fas fa-trash-alt"></i>
+          <span>Eliminar</span>
+>>>>>>> c933029 (Initial commit)
         </button>
         <div v-else class="hidden sm:block"></div> <!-- Spacer -->
 
         <div class="flex gap-3 justify-end w-full sm:w-auto">
+<<<<<<< HEAD
           <button @click="emit('close')" type="button" :disabled="isLoading" class="btn btn-secondary disabled:opacity-50">Cancelar</button>
           <button @click="handleSubmit" type="button" :disabled="isLoading"
             class="btn btn-primary bg-[#d60000] hover:bg-red-700 shadow-lg shadow-red-500/20 px-6 disabled:opacity-50 flex items-center gap-2">
             <i v-if="!isLoading" class="fas fa-save"></i>
             <i v-else class="fas fa-spinner animate-spin"></i>
             {{ isLoading ? (isEditing ? 'Guardando...' : 'Creando...') : (isEditing ? 'Guardar Cambios' : 'Crear Técnico') }}
+=======
+          <button @click="emit('close')" type="button" class="btn btn-secondary">Cancelar</button>
+          <button @click="handleSubmit" type="button"
+            class="btn btn-primary bg-[#d60000] hover:bg-red-700 shadow-lg shadow-red-500/20 px-6">
+            <i class="fas fa-save mr-2"></i>
+            {{ isEditing ? 'Guardar Cambios' : 'Crear Técnico' }}
+>>>>>>> c933029 (Initial commit)
           </button>
         </div>
       </div>

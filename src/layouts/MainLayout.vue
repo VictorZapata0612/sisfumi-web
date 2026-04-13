@@ -1,5 +1,9 @@
 <script setup lang="ts">
+<<<<<<< HEAD
 import { ref, onMounted, onUnmounted, defineAsyncComponent } from 'vue'
+=======
+import { ref, onMounted, onUnmounted, watch, defineAsyncComponent } from 'vue'
+>>>>>>> c933029 (Initial commit)
 import { RouterView, RouterLink, useRoute } from 'vue-router'
 
 import AppHeader from '@/components/Header.vue'
@@ -73,6 +77,10 @@ const navLinks = [
     roles: ['Administrador', 'Jefe'],
     children: [
       { name: 'Facturación', to: '/dashboard/facturacion', icon: 'fa-file-invoice-dollar' },
+<<<<<<< HEAD
+=======
+      { name: 'Pagos', to: '/dashboard/pagos', icon: 'fa-hand-holding-usd' },
+>>>>>>> c933029 (Initial commit)
     ],
   },
   // Dropdown Administración (Renombrado y reorganizado)

@@ -1,9 +1,13 @@
+<<<<<<< HEAD
 /* eslint-disable @typescript-eslint/no-explicit-any */
+=======
+>>>>>>> c933029 (Initial commit)
 import { ref, computed } from 'vue'
 import { defineStore } from 'pinia'
 import { httpsCallable } from 'firebase/functions'
 import { functions } from '@/firebase/config'
 
+<<<<<<< HEAD
 // ✅ NUEVO: reintento automático para llamadas a Cloud Functions.
 // Motivo: cuando una función lleva un rato sin tráfico, Cloud Run la escala
 // a 0 instancias. La primera petición (el preflight OPTIONS) puede tardar
@@ -40,6 +44,8 @@ async function callWithRetry<T>(
   }
 }
 
+=======
+>>>>>>> c933029 (Initial commit)
 // --- Interfaces para un tipado fuerte ---
 
 export interface Visit {
@@ -52,7 +58,10 @@ export interface Visit {
   zona: string
   estado_visita: 'Programada' | 'Realizada' | 'Cancelada'
   fumigadores_asignados: string[]
+<<<<<<< HEAD
   duracion_minutos?: number
+=======
+>>>>>>> c933029 (Initial commit)
   isUrgent?: boolean
   [key: string]: any // Para otros campos
 }
@@ -60,10 +69,15 @@ export interface Visit {
 export interface Client {
   id: string
   nombreComercial: string
+<<<<<<< HEAD
   ciudad?: string
   zona: string
   direccion: string
   // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+=======
+  zona: string
+  direccion: string
+>>>>>>> c933029 (Initial commit)
   // @ts-ignore
   serviceSheet?: { services: Service[] }
   sucursales?: { nombre: string; direccion: string; zona: string }[]
@@ -127,9 +141,13 @@ export const usePlanningStore = defineStore('planning', () => {
       id: v.id,
       title: v.nombre_cliente,
       start: new Date(v.fecha_visita as string),
+<<<<<<< HEAD
       end: new Date(
         new Date(v.fecha_visita as string).getTime() + (v.duracion_minutos || 60) * 60 * 1000,
       ),
+=======
+      end: new Date(new Date(v.fecha_visita as string).getTime() + 60 * 60 * 1000), // Asumir 1 hora
+>>>>>>> c933029 (Initial commit)
       source: 'internal',
       extendedProps: v, // Guardar todos los datos de la visita
     }))
@@ -156,7 +174,10 @@ export const usePlanningStore = defineStore('planning', () => {
     month: number,
     zone: string,
     calendarTargetUid: string | null,
+<<<<<<< HEAD
     dateRange?: { startDateISO: string; endDateISO: string },
+=======
+>>>>>>> c933029 (Initial commit)
   ) {
     loading.value = true
     error.value = null
@@ -164,6 +185,7 @@ export const usePlanningStore = defineStore('planning', () => {
 
     try {
       const getPlanningDataFn = httpsCallable(functions, 'getConsolidatedPlanningData')
+<<<<<<< HEAD
       const result = (await callWithRetry(() =>
         getPlanningDataFn({
           year,
@@ -173,6 +195,14 @@ export const usePlanningStore = defineStore('planning', () => {
           ...dateRange,
         }),
       )) as {
+=======
+      const result = (await getPlanningDataFn({
+        year,
+        month,
+        zone,
+        calendarTargetUid,
+      })) as {
+>>>>>>> c933029 (Initial commit)
         data: {
           monthlyVisits: Visit[]
           pendingVisits: Visit[]
@@ -248,9 +278,15 @@ export const usePlanningStore = defineStore('planning', () => {
     }
 
     if (visitData.id) {
+<<<<<<< HEAD
       await callWithRetry(() => saveVisitFn({ visitId: visitData.id, visitData: dataToSend }))
     } else {
       await callWithRetry(() => saveVisitFn({ visitData: dataToSend }))
+=======
+      await saveVisitFn({ visitId: visitData.id, visitData: dataToSend })
+    } else {
+      await saveVisitFn({ visitData: dataToSend })
+>>>>>>> c933029 (Initial commit)
     }
   }
 
@@ -259,7 +295,11 @@ export const usePlanningStore = defineStore('planning', () => {
    */
   async function deleteVisit(visitId: string) {
     const deleteVisitFn = httpsCallable(functions, 'deleteVisitAndCalendarEvent')
+<<<<<<< HEAD
     await callWithRetry(() => deleteVisitFn({ visitId }))
+=======
+    await deleteVisitFn({ visitId })
+>>>>>>> c933029 (Initial commit)
   }
 
   /**
@@ -286,7 +326,11 @@ export const usePlanningStore = defineStore('planning', () => {
    */
   async function quickCompleteVisit(visitId: string) {
     const completeVisitFn = httpsCallable(functions, 'quickCompleteVisit')
+<<<<<<< HEAD
     await callWithRetry(() => completeVisitFn({ visitId }))
+=======
+    await completeVisitFn({ visitId })
+>>>>>>> c933029 (Initial commit)
     // Actualiza el estado en el store para que la UI reaccione inmediatamente
     const eventIndex = allCalendarEvents.value.findIndex((e) => e.id === visitId)
     const eventToUpdate = allCalendarEvents.value[eventIndex]
