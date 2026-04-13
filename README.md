@@ -1,48 +1,67 @@
 # sisfumi-web
 
-This template should help get you started developing with Vue 3 in Vite.
+Sisfumi APP es una plataforma web para la gestión integral de servicios de fumigación. Permite centralizar clientes, planeación de visitas, facturación, permisos, técnicos, notificaciones y configuración operativa en una sola interfaz.
 
-## Recommended IDE Setup
+## Características principales
 
-[VS Code](https://code.visualstudio.com/) + [Vue (Official)](https://marketplace.visualstudio.com/items?itemName=Vue.volar) (and disable Vetur).
+- Gestión de clientes y fichas de servicio.
+- Planeación de visitas con calendario y sincronización con Google Calendar.
+- Control de permisos, soportes y aprobación de visitas.
+- Facturación, cobros y seguimiento de pagos.
+- Administración de técnicos, usuarios, zonas, aliados y tipos de servicio.
+- Panel de estadísticas, reportes y búsqueda global.
+- Sitio público informativo con páginas de inicio, servicios, contacto y privacidad.
 
-## Recommended Browser Setup
+## Tecnologías
 
-- Chromium-based browsers (Chrome, Edge, Brave, etc.):
-  - [Vue.js devtools](https://chromewebstore.google.com/detail/vuejs-devtools/nhdogjmejiglipccpnnnanhbledajbpd) 
-  - [Turn on Custom Object Formatter in Chrome DevTools](http://bit.ly/object-formatters)
-- Firefox:
-  - [Vue.js devtools](https://addons.mozilla.org/en-US/firefox/addon/vue-js-devtools/)
-  - [Turn on Custom Object Formatter in Firefox DevTools](https://fxdx.dev/firefox-devtools-custom-object-formatters/)
+- Vue 3
+- Vite
+- TypeScript
+- Pinia
+- Vue Router
+- Firebase Authentication, Firestore, Functions y Storage
+- Tailwind CSS
+- Chart.js
 
-## Type Support for `.vue` Imports in TS
+## Requisitos
 
-TypeScript cannot handle type information for `.vue` imports by default, so we replace the `tsc` CLI with `vue-tsc` for type checking. In editors, we need [Volar](https://marketplace.visualstudio.com/items?itemName=Vue.volar) to make the TypeScript language service aware of `.vue` types.
+- Node.js 20.19+ o 22.12+
+- npm
 
-## Customize configuration
-
-See [Vite Configuration Reference](https://vite.dev/config/).
-
-## Project Setup
+## Instalación
 
 ```sh
 npm install
 ```
 
-### Compile and Hot-Reload for Development
+## Desarrollo
 
 ```sh
 npm run dev
 ```
 
-### Type-Check, Compile and Minify for Production
+La aplicación se ejecuta normalmente en `http://localhost:5173`.
 
-```sh
-npm run build
-```
+## Scripts disponibles
 
-### Lint with [ESLint](https://eslint.org/)
+- `npm run dev`: inicia el servidor de desarrollo con Vite.
+- `npm run build`: compila y valida el proyecto para producción.
+- `npm run preview`: previsualiza la versión compilada.
+- `npm run lint`: ejecuta ESLint y corrige archivos compatibles.
+- `npm run format`: formatea el código fuente con Prettier.
 
-```sh
-npm run lint
-```
+## Configuración de Firebase
+
+La configuración de Firebase está centralizada en [src/firebase/config.ts](src/firebase/config.ts). Si vas a usar otro proyecto de Firebase, actualiza ese archivo con tus credenciales.
+
+## Estructura general
+
+- `src/views`: vistas principales y páginas públicas.
+- `src/components`: componentes reutilizables y modales.
+- `src/stores`: estado global con Pinia.
+- `src/router`: rutas de la aplicación.
+- `src/firebase`: inicialización de Firebase.
+
+## Nota
+
+Si quieres, puedo agregar también una sección de capturas, instrucciones de despliegue o un bloque de variables de entorno si decides mover la configuración de Firebase fuera del código.
