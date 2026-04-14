@@ -61,7 +61,3 @@ La configuración de Firebase está centralizada en [src/firebase/config.ts](src
 - `src/stores`: estado global con Pinia.
 - `src/router`: rutas de la aplicación.
 - `src/firebase`: inicialización de Firebase.
-
-## Nota
-
-Si quieres, puedo agregar también una sección de capturas, instrucciones de despliegue o un bloque de variables de entorno si decides mover la configuración de Firebase fuera del código.
