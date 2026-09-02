@@ -5000,7 +5000,7 @@ exports.getAnnualBillingReport = onCall(
       let zoneToFilter = null;
       if (hasGlobalAccess && requestedZone && requestedZone !== "Todos") {
         zoneToFilter = requestedZone;
-      } else if (!isAdminOrJefe) {
+      } else if (!hasGlobalAccess) {
         zoneToFilter = userZone;
       }
 
