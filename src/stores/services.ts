@@ -72,7 +72,10 @@ export const useServicesStore = defineStore('services', () => {
     error.value = null
     try {
       const getClientsFn = httpsCallable(functions, 'getClientsPage')
-      const params: { status: string; zone?: string } = { status: 'Activo' }
+      const params: { status: string; pageSize: number; zone?: string } = {
+        status: 'Activo',
+        pageSize: 1000,
+      }
 
       // Si el rol es de un coordinador de zona (no Nacionales), filtramos por su zona.
       if (

@@ -16,15 +16,25 @@ const editingServiceIndex = ref(-1)
 const showClientResults = ref(false)
 const searchResultsContainer = ref(null)
 
+const normalizeSearchText = (value: string) =>
+  value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, ' ')
+
 // Filtro local de clientes
 const filteredClients = computed(() => {
   // Si no hay término de búsqueda, mostrar los primeros 10 para no saturar la lista
   if (!searchTerm.value) {
     return servicesStore.clientList.slice(0, 10)
   }
-  // Filtrar por nombre comercial (case insensitive)
+  const normalizedSearch = normalizeSearchText(searchTerm.value)
+
+  // Permitir coincidencias parciales, sin distinguir mayúsculas ni tildes.
   return servicesStore.clientList.filter((client) =>
-    client.nombreComercial.toLowerCase().includes(searchTerm.value.toLowerCase()),
+    normalizeSearchText(client.nombreComercial).includes(normalizedSearch),
   )
 })
 
