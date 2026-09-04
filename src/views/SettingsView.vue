@@ -366,15 +366,6 @@ const isCurrentUser = (uid: string) => {
 }
 
 const handleConnectGoogle = (targetUid: string) => {
-  if (typeof google === 'undefined') {
-    showToast({
-      title: 'Error de Carga',
-      message: 'Los servicios de Google no están listos. Por favor recarga la página.',
-      type: 'error',
-    })
-    return
-  }
-
   const clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID
 
   if (!clientId) {
@@ -386,33 +377,24 @@ const handleConnectGoogle = (targetUid: string) => {
     return
   }
 
-  const client = google.accounts.oauth2.initCodeClient({
-    client_id: clientId,
-    scope: 'https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile https://www.googleapis.com/auth/gmail.send',
-    ux_mode: 'popup',
-    callback: async (response: any) => {
-      if (response.code) {
-        try {
-          await authStore.connectGoogleAccount(response.code, targetUid)
-          showToast({
-            title: '¡Éxito!',
-            message: 'La cuenta de Google ha sido conectada correctamente.',
-            type: 'success',
-          })
-          settingsStore.fetchUsers()
-          settingsStore.fetchIntegrations()
-        } catch (error: any) {
-          showToast({
-            title: 'Error de Conexión',
-            message: error.message || 'No se pudo conectar la cuenta.',
-            type: 'error',
-          })
-        }
-      }
-    },
-  })
-
-  client.requestCode()
+  authStore
+    .connectGoogleAccount(clientId, targetUid)
+    .then(() => {
+      showToast({
+        title: '¡Éxito!',
+        message: 'La cuenta de Google ha sido conectada correctamente.',
+        type: 'success',
+      })
+      settingsStore.fetchUsers()
+      settingsStore.fetchIntegrations()
+    })
+    .catch((error: any) => {
+      showToast({
+        title: 'Error de Conexión',
+        message: error.message || 'No se pudo conectar la cuenta.',
+        type: 'error',
+      })
+    })
 }
 
 const handleUndoRoleChange = (log: AuditLog) => {
