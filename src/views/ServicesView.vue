@@ -42,7 +42,9 @@ const canApprovePrices = computed(() => {
   return (
     authStore.userRole === 'Administrador' ||
     authStore.userRole === 'Jefe' ||
-    authStore.userRole === 'Coordinador Nacionales'
+    authStore.userRole === 'Coordinador Nacionales' ||
+    authStore.userRole === 'Coordinador Nacional' ||
+    authStore.userRole === 'Gerente'
   )
 })
 
@@ -60,8 +62,8 @@ onClickOutside(searchResultsContainer, () => {
   showClientResults.value = false
 })
 
-const handleSelectClient = (clientId: string) => {
-  servicesStore.fetchServiceSheet(clientId)
+const handleSelectClient = async (clientId: string) => {
+  await servicesStore.fetchServiceSheet(clientId)
   // Actualizar el input con el nombre seleccionado
   const client = servicesStore.clientList.find((c) => c.id === clientId)
   if (client) {
@@ -90,19 +92,15 @@ const openEditModal = (service: Service, index: number) => {
   showModal.value = true
 }
 
-const handlePriceRequest = (request: any) => {
+const handlePriceRequest = async (request: any) => {
   // 1. Seleccionar el cliente
-  handleSelectClient(request.clientId)
+  await handleSelectClient(request.clientId)
 
-  // 2. Abrir el modal con el servicio correcto
-  // Esperamos un tick para que la ficha de servicio del cliente se cargue
-  setTimeout(() => {
-    openEditModal(request.service, request.serviceIndex)
-  }, 200) // Un pequeño delay para asegurar la carga
+  // 2. Abrir el modal únicamente después de cargar la ficha real.
+  openEditModal(request.service, request.serviceIndex)
 }
 
-const handleSaveService = (service: Service, index: number) => {
-  servicesStore.upsertService(service, index)
+const handleSaveService = () => {
   showModal.value = false
 }
 

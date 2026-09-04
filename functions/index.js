@@ -1698,45 +1698,23 @@ exports.getPendingPriceRequests = onCall({ cors: true }, async (request) => {
   }
 
   try {
-    const db = admin.firestore();
-    // Buscamos en todas las subcolecciones "services" que necesiten aprobación de precio.
-    const servicesSnapshot = await db.collectionGroup("services")
-      .where("needsPriceApproval", "==", true)
-      .orderBy("tipo_servicio", "asc") // <-- AÑADE ESTA LÍNEA
-      .get();
-
-    if (servicesSnapshot.empty) {
-      return { requests: [] };
-    }
-
+    const sheetsSnapshot = await db.collection("servicios").get();
     const requests = [];
-    // Usamos un bucle for...of para poder usar await dentro.
-    for (const doc of servicesSnapshot.docs) {
-      const service = doc.data();
-      // Obtenemos la referencia al documento padre (la ficha de servicio).
-      const serviceSheetRef = doc.ref.parent.parent;
-      if (serviceSheetRef) {
-        const serviceSheetDoc = await serviceSheetRef.get();
-        const serviceSheetData = serviceSheetDoc.data();
-
-        if (serviceSheetData) {
-            // Encontrar el índice del servicio dentro del array de la ficha.
-            const serviceIndex = serviceSheetData.services.findIndex(
-              (s) => s.tipo_servicio === service.tipo_servicio && s.valor === 0
-            );
-
-            if (serviceIndex !== -1) {
-                requests.push({
-                  clientId: serviceSheetData.clientId,
-                  clientName: serviceSheetData.clientName,
-                  serviceSheetId: serviceSheetDoc.id,
-                  serviceIndex: serviceIndex,
-                  service: service,
-                });
-            }
+    sheetsSnapshot.forEach((sheetDoc) => {
+      const sheet = sheetDoc.data();
+      (Array.isArray(sheet.services) ? sheet.services : []).forEach((service, index) => {
+        if (service.needsPriceApproval === true && Number(service.valor) === 0) {
+          requests.push({
+            clientId: sheet.clientId,
+            clientName: sheet.clientName,
+            serviceSheetId: sheetDoc.id,
+            serviceIndex: index,
+            service,
+          });
         }
-      }
-    }
+      });
+    });
+    requests.sort((a, b) => String(a.service.tipo_servicio).localeCompare(String(b.service.tipo_servicio)));
 
     return { requests };
   } catch (error) {
@@ -6442,24 +6420,45 @@ exports.getServiceSheetByClientId = onCall(
     }
 
     const { role: userRole, zona: userZone } = request.auth.token;
-    const isAdminOrJefe = userRole === "Administrador" || userRole === "Jefe";
+    const canManageAllServices = [
+      "Administrador",
+      "Jefe",
+      "Coordinador Nacionales",
+      "Coordinador Nacional",
+      "Gerente",
+    ].includes(userRole);
 
     try {
-      let query = db.collection("servicios").where("clientId", "==", clientId);
-
-      // Aplicar filtro de seguridad por zona para coordinadores
-      if (!isAdminOrJefe && userZone) {
-        query = query.where("zona", "==", userZone);
+      const authorizedClient = await getAuthorizedClient(request, clientId);
+      if (!canManageAllServices && !userZone) {
+        throw new HttpsError("permission-denied", "No tienes una zona asignada.");
       }
 
-      const snapshot = await query.limit(1).get();
+      const canonicalRef = db.collection("servicios").doc(clientId);
+      const canonicalDoc = await canonicalRef.get();
+      const snapshot = canonicalDoc.exists
+        ? { empty: false, docs: [canonicalDoc] }
+        : await db
+          .collection("servicios")
+          .where("clientId", "==", clientId)
+          .limit(10)
+          .get();
 
       if (snapshot.empty) {
         return null; // No se encontró la ficha, lo cual es un caso válido.
       }
 
       const doc = snapshot.docs[0];
-      return { id: doc.id, ...doc.data() };
+      const sheet = doc.data();
+      if (!canManageAllServices && sheet.zona !== userZone) {
+        throw new HttpsError("permission-denied", "No tienes permiso para ver esta ficha.");
+      }
+      return {
+        id: doc.id,
+        ...sheet,
+        clientId: authorizedClient.id,
+        clientName: authorizedClient.data.nombreComercial,
+      };
     } catch (error) {
       logger.error(
         `Error en getServiceSheetByClientId para cliente ${clientId}:`,
@@ -6497,63 +6496,103 @@ exports.saveServiceSheet = onCall(
       );
     }
 
-  const { role: userRole, zona: userZone } = request.auth.token;
+    const { role: userRole, zona: userZone } = request.auth.token;
+    const globalServiceRoles = [
+      "Administrador",
+      "Jefe",
+      "Coordinador Nacionales",
+      "Coordinador Nacional",
+      "Gerente",
+    ];
+    const canManageAllServices = globalServiceRoles.includes(userRole);
+    const canSetPrice = ["Administrador", "Jefe", "Coordinador Nacionales", "Coordinador Nacional", "Gerente"].includes(userRole);
+    const authorizedClient = await getAuthorizedClient(request, sheetData.clientId);
+    const clientZones = Array.isArray(authorizedClient.data.zonasDeSucursales)
+      ? authorizedClient.data.zonasDeSucursales
+      : [authorizedClient.data.zona];
 
-  // ✅ REFUERZO DE SEGURIDAD: Un coordinador solo puede guardar fichas de su propia zona.
-  // Esto previene que un coordinador cree o modifique una ficha que luego no podrá ver,
-  // lo que causaba la confusión de "servicios que desaparecen".
-  const isAdminOrJefe = userRole === "Administrador" || userRole === "Jefe";
-
-  if (!isAdminOrJefe && userZone && sheetData.zona !== userZone) {
-    throw new HttpsError(
-      "permission-denied",
-      `No tienes permiso para guardar una ficha de servicio en la zona "${sheetData.zona}". Solo puedes gestionar fichas de tu zona asignada (${userZone}).`
-    );
-  }
-
-    // ✅ REFUERZO DE SEGURIDAD: Validar permisos para asignar precios.
-    const canSetPrice = userRole === "Administrador" || userRole === "Jefe";
-
-    if (!canSetPrice) {
-      // Si el usuario no es admin/jefe, asegurarse de que no esté intentando poner un precio.
-      const hasPrice = sheetData.services.some((s) => s.valor > 0);
-      if (hasPrice) {
-        // Aquí se podría añadir una lógica más compleja para permitir guardar si el precio no cambió.
-        // Por ahora, una regla simple: si no es admin, no puede guardar nada con precio.
-        throw new HttpsError(
-          "permission-denied",
-          "No tienes permiso para asignar precios a los servicios."
-        );
-      }
+    if (!canManageAllServices && (!userZone || !clientZones.includes(userZone))) {
+      throw new HttpsError("permission-denied", "No puedes gestionar servicios fuera de tu zona.");
     }
 
-    try {
-      const sheetRef = db
-        .collection("servicios")
-        .where("clientId", "==", sheetData.clientId);
-      const snapshot = await sheetRef.get();
+    if (!Array.isArray(sheetData.services)) {
+      throw new HttpsError("invalid-argument", "La ficha debe contener una lista de servicios.");
+    }
 
-      if (snapshot.empty) {
-        // Crear nueva ficha
-        const dataToCreate = {
-          ...sheetData,
+    const existingSnapshot = await db.collection("servicios")
+      .where("clientId", "==", sheetData.clientId)
+      .limit(10)
+      .get();
+    const existingSheet = existingSnapshot.docs[0]?.data();
+    const existingServices = Array.isArray(existingSheet?.services) ? existingSheet.services : [];
+    const allowedBranchNames = new Set([
+      "Principal",
+      ...(Array.isArray(authorizedClient.data.sucursales)
+        ? authorizedClient.data.sucursales.flatMap((branch, index) => [
+          branch.nombre,
+          branch.id || `${authorizedClient.id}-branch-${index + 1}`,
+        ])
+        : []),
+    ]);
+    const seenServiceIds = new Set();
+    const normalizedServices = sheetData.services.map((service, index) => {
+      if (!service.tipo_servicio || !service.frecuencia) {
+        throw new HttpsError("invalid-argument", "Cada servicio requiere tipo y frecuencia.");
+      }
+      const value = Number(service.valor);
+      if (!Number.isFinite(value) || value < 0) {
+        throw new HttpsError("invalid-argument", "El valor de cada servicio debe ser válido.");
+      }
+      const serviceId = service.id || `${sheetData.clientId}-service-${index + 1}`;
+      if (seenServiceIds.has(serviceId)) {
+        throw new HttpsError("invalid-argument", "Hay servicios duplicados en la ficha.");
+      }
+      seenServiceIds.add(serviceId);
+      const assignedBranches = Array.isArray(service.sucursales_asignadas)
+        ? service.sucursales_asignadas
+        : [];
+      if (assignedBranches.some((branch) => !allowedBranchNames.has(branch))) {
+        throw new HttpsError("invalid-argument", "Una sucursal asignada no pertenece al cliente.");
+      }
+      const previous = existingServices.find((item) =>
+        (item.id && item.id === serviceId) || item.tipo_servicio === service.tipo_servicio
+      );
+      if (!canSetPrice && value > 0 && Number(previous?.valor || 0) !== value) {
+        throw new HttpsError("permission-denied", "No tienes permiso para asignar ese precio.");
+      }
+      return {
+        ...service,
+        id: serviceId,
+        valor: canSetPrice ? value : Number(previous?.valor || 0),
+        sucursales_asignadas: assignedBranches,
+      };
+    });
+
+    const canonicalSheetData = {
+      ...sheetData,
+      clientId: authorizedClient.id,
+      clientName: authorizedClient.data.nombreComercial,
+      zona: authorizedClient.data.zona,
+      services: normalizedServices,
+    };
+
+    try {
+      const sheetRef = db.collection("servicios").doc(sheetData.clientId);
+      await db.runTransaction(async (transaction) => {
+        const canonicalDoc = await transaction.get(sheetRef);
+        const dataToSave = {
+          ...canonicalSheetData,
           createdAt: admin.firestore.FieldValue.serverTimestamp(),
           updatedAt: admin.firestore.FieldValue.serverTimestamp(),
         };
-        await db.collection("servicios").add(dataToCreate);
-      } else {
-        // Actualizar ficha existente
-        const docRef = snapshot.docs[0].ref;
-        const dataToUpdate = {
-          ...sheetData,
-          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-        };
-        await docRef.update(dataToUpdate);
-      }
+        if (canonicalDoc.exists) transaction.update(sheetRef, { ...dataToSave, createdAt: canonicalDoc.data().createdAt || dataToSave.createdAt });
+        else transaction.set(sheetRef, dataToSave);
+      });
 
       return {
         success: true,
         message: "Ficha de servicio guardada correctamente.",
+        sheetId: sheetData.clientId,
       };
     } catch (error) {
       logger.error(

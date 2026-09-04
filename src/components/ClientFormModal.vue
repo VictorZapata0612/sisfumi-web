@@ -47,7 +47,7 @@ const form = ref({
   direccion: '',
   contactoPrincipal: { nombre: '', celular: '', email: '' },
   contactoFinanciero: { nombre: '', celular: '', email: '' },
-  sucursales: [] as { nombre: string; direccion: string; zona: string }[],
+  sucursales: [] as { id?: string; nombre: string; direccion: string; zona: string }[],
   estado: 'Activo',
 })
 
@@ -152,7 +152,12 @@ const handleSave = async () => {
 
   try {
     const saveClient = httpsCallable(functions, props.clientId ? 'updateClient' : 'addClient')
-    const sucursales = form.value.sucursales.filter((s) => s.nombre && s.direccion && s.zona)
+    const sucursales = form.value.sucursales
+      .filter((s) => s.nombre && s.direccion && s.zona)
+      .map((s, index) => ({
+        ...s,
+        id: s.id || `${props.clientId || 'new-client'}-branch-${index + 1}`,
+      }))
     const zonasDeSucursales = Array.from(
       new Set([form.value.zona, ...sucursales.map((s) => s.zona)]),
     ).filter(Boolean)
@@ -185,7 +190,12 @@ const handleSave = async () => {
 
 const addSucursal = () => {
   // Preseleccionar la zona del cliente principal al agregar sucursal
-  form.value.sucursales.push({ nombre: '', direccion: '', zona: form.value.zona || '' })
+  form.value.sucursales.push({
+    id: `new-branch-${Date.now()}-${form.value.sucursales.length + 1}`,
+    nombre: '',
+    direccion: '',
+    zona: form.value.zona || '',
+  })
 }
 
 const removeSucursal = (index: number) => {

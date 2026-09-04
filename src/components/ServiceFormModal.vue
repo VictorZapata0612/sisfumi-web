@@ -44,7 +44,9 @@ const canSetPrice = computed(
   () =>
     authStore.userRole === 'Administrador' ||
     authStore.userRole === 'Jefe' ||
-    authStore.userRole === 'Coordinador Nacionales',
+    authStore.userRole === 'Coordinador Nacionales' ||
+    authStore.userRole === 'Coordinador Nacional' ||
+    authStore.userRole === 'Gerente',
 )
 
 const showTooltip = ref(false)
@@ -75,7 +77,10 @@ const sucursalesOptions = computed(() => {
   if (!client) return []
   const options = [{ text: 'Principal', value: 'Principal' }]
   if (client.sucursales && client.sucursales.length > 0) {
-    client.sucursales.forEach((s: any) => options.push({ text: s.nombre, value: s.nombre }))
+    client.sucursales.forEach((s: any, index: number) => options.push({
+      text: s.nombre,
+      value: s.id || `${client.id}-branch-${index + 1}`,
+    }))
   }
   return options
 })
@@ -129,12 +134,13 @@ const handleSave = async () => {
 
   isSaving.value = true
   console.log('🕵️ [SPY] Estado isSaving establecido a TRUE. Botón debería deshabilitarse.')
+  const previousSheet = servicesStore.serviceSheet
+    ? JSON.parse(JSON.stringify(servicesStore.serviceSheet))
+    : null
 
   try {
-    // 1. Actualizar estado local (Padre/Store)
-    console.log('🕵️ [SPY] Emitiendo evento "save" al componente padre...')
-    emit('save', form.value, props.serviceIndex)
-    console.log('🕵️ [SPY] Evento "save" emitido correctamente.')
+    // Actualizar localmente, guardar y restaurar si la nube rechaza la operación.
+    servicesStore.upsertService(form.value, props.serviceIndex)
 
     // 2. Persistir en Base de Datos
     // @ts-ignore: Acción del store para guardar la ficha completa
@@ -150,9 +156,12 @@ const handleSave = async () => {
     console.log('🕵️ [SPY] servicesStore.saveServiceSheet() completado exitosamente.')
 
 
+    emit('save', form.value, props.serviceIndex)
     showToast({ title: 'Éxito', message: 'Servicio guardado correctamente.', type: 'success' })
     emit('close')
   } catch (error: any) {
+    if (previousSheet) servicesStore.serviceSheet = previousSheet
+    servicesStore.hasUnsavedChanges = Boolean(previousSheet)
     console.error('🕵️ [SPY] ERROR CAPTURADO en handleSave:', error)
     showToast({
       title: 'Error de Guardado',

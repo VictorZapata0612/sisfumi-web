@@ -3,8 +3,6 @@ import { defineStore } from 'pinia'
 import { httpsCallable } from 'firebase/functions'
 import { useAuthStore } from './auth'
 import { functions } from '@/firebase/config'
-import { db } from '@/firebase/config'
-import { collection, addDoc, serverTimestamp } from 'firebase/firestore'
 
 // --- Interfaces para Tipado ---
 
@@ -15,6 +13,7 @@ interface Client {
 }
 
 export interface Service {
+  id?: string
   tipo_servicio: string
   frecuencia: string
   valor: number
@@ -40,6 +39,11 @@ export interface PendingPriceRequest {
   service: Service
 }
 
+const createStableId = (prefix: string) => {
+  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) return `${prefix}-${crypto.randomUUID()}`
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`
+}
+
 // --- Store de Pinia ---
 
 export const useServicesStore = defineStore('services', () => {
@@ -56,6 +60,27 @@ export const useServicesStore = defineStore('services', () => {
 
   // --- Getters ---
   const clientList = computed(() => clients.value)
+
+  const normalizeClient = (client: Client): Client => ({
+    ...client,
+    sucursales: Array.isArray(client.sucursales)
+      ? client.sucursales.map((branch: any, index: number) => ({
+        ...branch,
+        id: branch.id || `${client.id}-branch-${index + 1}`,
+      }))
+      : [],
+  })
+
+  const normalizeSheet = (sheet: ServiceSheet): ServiceSheet => ({
+    ...sheet,
+    services: (Array.isArray(sheet.services) ? sheet.services : []).map((service, index) => ({
+      ...service,
+      id: service.id || `${sheet.clientId}-service-${index + 1}`,
+      sucursales_asignadas: Array.isArray(service.sucursales_asignadas)
+        ? service.sucursales_asignadas
+        : [],
+    })),
+  })
 
   // --- Actions ---
 
@@ -86,7 +111,7 @@ export const useServicesStore = defineStore('services', () => {
       }
 
       const result = (await getClientsFn(params)) as { data: { clients: Client[] } }
-      clients.value = result.data.clients.sort((a, b) =>
+      clients.value = result.data.clients.map(normalizeClient).sort((a, b) =>
         a.nombreComercial.localeCompare(b.nombreComercial),
       )
     } catch (err: any) {
@@ -99,10 +124,12 @@ export const useServicesStore = defineStore('services', () => {
   /**
    * Carga la ficha de servicio para un cliente específico.
    */
-  async function fetchServiceSheet(clientId: string) {
+  async function fetchServiceSheet(clientId: string): Promise<void> {
     if (!clientId) return
     loadingSheet.value = true
     error.value = null
+    serviceSheet.value = null
+    hasUnsavedChanges.value = false
     selectedClient.value = clients.value.find((c) => c.id === clientId) || null
 
     try {
@@ -110,7 +137,7 @@ export const useServicesStore = defineStore('services', () => {
       const result = (await getSheetFn({ clientId })) as { data: ServiceSheet | null }
 
       if (result.data) {
-        serviceSheet.value = result.data
+        serviceSheet.value = normalizeSheet(result.data)
       } else if (selectedClient.value) {
         // Si no existe, creamos una ficha vacía en memoria
         serviceSheet.value = {
@@ -120,8 +147,8 @@ export const useServicesStore = defineStore('services', () => {
           services: [],
         }
       }
-      hasUnsavedChanges.value = false
     } catch (err: any) {
+      serviceSheet.value = null
       error.value = err.message || 'Error al cargar la ficha de servicio.'
     } finally {
       loadingSheet.value = false
@@ -133,6 +160,7 @@ export const useServicesStore = defineStore('services', () => {
    */
   async function saveServiceSheet() {
     if (!serviceSheet.value) return
+    if (!serviceSheet.value.clientId || !selectedClient.value) throw new Error('No hay un cliente válido seleccionado.')
     savingSheet.value = true
     error.value = null
     try {
@@ -178,10 +206,16 @@ export const useServicesStore = defineStore('services', () => {
       service.requesterUid = authStore.user?.uid
     }
 
+    const serviceToSave = {
+      ...service,
+      id: service.id || createStableId(`${serviceSheet.value.clientId}-service`),
+      sucursales_asignadas: service.sucursales_asignadas || [],
+    }
+
     if (index === -1) {
-      serviceSheet.value.services.push(service)
+      serviceSheet.value.services.push(serviceToSave)
     } else {
-      serviceSheet.value.services[index] = service
+      serviceSheet.value.services[index] = serviceToSave
     }
     hasUnsavedChanges.value = true
   }
@@ -204,7 +238,9 @@ export const useServicesStore = defineStore('services', () => {
     const canView =
       authStore.userRole === 'Administrador' ||
       authStore.userRole === 'Jefe' ||
-      authStore.userRole === 'Coordinador Nacionales'
+      authStore.userRole === 'Coordinador Nacionales' ||
+      authStore.userRole === 'Coordinador Nacional' ||
+      authStore.userRole === 'Gerente'
 
     if (!canView) return
 
