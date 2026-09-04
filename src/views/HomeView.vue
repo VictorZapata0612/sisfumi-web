@@ -336,8 +336,8 @@ watch(
 
     <!-- Skeleton Loader -->
     <div v-if="dashboardStore.loading" class="animate-pulse space-y-6">
-      <div class="grid grid-cols-2 md:grid-cols-5 gap-4">
-        <div v-for="i in 5" :key="i" class="bg-[#151515] rounded-xl h-24"></div>
+      <div class="grid grid-cols-2 md:grid-cols-6 gap-4">
+        <div v-for="i in 6" :key="i" class="bg-[#151515] rounded-xl h-24"></div>
       </div>
       <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div class="lg:col-span-2 bg-[#151515] rounded-xl h-80"></div>
@@ -358,7 +358,7 @@ watch(
     <!-- Dashboard Content -->
     <div v-else-if="dashboardStore.kpis" class="space-y-6 animate-fade-in">
       <!-- KPIs Grid -->
-      <section class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+      <section class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-4">
         <!-- Clientes -->
         <RouterLink to="/clientes"
           class="bg-[#151515] p-4 rounded-xl border border-white/10 shadow-lg hover:border-indigo-500/50 hover:shadow-indigo-500/10 transition-all group">
@@ -371,6 +371,22 @@ watch(
             </div>
             <div class="bg-[#0a0a0a]/50 p-2 rounded-lg text-indigo-400">
               <i class="fas fa-users"></i>
+            </div>
+          </div>
+        </RouterLink>
+
+        <!-- Sucursales -->
+        <RouterLink to="/clientes"
+          class="bg-[#151515] p-4 rounded-xl border border-white/10 shadow-lg hover:border-orange-500/50 hover:shadow-orange-500/10 transition-all group">
+          <div class="flex justify-between items-start">
+            <div>
+              <p class="text-xs font-bold text-gray-400 uppercase tracking-wider">Sucursales</p>
+              <p class="text-2xl font-bold text-white mt-1 group-hover:text-orange-400 transition-colors">
+                {{ dashboardStore.kpis.totalBranches }}
+              </p>
+            </div>
+            <div class="bg-[#0a0a0a]/50 p-2 rounded-lg text-orange-400">
+              <i class="fas fa-store"></i>
             </div>
           </div>
         </RouterLink>

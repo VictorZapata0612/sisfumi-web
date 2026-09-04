@@ -33,6 +33,21 @@ const editingClientId = ref<string | null>(null)
 const { showDialog } = useDialog()
 const loadMoreTrigger = ref<HTMLElement | null>(null)
 
+const normalizeSearchText = (value: string) =>
+  value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, ' ')
+
+const matchesSearch = (client: any, term: string) => {
+  const normalizedTerm = normalizeSearchText(term)
+  return [client.nombreComercial, client.ciudad, client.zona]
+    .filter(Boolean)
+    .some((value) => normalizeSearchText(String(value)).includes(normalizedTerm))
+}
+
 // Propiedad computada para acceder fácilmente al perfil del cliente
 const profile = computed(() => clientsStore.selectedClientProfile)
 
@@ -55,13 +70,17 @@ const fetchNextBatch = async () => {
   clientsStore.loading = true
   try {
     const getClientsPage = httpsCallable(functions, 'getClientsPage')
+    const isSearching = Boolean(searchTerm.value.trim())
     const result = await getClientsPage({
       status: statusFilter.value === 'Todos' ? undefined : statusFilter.value,
-      searchTerm: searchTerm.value || undefined,
+      pageSize: isSearching ? 1000 : 12,
       startAfterDocId: pagination.pageHistory[pagination.currentPage - 1],
     })
 
-    const newClients = (result.data as { clients: any[] }).clients
+    const fetchedClients = (result.data as { clients: any[] }).clients
+    const newClients = isSearching
+      ? fetchedClients.filter((client) => matchesSearch(client, searchTerm.value))
+      : fetchedClients
     // Append instead of replace for infinite scroll
     if (pagination.currentPage === 1) {
       clientsStore.clients = newClients
@@ -75,7 +94,7 @@ const fetchNextBatch = async () => {
         pagination.pageHistory.push(lastId)
       }
     }
-    pagination.isLastPage = newClients.length < 12 // Asumiendo PAGE_SIZE = 12
+    pagination.isLastPage = isSearching || newClients.length < 12
   } catch (error: any) {
     clientsStore.error = 'No se pudieron cargar los clientes. ' + error.message
   } finally {

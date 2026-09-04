@@ -7,6 +7,7 @@ import { functions } from '@/firebase/config'
 // Definimos las interfaces para que TypeScript nos ayude con la estructura de datos
 interface Kpis {
   totalClients: number
+  totalBranches: number
   activeServices: number
   visitsThisMonth: number
   completionRateThisMonth: number

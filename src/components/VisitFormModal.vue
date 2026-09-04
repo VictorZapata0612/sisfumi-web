@@ -13,6 +13,7 @@ import { functions } from '@/firebase/config'
 import { useAuthStore } from '@/stores/auth'
 import { useToast } from '@/composables/useToast'
 import { useDialog } from '@/composables/useDialog'
+import { onClickOutside } from '@vueuse/core'
 
 const props = defineProps<{
   show: boolean
@@ -39,10 +40,74 @@ const localVisit = ref<
 const activeTab = ref('details')
 const organizerName = ref<string | null>(null)
 const newChatNote = ref('')
+const clientSearchTerm = ref('')
+const showClientResults = ref(false)
+const clientSearchContainer = ref<HTMLElement | null>(null)
+
+const formatDateInput = (date: Date) => {
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
+const formatColombiaDateTime = (date: Date) => {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Bogota',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(date)
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]))
+  return {
+    date: `${values.year}-${values.month}-${values.day}`,
+    time: `${values.hour}:${values.minute}`,
+  }
+}
+
+const normalizeSearchText = (value: string) =>
+  value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, ' ')
+
+const filteredClients = computed(() => {
+  const normalizedSearch = normalizeSearchText(clientSearchTerm.value)
+  if (!normalizedSearch) return planningStore.clients.slice(0, 10)
+
+  return planningStore.clients.filter((client) =>
+    [client.nombreComercial, client.ciudad, client.zona]
+      .filter(Boolean)
+      .some((value) => normalizeSearchText(String(value)).includes(normalizedSearch)),
+  )
+})
 
 onMounted(() => {
   planningStore.fetchVisitTemplates()
 })
+
+onClickOutside(clientSearchContainer, () => {
+  showClientResults.value = false
+})
+
+const selectClient = (client: Client) => {
+  localVisit.value.id_cliente = client.id
+  clientSearchTerm.value = client.nombreComercial
+  showClientResults.value = false
+}
+
+const handleClientSearchInput = () => {
+  const selectedClient = planningStore.clients.find((client) => client.id === localVisit.value.id_cliente)
+  if (!selectedClient || normalizeSearchText(selectedClient.nombreComercial) !== normalizeSearchText(clientSearchTerm.value)) {
+    localVisit.value.id_cliente = ''
+  }
+  showClientResults.value = true
+}
 
 const isEditMode = computed(() => !!localVisit.value.id)
 
@@ -79,15 +144,17 @@ watch(
         const client = planningStore.clients.find((c: Client) => c.id === props.visit?.id_cliente)
         if (client) {
           localVisit.value.id_cliente = client.id
+          clientSearchTerm.value = client.nombreComercial
         }
         const visitDate = props.visit.start || props.visit.fecha_visita
         const dateObj = new Date(visitDate)
+        const colombiaDateTime = !isNaN(dateObj.getTime()) ? formatColombiaDateTime(dateObj) : null
         localVisit.value = {
           // @ts-ignore
           ...(props.visit.extendedProps || props.visit),
-          fecha_visita_date: !isNaN(dateObj.getTime()) ? dateObj.toISOString().split('T')[0] : '',
+          fecha_visita_date: colombiaDateTime?.date || '',
           fecha_visita_time: !isNaN(dateObj.getTime())
-            ? String(dateObj.toTimeString().split(' ')[0] ?? '00:00').substring(0, 5)
+            ? colombiaDateTime?.time || '08:00'
             : '08:00',
         }
         nextTick(() => {
@@ -95,10 +162,11 @@ watch(
           localVisit.value.ubicacion = (props.visit?.extendedProps as Visit)?.ubicacion || props.visit?.ubicacion
         })
       } else {
+        clientSearchTerm.value = ''
         localVisit.value = {
           fecha_visita_date: props.selectedDate
-            ? props.selectedDate.toISOString().split('T')[0]
-            : new Date().toISOString().split('T')[0],
+            ? formatDateInput(props.selectedDate)
+            : formatDateInput(new Date()),
           fecha_visita_time: '08:00',
           estado_visita: 'Programada',
           fumigadores_asignados: [],
@@ -172,7 +240,10 @@ const handleSubmit = async () => {
   localVisit.value.zona = visitZone
 
   const visitToSave = { ...localVisit.value }
-  const combinedDateTime = new Date(`${visitToSave.fecha_visita_date}T${visitToSave.fecha_visita_time || '00:00'}:00`)
+  const combinedDateTime = new Date(
+    `${visitToSave.fecha_visita_date}T${visitToSave.fecha_visita_time || '00:00'}:00-05:00`,
+  )
+  visitToSave.duracion_minutos = visitToSave.duracion_minutos || 60
   visitToSave.fecha_visita = combinedDateTime.toISOString()
   delete visitToSave.fecha_visita_date
   delete visitToSave.fecha_visita_time
@@ -196,6 +267,7 @@ const handleSubmit = async () => {
     const result = (await checkForConflictsFn({
       technicians: technicians,
       startTimeISO: combinedDateTime.toISOString(),
+      durationMinutes: visitToSave.duracion_minutos,
       visitIdToIgnore: visitToSave.id || null,
     })) as { data: { hasConflict: boolean; conflictingClient?: string; conflictingTechnician?: string } }
 
@@ -346,10 +418,28 @@ const addChatNote = () => {
             <div :class="{ 'md:col-span-2': isEditMode || planningStore.visitTemplates.length === 0 }">
               <label class="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2 block">Cliente <span
                   class="text-[#d60000]">*</span></label>
-              <select v-model="localVisit.id_cliente" class="input-field-dark w-full" required>
-                <option disabled value="">Seleccione un cliente...</option>
-                <option v-for="c in planningStore.clients" :key="c.id" :value="c.id">{{ c.nombreComercial }}</option>
-              </select>
+              <div ref="clientSearchContainer" class="relative">
+                <input v-model="clientSearchTerm" type="search" class="input-field-dark w-full"
+                  placeholder="Buscar cliente..." autocomplete="off"
+                  @focus="showClientResults = true"
+                  @input="handleClientSearchInput" />
+                <i class="fas fa-search absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none"></i>
+
+                <div v-if="showClientResults"
+                  class="absolute left-0 right-0 top-full mt-2 z-30 max-h-56 overflow-y-auto custom-scrollbar bg-[#151515] border border-white/10 rounded-lg shadow-2xl">
+                  <button v-for="client in filteredClients" :key="client.id" type="button"
+                    class="block w-full px-4 py-3 text-left hover:bg-white/5 border-b border-white/5 last:border-0"
+                    @click="selectClient(client)">
+                    <span class="block text-sm font-semibold text-white">{{ client.nombreComercial }}</span>
+                    <span class="block text-xs text-gray-400">{{ client.ciudad || client.zona || 'Sin ubicación' }}</span>
+                  </button>
+                  <div v-if="filteredClients.length === 0" class="px-4 py-5 text-center text-sm text-gray-500">
+                    No se encontraron clientes.
+                  </div>
+                </div>
+              </div>
+              <input v-model="localVisit.id_cliente" type="text" required tabindex="-1" aria-hidden="true"
+                class="sr-only" />
             </div>
           </div>
 

@@ -68,13 +68,7 @@ const checkMobile = () => {
 }
 
 const handleCalendarChange = () => {
-  const selectedOption = (document.getElementById('calendarAccountSelector') as HTMLSelectElement)?.selectedOptions[0];
-  const coordinatorZone = selectedOption?.dataset.zona;
-
-  if (coordinatorZone) {
-    selectedZone.value = coordinatorZone;
-  }
-
+  planningStore.selectedCalendarUid = selectedCalendarUid.value
   loadData();
 }
 
@@ -172,7 +166,10 @@ const eventsByDay = computed(() => {
     const day = new Date(event.start).getDate()
     // Aseguramos que el evento sea del mes actual para el mapa
     const eventDate = new Date(event.start)
-    if (eventDate.getMonth() === currentDate.value.getMonth() && eventDate.getFullYear() === currentDate.value.getFullYear()) {
+    const belongsToVisibleRange = calendarView.value === 'week' ||
+      (eventDate.getMonth() === currentDate.value.getMonth() &&
+        eventDate.getFullYear() === currentDate.value.getFullYear())
+    if (belongsToVisibleRange) {
       if (!eventsMap.has(day)) {
         eventsMap.set(day, [])
       }
@@ -284,13 +281,32 @@ const getEventStyle = (event: any) => {
 }
 
 const loadData = () => {
+  planningStore.selectedCalendarUid = selectedCalendarUid.value
+  const dateRange = calendarView.value === 'week' ? (() => {
+    const referenceDate = selectedDate.value || currentDate.value
+    const weekStart = new Date(referenceDate)
+    const dayOfWeek = weekStart.getDay()
+    weekStart.setDate(weekStart.getDate() - dayOfWeek + (dayOfWeek === 0 ? -6 : 1))
+    weekStart.setHours(0, 0, 0, 0)
+    const weekEnd = new Date(weekStart)
+    weekEnd.setDate(weekEnd.getDate() + 7)
+
+    return {
+      startDateISO: weekStart.toISOString(),
+      endDateISO: weekEnd.toISOString(),
+    }
+  })() : undefined
+
   planningStore.fetchPlanningData(
     currentDate.value.getFullYear(),
     currentDate.value.getMonth(),
     selectedZone.value,
     selectedCalendarUid.value,
+    dateRange,
   )
 }
+
+watch(calendarView, loadData)
 
 watch(
   () => planningStore.lastSyncUpdate,
@@ -321,6 +337,9 @@ watch(needsAuthRefresh, (newVal) => {
 const changeMonth = (offset: number) => {
   currentDate.value.setMonth(currentDate.value.getMonth() + offset)
   currentDate.value = new Date(currentDate.value)
+  if (calendarView.value === 'week') {
+    selectedDate.value = new Date(currentDate.value)
+  }
   planningStore.clearCalendarData()
   loadData()
 }

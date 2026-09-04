@@ -2238,7 +2238,12 @@ exports.checkForConflicts = onCall({ cors: true }, async (request) => {
     );
   }
 
-  const { technicians, startTimeISO, visitIdToIgnore } = request.data;
+  const {
+    technicians,
+    startTimeISO,
+    visitIdToIgnore,
+    durationMinutes = 60,
+  } = request.data;
   if (!technicians || !Array.isArray(technicians) || !startTimeISO) {
     throw new HttpsError(
       "invalid-argument",
@@ -2251,13 +2256,22 @@ exports.checkForConflicts = onCall({ cors: true }, async (request) => {
   }
 
   const newVisitStart = new Date(startTimeISO);
-  // Se define una ventana de conflicto de 4 horas (2 horas antes, 2 horas después).
+  if (Number.isNaN(newVisitStart.getTime())) {
+    throw new HttpsError("invalid-argument", "La fecha de la visita no es válida.");
+  }
+
+  const normalizedDurationMinutes = Number(durationMinutes);
+  if (!Number.isFinite(normalizedDurationMinutes) || normalizedDurationMinutes <= 0) {
+    throw new HttpsError("invalid-argument", "La duración de la visita no es válida.");
+  }
+  const visitDurationMs = normalizedDurationMinutes * 60 * 1000;
   const conflictWindowStart = new Date(
-    newVisitStart.getTime() - 2 * 60 * 60 * 1000
+    newVisitStart.getTime() - visitDurationMs
   );
   const conflictWindowEnd = new Date(
-    newVisitStart.getTime() + 2 * 60 * 60 * 1000
+    newVisitStart.getTime() + visitDurationMs
   );
+  const newVisitEnd = conflictWindowEnd;
 
   try {
     const visitsRef = db.collection("visitas");
@@ -2274,6 +2288,18 @@ exports.checkForConflicts = onCall({ cors: true }, async (request) => {
     for (const doc of snapshot.docs) {
       if (doc.id !== visitIdToIgnore) {
         const existingVisit = doc.data();
+        if (existingVisit.estado_visita === "Cancelada") continue;
+
+        const existingStart = existingVisit.fecha_visita?.toDate?.();
+        if (!existingStart) continue;
+        const existingDurationMinutes = Number(existingVisit.duracion_minutos) || 60;
+        const existingEnd = new Date(
+          existingStart.getTime() + existingDurationMinutes * 60 * 1000
+        );
+        if (existingStart >= newVisitEnd || existingEnd <= newVisitStart) {
+          continue;
+        }
+
         const conflictingTechnician = technicians.find((tech) =>
           existingVisit.fumigadores_asignados.includes(tech)
         );
@@ -2911,6 +2937,13 @@ exports.getConsolidatedPlanningData = onCall(
       "Gerente"
     ].includes(auth.token.role);
 
+    if (calendarTargetUid && calendarTargetUid !== "internal" && !hasGlobalAccess) {
+      throw new HttpsError(
+        "permission-denied",
+        "No tienes permiso para consultar ese calendario."
+      );
+    }
+
     let zoneToFilter = null;
     if (hasGlobalAccess) {
       if (requestedZone && requestedZone !== "Todos") {
@@ -2925,15 +2958,25 @@ exports.getConsolidatedPlanningData = onCall(
       );
     }
 
-    const { year, month } = data;
-    if (typeof year !== "number" || typeof month !== "number") {
+    const { year, month, startDateISO, endDateISO } = data;
+    if (
+      (typeof year !== "number" || typeof month !== "number") &&
+      (!startDateISO || !endDateISO)
+    ) {
       throw new HttpsError("invalid-argument", "Se requieren el año y el mes.");
     }
 
     try {
       const db = admin.firestore();
-      const startDate = new Date(Date.UTC(year, month, 1));
-      const endDate = new Date(Date.UTC(year, month + 1, 1));
+      const startDate = startDateISO
+        ? new Date(startDateISO)
+        : new Date(Date.UTC(year, month, 1));
+      const endDate = endDateISO
+        ? new Date(endDateISO)
+        : new Date(Date.UTC(year, month + 1, 1));
+      if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) {
+        throw new HttpsError("invalid-argument", "El rango de fechas no es válido.");
+      }
       const sixMonthsAgo = new Date(
         new Date().setMonth(new Date().getMonth() - 6)
       );
@@ -2959,14 +3002,17 @@ exports.getConsolidatedPlanningData = onCall(
 
       const techniciansPromise = techniciansQuery.get();
       // ✅ MEJORA: Obtener solo los clientes activos para poblar los modales.
-      const clientsPromise = db
+      let clientsQuery = db
         .collection("clientes")
-        .where("estado", "==", "Activo")
-        .get();
-      // ✅ NUEVO: Obtener todas las fichas de servicio para adjuntarlas a los clientes.
-      // Esto es crucial para que el modal de creación de visitas pueda mostrar los servicios disponibles.
-      const serviceSheetsPromise = db.collection("servicios").get();
-
+        .where("estado", "==", "Activo");
+      if (zoneToFilter) {
+        clientsQuery = clientsQuery.where(
+          "zonasDeSucursales",
+          "array-contains",
+          zoneToFilter
+        );
+      }
+      const clientsQueryPromise = clientsQuery.get();
       // ✅ MEJORA: Obtener visitas pendientes de forma más eficiente.
       const pendingVisitsPromise = pendingVisitsQuery
         .where("isUrgent", "==", true)
@@ -2977,7 +3023,7 @@ exports.getConsolidatedPlanningData = onCall(
 
       // ✅ NUEVO: Obtener eventos de Google Calendar si se solicita.
       let googleEventsPromise = Promise.resolve([]);
-      if (calendarTargetUid) {
+      if (calendarTargetUid && calendarTargetUid !== "internal") {
         const integrationDoc = await db
           .collection("calendar_integrations")
           .doc(calendarTargetUid)
@@ -3035,16 +3081,28 @@ exports.getConsolidatedPlanningData = onCall(
         pendingSnapshot,
         techniciansSnapshot,
         clientsSnapshot,
-        serviceSheetsSnapshot,
         googleEventsResult,
       ] = await Promise.all([
         monthlyVisitsPromise,
         pendingVisitsPromise,
         techniciansPromise,
-        clientsPromise,
-        serviceSheetsPromise,
+        clientsQueryPromise,
         googleEventsPromise,
       ]);
+
+      // Cargar solo las fichas de los clientes visibles en esta zona.
+      const clientIds = clientsSnapshot.docs.map((doc) => doc.id);
+      const serviceSheetSnapshots = await Promise.all(
+        Array.from({ length: Math.ceil(clientIds.length / 30) }, (_, index) =>
+          db
+            .collection("servicios")
+            .where("clientId", "in", clientIds.slice(index * 30, index * 30 + 30))
+            .get()
+        )
+      );
+      const serviceSheetsSnapshot = {
+        docs: serviceSheetSnapshots.flatMap((snapshot) => snapshot.docs),
+      };
 
       // Si la obtención de eventos de Google resultó en un error de autenticación, lo notificamos.
       if (googleEventsResult?.error === "needs-auth-refresh") {
@@ -3533,10 +3591,7 @@ exports.getConsolidatedDashboardStats = onCall(
 
       // --- OPTIMIZACIÓN: Se definen las promesas para ejecutar en paralelo ---
       const servicesPromise = servicesQuery.get();
-      const clientsPromise = clientsQuery
-        .where("estado", "==", "Activo")
-        .count()
-        .get();
+      const clientsPromise = clientsQuery.where("estado", "==", "Activo").get();
 
       // Consulta de visitas para el rango seleccionado (mes, semana, día)
       const visitsInRangePromise = visitsQuery
@@ -3573,7 +3628,7 @@ exports.getConsolidatedDashboardStats = onCall(
       // --- Ejecutar todas las promesas ---
       const [
         servicesSnapshot,
-        clientsCountSnapshot,
+        clientsSnapshot,
         visitsInRangeSnapshot,
         visitsForChartSnapshot,
         pendingVisitsSnapshot,
@@ -3600,10 +3655,13 @@ exports.getConsolidatedDashboardStats = onCall(
           : null;
         return { id: doc.id, ...data, fecha_visita: fechaVisita };
       });
-      // ✅ CORRECCIÓN: Manejar el caso donde no hay clientes.
-      const totalClients = clientsCountSnapshot
-        ? clientsCountSnapshot.data().count
-        : 0;
+      const activeClients = clientsSnapshot.docs.map((doc) => doc.data());
+      const totalClients = activeClients.length;
+      const totalBranches = activeClients.reduce(
+        (total, client) =>
+          total + (Array.isArray(client.sucursales) ? client.sucursales.length : 0),
+        0
+      );
       const visitsThisMonthCount = visitsInRange.length;
       const validVisitsInRange = visitsInRange.filter((v) => v.fecha_visita);
 
@@ -3748,6 +3806,7 @@ exports.getConsolidatedDashboardStats = onCall(
       return {
         kpis: {
           totalClients,
+          totalBranches,
           activeServices,
           visitsThisMonth: visitsThisMonthCount,
           revenueThisMonth,
@@ -4660,40 +4719,6 @@ exports.exportPaymentDataToExcel = onCall(
     return { data: { fileData: wbout } };
   }
 );
-
-exports.checkForConflicts = onCall({ cors: true }, async (request) => {
-  // Función para detectar si un técnico ya tiene visitas a la misma hora
-  const { technicians, startTimeISO, visitIdToIgnore } = request.data;
-  if (!technicians || !technicians.length) return { hasConflict: false };
-
-  const start = new Date(startTimeISO);
-  // Ventana de conflicto: 2 horas antes y 2 horas después
-  const windowStart = new Date(start.getTime() - 2 * 3600000);
-  const windowEnd = new Date(start.getTime() + 2 * 3600000);
-
-  const snapshot = await db
-    .collection("visitas")
-    .where("fumigadores_asignados", "array-contains-any", technicians)
-    .where("fecha_visita", ">=", windowStart)
-    .where("fecha_visita", "<=", windowEnd)
-    .get();
-
-  for (const doc of snapshot.docs) {
-    if (doc.id !== visitIdToIgnore) {
-      const data = doc.data();
-      const conflictTech = technicians.find((t) =>
-        data.fumigadores_asignados.includes(t)
-      );
-      return {
-        hasConflict: true,
-        conflictingClient: data.nombre_cliente,
-        conflictingTechnician: conflictTech,
-        conflictTime: data.fecha_visita.toDate().toISOString(),
-      };
-    }
-  }
-  return { hasConflict: false };
-});
 
 // --- Funciones de Disparo (Triggers) ---
 

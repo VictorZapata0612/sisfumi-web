@@ -15,6 +15,7 @@ export interface Visit {
   zona: string
   estado_visita: 'Programada' | 'Realizada' | 'Cancelada'
   fumigadores_asignados: string[]
+  duracion_minutos?: number
   isUrgent?: boolean
   [key: string]: any // Para otros campos
 }
@@ -22,6 +23,7 @@ export interface Visit {
 export interface Client {
   id: string
   nombreComercial: string
+  ciudad?: string
   zona: string
   direccion: string
   // @ts-ignore
@@ -87,7 +89,9 @@ export const usePlanningStore = defineStore('planning', () => {
       id: v.id,
       title: v.nombre_cliente,
       start: new Date(v.fecha_visita as string),
-      end: new Date(new Date(v.fecha_visita as string).getTime() + 60 * 60 * 1000), // Asumir 1 hora
+      end: new Date(
+        new Date(v.fecha_visita as string).getTime() + (v.duracion_minutos || 60) * 60 * 1000,
+      ),
       source: 'internal',
       extendedProps: v, // Guardar todos los datos de la visita
     }))
@@ -114,6 +118,7 @@ export const usePlanningStore = defineStore('planning', () => {
     month: number,
     zone: string,
     calendarTargetUid: string | null,
+    dateRange?: { startDateISO: string; endDateISO: string },
   ) {
     loading.value = true
     error.value = null
@@ -126,6 +131,7 @@ export const usePlanningStore = defineStore('planning', () => {
         month,
         zone,
         calendarTargetUid,
+        ...dateRange,
       })) as {
         data: {
           monthlyVisits: Visit[]
