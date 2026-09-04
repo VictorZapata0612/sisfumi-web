@@ -5694,7 +5694,9 @@ exports.batchImportClients = onCall({ cors: true }, async (request) => {
   return { success: true, imported: count };
 });
 
-exports.generateClientImportTemplate = onCall(
+// La plantilla se genera exclusivamente en el frontend para mantener un único formato.
+// Este bloque se conserva temporalmente como referencia histórica y no se exporta.
+const legacyGenerateClientImportTemplate = onCall(
   { cors: true },
   async (request) => {
     const { auth } = request;

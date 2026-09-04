@@ -34,6 +34,7 @@ const importPreview = ref<{
 } | null>(null)
 const importProgress = ref(0)
 const MAX_BRANCHES = 50
+const MAX_TEMPLATE_ROWS = 5000
 
 // Cabeceras EXACTAS de la hoja "Plantilla Clientes"
 const BASE_EXCEL_HEADERS = [
@@ -115,9 +116,11 @@ const mapRowToClient = (row: any[]) => {
 }
 
 const sanitizeName = (name: string) =>
-  // Eliminar espacios y puntos para asegurar compatibilidad total con nombres de rango y evitar errores de columna
-  // Ejemplo: "Bogotá D.C." -> "BogotáDC"
-  name.trim().replace(/\./g, '').replace(/\s+/g, '')
+  name
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^A-Za-z0-9_]/g, '')
+    .trim()
 
 const downloadTemplate = async () => {
   loading.value = true
@@ -148,7 +151,7 @@ const downloadTemplate = async () => {
       ]).flat(),
     ]
 
-    const MAX_ROWS = 5000
+    const MAX_ROWS = MAX_TEMPLATE_ROWS
 
     // Helper seguro para validaciones simples
     const addListDV = (sheetName: string, count: number, colIdx1Based: number) => {
@@ -250,7 +253,7 @@ const downloadTemplate = async () => {
     wsDepsByZone.state = 'hidden'
 
     // --- FÓRMULAS AUTOMÁTICAS ---
-    for (let i = 2; i <= 1000; i++) {
+    for (let i = 2; i <= MAX_TEMPLATE_ROWS; i++) {
       // Uso de INDIRECT para evitar errores de referencia (#REF!) si el usuario mueve filas
       ws.getCell(`D${i}`).value = {
         formula: `IF(INDIRECT("E"&ROW())="Valle del Cauca", "Valle del Cauca", IF(INDIRECT("E"&ROW())="Norte de Santander", "Norte de Santander", IF(INDIRECT("E"&ROW())<>"", "Nacionales", "")))`
@@ -329,6 +332,7 @@ const downloadTemplate = async () => {
     await ws.protect('controltotal', {
       selectLockedCells: true, selectUnlockedCells: true, formatCells: true,
       formatColumns: true, formatRows: true, insertRows: true, deleteRows: true,
+      insertColumns: true, deleteColumns: true,
       sort: true, autoFilter: true
     })
 
