@@ -13,7 +13,7 @@ export interface Client {
   estado: string
   // Añadimos más campos para el perfil
   departamento?: string
-  sucursales?: { nombre: string; direccion: string }[]
+  sucursales?: { nombre: string; direccion: string; zona?: string }[]
   contactoPrincipal?: { nombre: string; celular: string; email: string }
   contactoFinanciero?: { nombre: string; celular: string; email: string }
 }

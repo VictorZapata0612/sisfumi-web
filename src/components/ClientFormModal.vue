@@ -136,6 +136,14 @@ const handleSave = async () => {
     errors.push('No puede haber sucursales con el mismo nombre.')
   }
 
+  form.value.sucursales.forEach((sucursal, index) => {
+    const hasAnyValue = Boolean(sucursal.nombre.trim() || sucursal.direccion.trim() || sucursal.zona.trim())
+    const isComplete = Boolean(sucursal.nombre.trim() && sucursal.direccion.trim() && sucursal.zona.trim())
+    if (hasAnyValue && !isComplete) {
+      errors.push(`Sucursal ${index + 1}: complete nombre, dirección y zona.`)
+    }
+  })
+
   if (errors.length > 0) {
     errorMessage.value = errors.join('\n')
     loading.value = false

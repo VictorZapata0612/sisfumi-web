@@ -150,6 +150,56 @@ function assertRole(request, allowedRoles) {
   }
 }
 
+const GLOBAL_CLIENT_ROLES = [
+  "Administrador",
+  "Jefe",
+  "Coordinador Nacionales",
+  "Coordinador Nacional",
+  "Gerente",
+];
+
+const CLIENT_MANAGER_ROLES = [
+  ...GLOBAL_CLIENT_ROLES,
+  "Coordinador Valle",
+  "Coordinador Norte de Santander",
+];
+
+function assertClientManager(request) {
+  assertRole(request, CLIENT_MANAGER_ROLES);
+}
+
+function hasGlobalClientAccess(request) {
+  return GLOBAL_CLIENT_ROLES.includes(request.auth.token.role);
+}
+
+function clientBelongsToUserZone(client, request) {
+  if (hasGlobalClientAccess(request)) return true;
+  const userZone = request.auth.token.zona;
+  const clientZones = Array.isArray(client.zonasDeSucursales)
+    ? client.zonasDeSucursales
+    : [client.zona];
+  return Boolean(userZone && clientZones.includes(userZone));
+}
+
+async function getAuthorizedClient(request, clientId) {
+  assertAuth(request);
+  if (!clientId) {
+    throw new HttpsError("invalid-argument", "El ID de cliente es obligatorio.");
+  }
+  const clientDoc = await db.collection("clientes").doc(clientId).get();
+  if (!clientDoc.exists) {
+    throw new HttpsError("not-found", "El cliente solicitado no existe.");
+  }
+  const client = clientDoc.data();
+  if (!clientBelongsToUserZone(client, request)) {
+    throw new HttpsError(
+      "permission-denied",
+      "No tienes permiso para acceder a este cliente."
+    );
+  }
+  return { ref: clientDoc.ref, data: client, id: clientDoc.id };
+}
+
 /**
  * Crea un registro en la colección de auditoría (audit_logs).
  * @param {string} action - Nombre de la acción (ej: 'CREATE_CLIENT').
@@ -374,7 +424,15 @@ exports.getAllClients = onCall({ cors: true }, async (request) => {
   assertAuth(request);
 
   try {
-    const snapshot = await db.collection("clientes").orderBy("nombreComercial").get();
+    let clientsQuery = db.collection("clientes");
+    if (!hasGlobalClientAccess(request) && request.auth.token.zona) {
+      clientsQuery = clientsQuery.where(
+        "zonasDeSucursales",
+        "array-contains",
+        request.auth.token.zona
+      );
+    }
+    const snapshot = await clientsQuery.get();
     const clients = snapshot.docs.map((doc) => {
       const data = doc.data();
       return {
@@ -384,6 +442,7 @@ exports.getAllClients = onCall({ cors: true }, async (request) => {
       };
     });
 
+    clients.sort((a, b) => String(a.nombreComercial || '').localeCompare(String(b.nombreComercial || '')))
     return { clients };
   } catch (error) {
     logger.error("Error en getAllClients:", error);
@@ -396,21 +455,11 @@ exports.getAllClients = onCall({ cors: true }, async (request) => {
  * Esta función estaba faltando o tenía un nombre incorrecto.
  */
 exports.getClientById = onCall({ cors: true }, async (request) => {
-  assertAuth(request);
   const { clientId } = request.data;
 
-  if (!clientId)
-    throw new HttpsError(
-      "invalid-argument",
-      "El ID del cliente es obligatorio."
-    );
-
   try {
-    const doc = await db.collection("clientes").doc(clientId).get();
-    if (!doc.exists)
-      throw new HttpsError("not-found", "El cliente solicitado no existe.");
-
-    const clientData = doc.data();
+    const authorizedClient = await getAuthorizedClient(request, clientId);
+    const clientData = { ...authorizedClient.data };
 
     // Serialización de fechas para evitar errores en el cliente
     const convertTimestampToISO = (key) => {
@@ -421,8 +470,9 @@ exports.getClientById = onCall({ cors: true }, async (request) => {
     convertTimestampToISO("createdAt");
     convertTimestampToISO("updatedAt");
 
-    return { client: { id: doc.id, ...clientData } };
+    return { client: { id: authorizedClient.id, ...clientData } };
   } catch (error) {
+    if (error instanceof HttpsError) throw error;
     logger.error(`Error obteniendo cliente ${clientId}:`, error);
     throw new HttpsError(
       "internal",
@@ -435,7 +485,7 @@ exports.getClientById = onCall({ cors: true }, async (request) => {
  * Añade un nuevo documento de cliente.
  */
 exports.addClient = onCall({ cors: true }, async (request) => {
-  assertAuth(request);
+  assertClientManager(request);
   const { clientData } = request.data;
 
   // Validación básica de campos requeridos
@@ -446,6 +496,9 @@ exports.addClient = onCall({ cors: true }, async (request) => {
     );
   if (!clientData.nit)
     throw new HttpsError("invalid-argument", "El NIT es obligatorio.");
+  if (!hasGlobalClientAccess(request) && !clientBelongsToUserZone(clientData, request)) {
+    throw new HttpsError("permission-denied", "No puedes crear clientes fuera de tu zona.");
+  }
 
   try {
     // Verificar duplicados por NIT
@@ -489,13 +542,21 @@ exports.addClient = onCall({ cors: true }, async (request) => {
  * Actualiza un documento de cliente.
  */
 exports.updateClient = onCall({ cors: true }, async (request) => {
-  assertAuth(request);
+  assertClientManager(request);
   const { clientId, clientData } = request.data;
 
   if (!clientId)
     throw new HttpsError("invalid-argument", "ID de cliente requerido.");
 
   try {
+    const authorizedClient = await getAuthorizedClient(request, clientId);
+    if (
+      !hasGlobalClientAccess(request) &&
+      clientData.zonasDeSucursales &&
+      !clientBelongsToUserZone(clientData, request)
+    ) {
+      throw new HttpsError("permission-denied", "No puedes mover el cliente fuera de tu zona.");
+    }
     const updatePayload = {
       ...clientData,
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -1050,31 +1111,37 @@ exports.deleteClientAndRelatedData = onCall({ cors: true }, async (request) => {
   assertRole(request, ["Administrador", "Jefe"]);
   const { clientId } = request.data;
 
-  const batch = db.batch();
-
   try {
+    await getAuthorizedClient(request, clientId);
+
     // 1. Eliminar Visitas
     const visitsSnap = await db
       .collection("visitas")
       .where("id_cliente", "==", clientId)
       .get();
-    visitsSnap.forEach((doc) => batch.delete(doc.ref));
+    const documentsToDelete = [
+      ...visitsSnap.docs,
+    ];
 
     // 2. Eliminar Fichas de Servicio
     const servicesSnap = await db
       .collection("servicios")
       .where("clientId", "==", clientId)
       .get();
-    servicesSnap.forEach((doc) => batch.delete(doc.ref));
+    documentsToDelete.push(...servicesSnap.docs);
 
     // 3. Eliminar Facturas (Opcional, a veces se prefiere mantener por histórico contable)
     // En este caso, NO eliminamos facturas para mantener integridad fiscal.
 
     // 4. Eliminar Cliente
-    const clientRef = db.collection("clientes").doc(clientId);
-    batch.delete(clientRef);
+    documentsToDelete.push(db.collection("clientes").doc(clientId));
 
-    await batch.commit();
+    // Firestore limita cada batch a 500 operaciones.
+    for (let index = 0; index < documentsToDelete.length; index += 450) {
+      const batch = db.batch();
+      documentsToDelete.slice(index, index + 450).forEach((docRef) => batch.delete(docRef));
+      await batch.commit();
+    }
 
     await createAuditLog(
       "DELETE_CLIENT",
@@ -5571,8 +5638,12 @@ exports.getTechnicianVisitHistoryPage = onCall(
 );
 
 exports.batchImportClients = onCall({ cors: true }, async (request) => {
-  assertRole(request, ["Administrador"]);
+  assertClientManager(request);
   const { clients } = request.data;
+
+  if (!Array.isArray(clients) || clients.length === 0) {
+    throw new HttpsError("invalid-argument", "Se requiere un lote de clientes.");
+  }
 
   const batch = db.batch();
   let count = 0;
@@ -5585,11 +5656,34 @@ exports.batchImportClients = onCall({ cors: true }, async (request) => {
       `Máximo ${BATCH_LIMIT} clientes por lote.`
     );
 
+  const nits = clients.map((client) => String(client.nit || "").trim()).filter(Boolean);
+  if (new Set(nits).size !== nits.length) {
+    throw new HttpsError("already-exists", "El lote contiene NIT duplicados.");
+  }
+  const existingNits = new Set();
+  for (let index = 0; index < nits.length; index += 30) {
+    const snapshot = await db
+      .collection("clientes")
+      .where("nit", "in", nits.slice(index, index + 30))
+      .get();
+    snapshot.forEach((doc) => existingNits.add(String(doc.data().nit || "").trim()));
+  }
+  const duplicateNit = nits.find((nit) => existingNits.has(nit));
+  if (duplicateNit) {
+    throw new HttpsError("already-exists", `Ya existe un cliente con el NIT ${duplicateNit}.`);
+  }
+
   clients.forEach((c) => {
+    if (!hasGlobalClientAccess(request) && !clientBelongsToUserZone(c, request)) {
+      throw new HttpsError("permission-denied", "El lote contiene clientes fuera de tu zona.");
+    }
     const ref = db.collection("clientes").doc();
     batch.set(ref, {
       ...c,
       nombreComercial_lower: (c.nombreComercial || "").toLowerCase(),
+      zonasDeSucursales: c.zonasDeSucursales || Array.from(
+        new Set([c.zona, ...(c.sucursales || []).map((s) => s.zona)])
+      ).filter(Boolean),
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
       createdBy: "IMPORT_SCRIPT",
     });
@@ -6267,14 +6361,13 @@ exports.updateSupportFileOrder = onCall({ cors: true }, async (request) => {
 });
 
 exports.getClientProfileData = onCall({ cors: true }, async (request) => {
-  assertAuth(request);
   const { clientId } = request.data;
 
   try {
+    const authorizedClient = await getAuthorizedClient(request, clientId);
     // Ejecutar consultas en paralelo para mayor velocidad
-    const [clientDoc, serviceSheetSnap, upcomingSnap, historySnap] =
+    const [serviceSheetSnap, upcomingSnap, historySnap] =
       await Promise.all([
-        db.collection("clientes").doc(clientId).get(),
         db
           .collection("servicios")
           .where("clientId", "==", clientId)
@@ -6296,11 +6389,8 @@ exports.getClientProfileData = onCall({ cors: true }, async (request) => {
           .get(),
       ]);
 
-    if (!clientDoc.exists)
-      throw new HttpsError("not-found", "Cliente no encontrado");
-
     return {
-      client: { id: clientDoc.id, ...clientDoc.data() },
+      client: { id: authorizedClient.id, ...authorizedClient.data },
       serviceSheet: serviceSheetSnap.empty
         ? null
         : {
@@ -6319,6 +6409,7 @@ exports.getClientProfileData = onCall({ cors: true }, async (request) => {
       })),
     };
   } catch (error) {
+    if (error instanceof HttpsError) throw error;
     logger.error("Error en getClientProfileData:", error);
     throw new HttpsError("internal", "Error cargando perfil del cliente.");
   }

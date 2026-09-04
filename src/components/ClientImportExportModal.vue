@@ -466,22 +466,25 @@ const confirmImport = async () => {
     errors: importPreview.value.invalidRows.map((r) => `Fila ${r.row}: ${r.errors.join('; ')}`),
   }
 
-  const addClient = httpsCallable(functions, 'addClient')
-  const totalToProcess = importPreview.value.validRows.length
-  let processedCount = 0
+  const batchImportClients = httpsCallable(functions, 'batchImportClients')
+  const batchSize = 400
+  const validRows = importPreview.value.validRows
+  const totalBatches = Math.ceil(validRows.length / batchSize)
 
-  for (const clientData of importPreview.value.validRows) {
+  for (let batchIndex = 0; batchIndex < totalBatches; batchIndex++) {
+    const batch = validRows.slice(batchIndex * batchSize, (batchIndex + 1) * batchSize)
     try {
-      await addClient({ clientData })
-      importStats.value.success++
+      const result = await batchImportClients({ clients: batch }) as {
+        data: { imported: number }
+      }
+      importStats.value.success += result.data.imported || 0
     } catch (error: any) {
-      importStats.value.failed++
+      importStats.value.failed += batch.length
       importStats.value.errors.push(
-        `Error al guardar ${clientData.nombreComercial}: ${error.message}`,
+        `Error al guardar el lote ${batchIndex + 1}: ${error.message}`,
       )
     }
-    processedCount++
-    importProgress.value = Math.round((processedCount / totalToProcess) * 100)
+    importProgress.value = Math.round(((batchIndex + 1) / totalBatches) * 100)
   }
 
   if (importStats.value.success > 0) {

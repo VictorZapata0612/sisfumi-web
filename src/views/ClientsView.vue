@@ -69,18 +69,25 @@ const initializeFilters = () => {
 const fetchNextBatch = async () => {
   clientsStore.loading = true
   try {
-    const getClientsPage = httpsCallable(functions, 'getClientsPage')
     const isSearching = Boolean(searchTerm.value.trim())
-    const result = await getClientsPage({
-      status: statusFilter.value === 'Todos' ? undefined : statusFilter.value,
-      pageSize: isSearching ? 1000 : 12,
-      startAfterDocId: pagination.pageHistory[pagination.currentPage - 1],
-    })
-
-    const fetchedClients = (result.data as { clients: any[] }).clients
-    const newClients = isSearching
-      ? fetchedClients.filter((client) => matchesSearch(client, searchTerm.value))
-      : fetchedClients
+    let newClients: any[]
+    if (isSearching) {
+      const getAllClients = httpsCallable(functions, 'getAllClients')
+      const result = await getAllClients()
+      const fetchedClients = (result.data as { clients: any[] }).clients
+      newClients = fetchedClients.filter((client) =>
+        (statusFilter.value === 'Todos' || client.estado === statusFilter.value) &&
+        matchesSearch(client, searchTerm.value),
+      )
+    } else {
+      const getClientsPage = httpsCallable(functions, 'getClientsPage')
+      const result = await getClientsPage({
+        status: statusFilter.value === 'Todos' ? undefined : statusFilter.value,
+        pageSize: 12,
+        startAfterDocId: pagination.pageHistory[pagination.currentPage - 1],
+      })
+      newClients = (result.data as { clients: any[] }).clients
+    }
     // Append instead of replace for infinite scroll
     if (pagination.currentPage === 1) {
       clientsStore.clients = newClients
@@ -419,7 +426,7 @@ const handleSearch = () => {
                   Sucursales y Contactos
                 </h3>
                 <div class="space-y-3">
-                  <div v-for="sucursal in profile.client.sucursales" :key="sucursal.nombre"
+                  <div v-for="(sucursal, index) in profile.client.sucursales" :key="`${sucursal.nombre}-${sucursal.direccion}-${index}`"
                     class="bg-white/5 p-4 rounded-lg border border-white/10">
                     <div class="flex items-start">
                       <i class="fas fa-store text-gray-400 mt-1 mr-3"></i>
@@ -539,6 +546,10 @@ const handleSearch = () => {
               </div>
             </div>
           </div>
+        </div>
+        <div v-else-if="clientsStore.error" class="text-center text-red-400 py-12">
+          <i class="fas fa-exclamation-triangle text-4xl mb-4"></i>
+          <p>{{ clientsStore.error }}</p>
         </div>
       </div>
     </div>
