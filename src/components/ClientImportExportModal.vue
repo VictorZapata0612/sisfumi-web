@@ -244,7 +244,7 @@ const downloadTemplate = async () => {
 
         try {
           // Referencia segura con comillas simples
-          wb.definedNames.add(zonaKey, `'${wsDepsByZone.name}'!$${colLetter}$2:$${colLetter}$${lastRow}`)
+          wb.definedNames.add(`'${wsDepsByZone.name}'!$${colLetter}$2:$${colLetter}$${lastRow}`, zonaKey)
         } catch (e: any) { console.warn(`Error agregando nombre zona ${zonaKey}:`, e.message) }
 
         colZ++
@@ -289,7 +289,7 @@ const downloadTemplate = async () => {
 
       try {
         // Referencia segura con comillas simples
-        wb.definedNames.add(depKey, `'${wsCities.name}'!$${colLetter}$2:$${colLetter}$${lastRow}`)
+        wb.definedNames.add(`'${wsCities.name}'!$${colLetter}$2:$${colLetter}$${lastRow}`, depKey)
       } catch (e: any) { console.warn(`Error agregando nombre ciudad ${depKey}:`, e.message) }
 
       col++
