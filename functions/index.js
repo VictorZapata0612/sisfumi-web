@@ -5661,11 +5661,11 @@ exports.generateClientImportTemplate = onCall(
         "contactoFinanciero_email",
       ];
 
-      const defaultSucursalesCount = 10;
+      const defaultSucursalesCount = 50;
       for (let i = 1; i <= defaultSucursalesCount; i++) {
-        headers.push(`sucursal_${i}_nombre`);
-        headers.push(`sucursal_${i}_direccion`);
-        headers.push(`sucursal_${i}_zona`); // <-- Nueva columna de zona por sucursal
+        headers.push(`sucursal${i}_nombre`);
+        headers.push(`sucursal${i}_direccion`);
+        headers.push(`sucursal${i}_zona`);
       }
 
       // Obtener datos de configuración para las listas
@@ -5758,7 +5758,7 @@ exports.generateClientImportTemplate = onCall(
 
       if (zonasFormula) {
         for (let i = 1; i <= defaultSucursalesCount; i++) {
-          const colIndex = headers.indexOf(`sucursal_${i}_zona`);
+            const colIndex = headers.indexOf(`sucursal${i}_zona`);
           if (colIndex !== -1) {
             const colLetter = XLSX.utils.encode_col(colIndex);
             addDataValidation(mainWs, colLetter, zonasFormula);
@@ -5791,7 +5791,7 @@ exports.generateClientImportTemplate = onCall(
         ],
         [
           "6. Sucursales:",
-          "La plantilla incluye columnas para 10 sucursales. Si un cliente tiene más, puede añadir columnas manualmente siguiendo el patrón: sucursal_11_nombre, sucursal_11_direccion, sucursal_11_zona, etc. El sistema las importará todas.",
+          "La plantilla incluye columnas para 50 sucursales. Si un cliente tiene más, puede añadir columnas manualmente siguiendo el patrón: sucursal51_nombre, sucursal51_direccion, sucursal51_zona, etc. El sistema las importará todas.",
         ],
         [
           "7. Zona de Sucursal:",
@@ -5811,9 +5811,9 @@ exports.generateClientImportTemplate = onCall(
           "aliado",
           "tipoDirecto",
           "sede",
-          "sucursal_1_nombre",
-          "sucursal_1_direccion",
-          "sucursal_1_zona",
+          "sucursal1_nombre",
+          "sucursal1_direccion",
+          "sucursal1_zona",
         ],
         [
           "Cliente de Prueba S.A.S",

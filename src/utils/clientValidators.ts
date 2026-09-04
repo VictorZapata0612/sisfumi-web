@@ -143,9 +143,9 @@ export const validateRow = (row: any[]): RowValidation => {
   if (!isValidEmail(cpEmail)) errors.push(`Email Contacto Principal inválido: ${cpEmail}`)
   if (!isValidEmail(cfEmail)) errors.push(`Email Contacto Financiero inválido: ${cfEmail}`)
 
-  // sucursales: paridad nombre/dirección
-  // 18,19,20 | 21,22,23 | 24,25,26 | 27,28,29 | 30,31,32
-  for (let i = 0; i < 5; i++) {
+  // Sucursales: validar todos los grupos presentes en la fila.
+  const branchCount = Math.max(5, Math.ceil(Math.max(0, row.length - 18) / 3))
+  for (let i = 0; i < branchCount; i++) {
     const nIdx = 18 + i * 3
     const dIdx = 19 + i * 3
     const n = row[nIdx]

@@ -33,9 +33,10 @@ const importPreview = ref<{
   total: number
 } | null>(null)
 const importProgress = ref(0)
+const MAX_BRANCHES = 50
 
 // Cabeceras EXACTAS de la hoja "Plantilla Clientes"
-const EXCEL_HEADERS = [
+const BASE_EXCEL_HEADERS = [
   'nombreComercial',                 // 0
   'razonSocial',                     // 1
   'nit',                             // 2
@@ -54,22 +55,17 @@ const EXCEL_HEADERS = [
   'contactoFinanciero_nombre',       // 15
   'contactoFinanciero_celular',      // 16
   'contactoFinanciero_email',        // 17
-  'sucursal1_nombre',                // 18
-  'sucursal1_direccion',             // 19
-  'sucursal1_zona',                  // 20
-  'sucursal2_nombre',                // 21
-  'sucursal2_direccion',             // 22
-  'sucursal2_zona',                  // 23
-  'sucursal3_nombre',                // 24
-  'sucursal3_direccion',             // 25
-  'sucursal3_zona',                  // 26
-  'sucursal4_nombre',                // 27
-  'sucursal4_direccion',             // 28
-  'sucursal4_zona',                  // 29
-  'sucursal5_nombre',                // 30
-  'sucursal5_direccion',             // 31
-  'sucursal5_zona'                   // 32
 ]
+
+const createExcelHeaders = (branchCount: number) => [
+  ...BASE_EXCEL_HEADERS.slice(0, 18),
+  ...Array.from({ length: branchCount }, (_, index) => {
+    const branchNumber = index + 1
+    return [`sucursal${branchNumber}_nombre`, `sucursal${branchNumber}_direccion`, `sucursal${branchNumber}_zona`]
+  }).flat(),
+]
+
+const EXCEL_HEADERS = createExcelHeaders(MAX_BRANCHES)
 
 
 // Mapeo de filas de Excel a Objeto Cliente
@@ -77,27 +73,17 @@ const mapRowToClient = (row: any[]) => {
   // Validaciones básicas: Nombre y NIT son obligatorios
   if (!row[0] || !row[2]) return null
 
-  // Procesar sucursales (hasta 5)
   const sucursales = []
-  // Sucursal 1
-  if (row[18] && row[19]) {
-    sucursales.push({ nombre: String(row[18]).trim(), direccion: String(row[19]).trim(), zona: row[20] ? String(row[20]).trim() : String(row[3]).trim() })
-  }
-  // Sucursal 2
-  if (row[21] && row[22]) {
-    sucursales.push({ nombre: String(row[21]).trim(), direccion: String(row[22]).trim(), zona: row[23] ? String(row[23]).trim() : String(row[3]).trim() })
-  }
-  // Sucursal 3
-  if (row[24] && row[25]) {
-    sucursales.push({ nombre: String(row[24]).trim(), direccion: String(row[25]).trim(), zona: row[26] ? String(row[26]).trim() : String(row[3]).trim() })
-  }
-  // Sucursal 4
-  if (row[27] && row[28]) {
-    sucursales.push({ nombre: String(row[27]).trim(), direccion: String(row[28]).trim(), zona: row[29] ? String(row[29]).trim() : String(row[3]).trim() })
-  }
-  // Sucursal 5
-  if (row[30] && row[31]) {
-    sucursales.push({ nombre: String(row[30]).trim(), direccion: String(row[31]).trim(), zona: row[32] ? String(row[32]).trim() : String(row[3]).trim() })
+  const branchCount = Math.floor(Math.max(0, row.length - 18) / 3)
+  for (let index = 0; index < branchCount; index++) {
+    const branchOffset = 18 + index * 3
+    if (!row[branchOffset] && !row[branchOffset + 1]) continue
+    if (!row[branchOffset] || !row[branchOffset + 1]) continue
+    sucursales.push({
+      nombre: String(row[branchOffset]).trim(),
+      direccion: String(row[branchOffset + 1]).trim(),
+      zona: row[branchOffset + 2] ? String(row[branchOffset + 2]).trim() : String(row[3]).trim(),
+    })
   }
 
   return {
@@ -157,9 +143,9 @@ const downloadTemplate = async () => {
       { width: 30 }, { width: 30 }, { width: 18 }, { width: 20 }, { width: 22 }, { width: 22 },
       { width: 40 }, { width: 14 }, { width: 16 }, { width: 26 }, { width: 18 }, { width: 22 },
       { width: 26 }, { width: 16 }, { width: 30 }, { width: 26 }, { width: 16 }, { width: 30 },
-      { width: 26 }, { width: 40 }, { width: 20 }, { width: 26 }, { width: 40 }, { width: 20 },
-      { width: 26 }, { width: 40 }, { width: 20 }, { width: 26 }, { width: 40 }, { width: 20 },
-      { width: 26 }, { width: 40 }, { width: 20 }
+      ...Array.from({ length: MAX_BRANCHES }, () => [
+        { width: 26 }, { width: 40 }, { width: 20 },
+      ]).flat(),
     ]
 
     const MAX_ROWS = 5000
@@ -201,12 +187,10 @@ const downloadTemplate = async () => {
     addListDV('Datos_Estados', ESTADOS.length, 8)   // estado
     addListDV('Datos_Tipos', TIPOS.length, 9)       // tipo
 
-    // Validaciones para Zonas de Sucursales (Columnas 21, 24, 27, 30, 33 - índices 1-based)
-    addListDV('Datos_Zonas', ZONAS.length, 21)
-    addListDV('Datos_Zonas', ZONAS.length, 24)
-    addListDV('Datos_Zonas', ZONAS.length, 27)
-    addListDV('Datos_Zonas', ZONAS.length, 30)
-    addListDV('Datos_Zonas', ZONAS.length, 33)
+    // Validaciones para las zonas de todas las sucursales.
+    for (let index = 0; index < MAX_BRANCHES; index++) {
+      addListDV('Datos_Zonas', ZONAS.length, 21 + index * 3)
+    }
 
     // --- VALIDACIONES CONDICIONALES (Protegidas) ---
 
@@ -272,13 +256,12 @@ const downloadTemplate = async () => {
         formula: `IF(INDIRECT("E"&ROW())="Valle del Cauca", "Valle del Cauca", IF(INDIRECT("E"&ROW())="Norte de Santander", "Norte de Santander", IF(INDIRECT("E"&ROW())<>"", "Nacionales", "")))`
       }
 
-      // Zonas de Sucursales (Prellenado automático con la zona principal si existe)
+      // Zonas de sucursales: prellenado automático con la zona principal.
       const zonaRef = `INDIRECT("D"&ROW())`
-      ws.getCell(`U${i}`).value = { formula: `IF(${zonaRef}<>"", ${zonaRef}, "")` }   // Sucursal 1 Zona
-      ws.getCell(`X${i}`).value = { formula: `IF(${zonaRef}<>"", ${zonaRef}, "")` }   // Sucursal 2 Zona
-      ws.getCell(`AA${i}`).value = { formula: `IF(${zonaRef}<>"", ${zonaRef}, "")` }  // Sucursal 3 Zona
-      ws.getCell(`AD${i}`).value = { formula: `IF(${zonaRef}<>"", ${zonaRef}, "")` }  // Sucursal 4 Zona
-      ws.getCell(`AG${i}`).value = { formula: `IF(${zonaRef}<>"", ${zonaRef}, "")` }  // Sucursal 5 Zona
+      for (let index = 0; index < MAX_BRANCHES; index++) {
+        const zoneColumn = ws.getColumn(21 + index * 3).letter
+        ws.getCell(`${zoneColumn}${i}`).value = { formula: `IF(${zonaRef}<>"", ${zonaRef}, "")` }
+      }
     }
 
     // --- DEPARTAMENTOS Y CIUDADES ---
@@ -521,12 +504,16 @@ const exportClients = async () => {
     }
 
     // Mapear clientes al formato de filas
+    const branchCount = clients.reduce(
+      (max: number, client: any) => Math.max(max, Array.isArray(client.sucursales) ? client.sucursales.length : 0),
+      0,
+    )
+    const exportHeaders = createExcelHeaders(branchCount)
     const rows = clients.map((c: any) => {
-      const s1 = c.sucursales?.[0] || {}
-      const s2 = c.sucursales?.[1] || {}
-      const s3 = c.sucursales?.[2] || {}
-      const s4 = c.sucursales?.[3] || {}
-      const s5 = c.sucursales?.[4] || {}
+      const branchCells = Array.from({ length: branchCount }, (_, index) => {
+        const branch = c.sucursales?.[index] || {}
+        return [branch.nombre || '', branch.direccion || '', branch.zona || '']
+      }).flat()
 
       return [
         c.nombreComercial || '',
@@ -547,20 +534,15 @@ const exportClients = async () => {
         c.contactoFinanciero?.nombre || '',
         c.contactoFinanciero?.celular || '',
         c.contactoFinanciero?.email || '',
-        // Sucursales
-        s1.nombre || '', s1.direccion || '', s1.zona || '',
-        s2.nombre || '', s2.direccion || '', s2.zona || '',
-        s3.nombre || '', s3.direccion || '', s3.zona || '',
-        s4.nombre || '', s4.direccion || '', s4.zona || '',
-        s5.nombre || '', s5.direccion || '', s5.zona || ''
+        ...branchCells,
       ]
     })
 
     // Crear libro y hoja
     const wb = XLSX.utils.book_new()
-    const ws = XLSX.utils.aoa_to_sheet([EXCEL_HEADERS, ...rows])
+    const ws = XLSX.utils.aoa_to_sheet([exportHeaders, ...rows])
 
-    // Ajustar anchos (mismos que en la plantilla)
+    // Ajustar anchos para todos los campos y grupos de sucursales.
     ws['!cols'] = [
       { wch: 30 }, { wch: 30 }, { wch: 15 }, { wch: 15 }, { wch: 20 },
       { wch: 15 }, { wch: 20 }, { wch: 20 }, { wch: 40 },
@@ -569,7 +551,7 @@ const exportClients = async () => {
       { wch: 20 }, { wch: 30 }, { wch: 20 },
       { wch: 20 }, { wch: 30 }, { wch: 20 },
       { wch: 20 }, { wch: 30 }, { wch: 20 },
-      { wch: 20 }, { wch: 30 }, { wch: 20 }
+      ...Array.from({ length: branchCount }, () => [{ wch: 20 }, { wch: 30 }, { wch: 20 }]).flat()
     ]
 
     XLSX.utils.book_append_sheet(wb, ws, 'Base de Datos Clientes')
