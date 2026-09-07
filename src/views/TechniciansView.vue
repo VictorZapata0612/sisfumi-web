@@ -39,10 +39,16 @@ const googleCalendarColors: Record<string, string> = {
   '11': '#d60000', // Tomate
 }
 
+const normalizeSearch = (term: string) =>
+  term
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+
 const fetchData = (direction: 'next' | 'prev' | 'reset' = 'reset') => {
   techniciansStore.fetchTechnicians({
     zoneFilter: zoneFilter.value === 'Todos' ? null : zoneFilter.value,
-    searchTerm: searchTerm.value,
+    searchTerm: searchTerm.value ? normalizeSearch(searchTerm.value) : '',
     direction,
   })
 }
@@ -76,20 +82,8 @@ const openProfileModal = (technicianId: string) => {
   showProfileModal.value = true
 }
 
-const handleSave = async (technician: Omit<Technician, 'id'> & { id?: string }) => {
-  try {
-    if (technician.id) {
-      await techniciansStore.updateTechnician(technician.id, technician)
-      showToast({ title: 'Éxito', message: 'Técnico actualizado.', type: 'success' })
-    } else {
-      await techniciansStore.addTechnician(technician)
-      showToast({ title: 'Éxito', message: 'Técnico creado.', type: 'success' })
-    }
-    showFormModal.value = false
-    fetchData('reset')
-  } catch (error: any) {
-    showToast({ title: 'Error', message: `No se pudo guardar: ${error.message}`, type: 'error' })
-  }
+const handleRefresh = () => {
+  fetchData('reset')
 }
 
 const handleDelete = async (technicianId: string) => {
@@ -290,7 +284,7 @@ const handleDelete = async (technicianId: string) => {
 
     <!-- Modales -->
     <TechnicianFormModal :show="showFormModal" :technician="editingTechnician" @close="showFormModal = false"
-      @save="handleSave" @delete="handleDelete" />
+      @refresh="handleRefresh" />
     <TechnicianProfileModal :show="showProfileModal" :technician-id="viewingTechnicianId"
       @close="showProfileModal = false" @edit="openEditModal" />
   </main>

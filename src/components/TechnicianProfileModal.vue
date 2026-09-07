@@ -141,6 +141,19 @@ const formatDate = (dateString: string) => {
         <p class="text-gray-300 font-medium">Consultando historial del técnico...</p>
       </div>
 
+      <!-- Error State -->
+      <div v-else-if="store.error && !store.selectedProfile"
+        class="absolute inset-0 z-10 bg-[#151515]/60 backdrop-blur-md flex flex-col items-center justify-center gap-4 p-6">
+        <i class="fas fa-exclamation-triangle text-4xl text-red-400"></i>
+        <div class="text-center">
+          <p class="text-red-200 font-medium mb-2">No se pudo cargar el perfil</p>
+          <p class="text-gray-400 text-sm">{{ store.error }}</p>
+        </div>
+        <button @click="loadProfileData()" type="button" class="mt-4 px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors">
+          Reintentar
+        </button>
+      </div>
+
       <template v-if="store.selectedProfile">
         <!-- Header Section -->
         <header class="p-6 bg-[#0a0a0a]/50 border-b border-white/10 flex flex-col sm:flex-row items-center gap-6">

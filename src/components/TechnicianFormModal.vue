@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { ref, watch, computed } from 'vue'
+import { useTechniciansStore } from '@/stores/technicians'
+import { useToast } from '@/composables/useToast'
 import type { Technician } from '@/stores/technicians'
 
 const props = defineProps<{
@@ -9,9 +11,11 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: 'close'): void
-  (e: 'save', technician: Omit<Technician, 'id'> & { id?: string }): void
-  (e: 'delete', technicianId: string): void
+  (e: 'refresh'): void
 }>()
+
+const techniciansStore = useTechniciansStore()
+const { showToast } = useToast()
 
 const form = ref<Omit<Technician, 'id'> & { id?: string }>({
   nombreCompleto: '',
@@ -22,6 +26,9 @@ const form = ref<Omit<Technician, 'id'> & { id?: string }>({
 })
 
 const isEditing = computed(() => !!props.technician)
+const isLoading = ref(false)
+const formError = ref<string | null>(null)
+const originalForm = ref<Omit<Technician, 'id'> & { id?: string } | null>(null)
 
 // Mapeo de colores de Google Calendar para previsualización
 const colorOptions = [
@@ -46,8 +53,10 @@ watch(
   () => props.show,
   (newVal) => {
     if (newVal) {
+      formError.value = null
       if (props.technician) {
         form.value = { ...props.technician }
+        originalForm.value = { ...props.technician }
       } else {
         form.value = {
           nombreCompleto: '',
@@ -56,18 +65,77 @@ watch(
           googleColorId: '1',
           telefono: '',
         }
+        originalForm.value = null
       }
     }
   },
 )
 
-const handleSubmit = () => {
-  emit('save', form.value)
+const handleSubmit = async () => {
+  try {
+    formError.value = null
+    if (!form.value.nombreCompleto || !form.value.nombreCompleto.trim()) {
+      formError.value = 'El nombre del técnico es obligatorio'
+      return
+    }
+    if (!form.value.email || !form.value.email.trim()) {
+      formError.value = 'El correo electrónico es obligatorio'
+      return
+    }
+
+    isLoading.value = true
+    if (isEditing.value && form.value.id) {
+      await techniciansStore.updateTechnician(form.value.id, form.value)
+    } else {
+      await techniciansStore.addTechnician(form.value)
+    }
+    showToast({
+      title: 'Éxito',
+      message: isEditing.value ? 'Técnico actualizado correctamente.' : 'Técnico creado correctamente.',
+      type: 'success',
+    })
+    emit('refresh')
+    emit('close')
+  } catch (err: any) {
+    // Rollback del estado del formulario
+    if (originalForm.value) {
+      form.value = { ...originalForm.value }
+    }
+    const errorMsg = err?.message || 'Error al guardar técnico'
+    formError.value = errorMsg
+    showToast({
+      title: 'Error',
+      message: errorMsg,
+      type: 'error',
+    })
+  } finally {
+    isLoading.value = false
+  }
 }
 
-const handleDelete = () => {
-  if (form.value.id) {
-    emit('delete', form.value.id)
+const handleDelete = async () => {
+  if (!form.value.id) return
+  try {
+    formError.value = null
+    isLoading.value = true
+    await techniciansStore.deleteTechnician(form.value.id)
+    showToast({
+      title: 'Éxito',
+      message: 'Técnico eliminado correctamente.',
+      type: 'success',
+    })
+    emit('refresh')
+    emit('close')
+  } catch (err: any) {
+    const errorMsg = err?.message || 'Error al eliminar técnico'
+    formError.value = errorMsg
+    showToast({
+      title: 'Error',
+      message: errorMsg,
+      type: 'error',
+    })
+  } finally {
+    isLoading.value = false
   }
 }
 </script>
@@ -95,6 +163,12 @@ const handleDelete = () => {
 
       <!-- Form Content -->
       <form @submit.prevent="handleSubmit" class="p-4 sm:p-6 overflow-y-auto custom-scrollbar flex flex-col gap-6">
+
+        <!-- Error Message -->
+        <div v-if="formError" class="bg-red-500/10 border border-red-500/30 rounded-lg p-4 flex gap-3">
+          <i class="fas fa-exclamation-circle text-red-400 flex-shrink-0 mt-0.5"></i>
+          <p class="text-red-200 text-sm">{{ formError }}</p>
+        </div>
 
         <!-- Sección 1: Información Personal -->
         <div class="bg-white/5 rounded-lg p-4 border border-white/10 space-y-4">
@@ -173,19 +247,21 @@ const handleDelete = () => {
 
       <!-- Footer Actions -->
       <div class="p-4 sm:p-6 border-t border-white/10 bg-[#0a0a0a]/30 flex flex-col sm:flex-row justify-between gap-4">
-        <button v-if="isEditing" @click.prevent="handleDelete" type="button"
-          class="btn btn-danger w-full sm:w-auto flex items-center justify-center gap-2">
-          <i class="fas fa-trash-alt"></i>
-          <span>Eliminar</span>
+        <button v-if="isEditing" @click.prevent="handleDelete" type="button" :disabled="isLoading"
+          class="btn btn-danger w-full sm:w-auto flex items-center justify-center gap-2 disabled:opacity-50">
+          <i v-if="!isLoading" class="fas fa-trash-alt"></i>
+          <i v-else class="fas fa-spinner animate-spin"></i>
+          <span>{{ isLoading ? 'Eliminando...' : 'Eliminar' }}</span>
         </button>
         <div v-else class="hidden sm:block"></div> <!-- Spacer -->
 
         <div class="flex gap-3 justify-end w-full sm:w-auto">
-          <button @click="emit('close')" type="button" class="btn btn-secondary">Cancelar</button>
-          <button @click="handleSubmit" type="button"
-            class="btn btn-primary bg-[#d60000] hover:bg-red-700 shadow-lg shadow-red-500/20 px-6">
-            <i class="fas fa-save mr-2"></i>
-            {{ isEditing ? 'Guardar Cambios' : 'Crear Técnico' }}
+          <button @click="emit('close')" type="button" :disabled="isLoading" class="btn btn-secondary disabled:opacity-50">Cancelar</button>
+          <button @click="handleSubmit" type="button" :disabled="isLoading"
+            class="btn btn-primary bg-[#d60000] hover:bg-red-700 shadow-lg shadow-red-500/20 px-6 disabled:opacity-50 flex items-center gap-2">
+            <i v-if="!isLoading" class="fas fa-save"></i>
+            <i v-else class="fas fa-spinner animate-spin"></i>
+            {{ isLoading ? (isEditing ? 'Guardando...' : 'Creando...') : (isEditing ? 'Guardar Cambios' : 'Crear Técnico') }}
           </button>
         </div>
       </div>

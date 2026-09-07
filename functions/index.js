@@ -591,13 +591,25 @@ exports.updateClient = onCall({ cors: true }, async (request) => {
 exports.getFumigadoresPage = onCall({ cors: true }, async (request) => {
   assertAuth(request);
   const { searchTerm, startAfterDocId, zone } = request.data;
+  const { role: userRole, zona: userZone } = request.auth.token;
   const PAGE_SIZE = 20;
 
   try {
+    // Validar que el usuario tenga permiso para ver esa zona
+    const isAdmin = ["Administrador", "Jefe", "Coordinador Nacionales"].includes(userRole);
+    let requestedZone = zone;
+    if (!isAdmin && userZone && zone && zone !== userZone) {
+      throw new HttpsError("permission-denied", "No tienes permiso para ver técnicos de otra zona.");
+    }
+    // Coordinadores de zona solo ven su zona
+    if (!isAdmin && userZone && !requestedZone) {
+      requestedZone = userZone;
+    }
+
     let query = db.collection("fumigadores");
 
-    if (zone && zone !== "Todos") {
-      query = query.where("zona", "==", zone);
+    if (requestedZone && requestedZone !== "Todos") {
+      query = query.where("zona", "==", requestedZone);
     }
 
     if (searchTerm) {
@@ -640,11 +652,52 @@ exports.addFumigador = onCall({ cors: true }, async (request) => {
   ]);
 
   const { technicianData } = request.data;
+  const { zona: userZone, role: userRole } = request.auth.token;
 
   try {
+    // Validar campos obligatorios
+    if (!technicianData.nombreCompleto || !technicianData.nombreCompleto.trim()) {
+      throw new HttpsError("invalid-argument", "El nombre del técnico es obligatorio.");
+    }
+    if (!technicianData.email || !technicianData.email.trim()) {
+      throw new HttpsError("invalid-argument", "El correo electrónico es obligatorio.");
+    }
+    if (!technicianData.zona || !["Norte de Santander", "Valle del Cauca", "Nacionales"].includes(technicianData.zona)) {
+      throw new HttpsError("invalid-argument", "La zona es obligatoria y debe ser válida.");
+    }
+    if (!technicianData.googleColorId || !["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11"].includes(String(technicianData.googleColorId))) {
+      throw new HttpsError("invalid-argument", "El color de calendario debe ser válido.");
+    }
+    // Validar formato de email
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(technicianData.email)) {
+      throw new HttpsError("invalid-argument", "El formato del correo electrónico es inválido.");
+    }
+    // Coordinadores de zona solo pueden crear en su zona
+    const isAdmin = ["Administrador", "Jefe", "Coordinador Nacionales"].includes(userRole);
+    if (!isAdmin && userZone && technicianData.zona !== userZone) {
+      throw new HttpsError("permission-denied", "Solo puedes crear técnicos en tu zona.");
+    }
+    // Verificar que no exista técnico con mismo nombre
+    const nameQuery = await db.collection("fumigadores")
+      .where("nombreCompleto_lower", "==", technicianData.nombreCompleto.toLowerCase())
+      .limit(1)
+      .get();
+    if (!nameQuery.empty) {
+      throw new HttpsError("already-exists", "Ya existe un técnico con ese nombre.");
+    }
+    // Verificar que no exista técnico con mismo email
+    const emailQuery = await db.collection("fumigadores")
+      .where("email", "==", technicianData.email)
+      .limit(1)
+      .get();
+    if (!emailQuery.empty) {
+      throw new HttpsError("already-exists", "Ya existe un técnico con ese correo electrónico.");
+    }
+
     const data = {
       ...technicianData,
-      nombreCompleto_lower: (technicianData.nombreCompleto || "").toLowerCase(),
+      nombreCompleto_lower: technicianData.nombreCompleto.toLowerCase(),
+      email: technicianData.email.toLowerCase(),
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
       status: "Active",
     };
@@ -672,18 +725,78 @@ exports.updateFumigador = onCall({ cors: true }, async (request) => {
     "Coordinador Norte de Santander",
   ]);
   const { technicianId, technicianData } = request.data;
+  const { zona: userZone, role: userRole } = request.auth.token;
 
   try {
+    // Obtener técnico actual para validaciones
+    const currentDoc = await db.collection("fumigadores").doc(technicianId).get();
+    if (!currentDoc.exists) {
+      throw new HttpsError("not-found", "Técnico no encontrado.");
+    }
+    const currentData = currentDoc.data();
+    const isAdmin = ["Administrador", "Jefe", "Coordinador Nacionales"].includes(userRole);
+    if (!isAdmin && userZone && currentData.zona !== userZone) {
+      throw new HttpsError("permission-denied", "No tienes permiso para actualizar un técnico de otra zona.");
+    }
+    // Validar campos si se proporcionan
+    if (technicianData.nombreCompleto !== undefined) {
+      if (!technicianData.nombreCompleto || !technicianData.nombreCompleto.trim()) {
+        throw new HttpsError("invalid-argument", "El nombre del técnico no puede estar vacío.");
+      }
+      if (technicianData.nombreCompleto.toLowerCase() !== currentData.nombreCompleto_lower) {
+        const nameQuery = await db.collection("fumigadores")
+          .where("nombreCompleto_lower", "==", technicianData.nombreCompleto.toLowerCase())
+          .limit(1)
+          .get();
+        if (!nameQuery.empty) {
+          throw new HttpsError("already-exists", "Ya existe un técnico con ese nombre.");
+        }
+      }
+    }
+    if (technicianData.email !== undefined) {
+      if (!technicianData.email || !technicianData.email.trim()) {
+        throw new HttpsError("invalid-argument", "El correo electrónico no puede estar vacío.");
+      }
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(technicianData.email)) {
+        throw new HttpsError("invalid-argument", "El formato del correo electrónico es inválido.");
+      }
+      if (technicianData.email !== currentData.email) {
+        const emailQuery = await db.collection("fumigadores")
+          .where("email", "==", technicianData.email)
+          .limit(1)
+          .get();
+        if (!emailQuery.empty) {
+          throw new HttpsError("already-exists", "Ya existe un técnico con ese correo electrónico.");
+        }
+      }
+    }
+    if (technicianData.zona !== undefined) {
+      if (!["Norte de Santander", "Valle del Cauca", "Nacionales"].includes(technicianData.zona)) {
+        throw new HttpsError("invalid-argument", "La zona debe ser válida.");
+      }
+      if (!isAdmin && userZone && technicianData.zona !== userZone) {
+        throw new HttpsError("permission-denied", "Solo puedes asignar técnicos a tu zona.");
+      }
+    }
+    if (technicianData.googleColorId !== undefined) {
+      if (!["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11"].includes(String(technicianData.googleColorId))) {
+        throw new HttpsError("invalid-argument", "El color de calendario debe ser válido.");
+      }
+    }
+
+    const updateData = { ...technicianData };
+    if (technicianData.nombreCompleto) {
+      updateData.nombreCompleto_lower = technicianData.nombreCompleto.toLowerCase();
+    }
+    if (technicianData.email) {
+      updateData.email = technicianData.email.toLowerCase();
+    }
+    updateData.updatedAt = admin.firestore.FieldValue.serverTimestamp();
+
     await db
       .collection("fumigadores")
       .doc(technicianId)
-      .update({
-        ...technicianData,
-        nombreCompleto_lower: (
-          technicianData.nombreCompleto || ""
-        ).toLowerCase(),
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
+      .update(updateData);
     return { success: true };
   } catch (e) {
     throw new HttpsError("internal", e.message);
@@ -696,8 +809,29 @@ exports.updateFumigador = onCall({ cors: true }, async (request) => {
 exports.deleteFumigador = onCall({ cors: true }, async (request) => {
   assertRole(request, ["Administrador", "Jefe"]);
   const { technicianId } = request.data;
+  const { zona: userZone, role: userRole } = request.auth.token;
 
   try {
+    const techDoc = await db.collection("fumigadores").doc(technicianId).get();
+    if (!techDoc.exists) {
+      throw new HttpsError("not-found", "Técnico no encontrado.");
+    }
+    const techData = techDoc.data();
+    const isAdmin = userRole === "Administrador" || userRole === "Jefe";
+    if (!isAdmin && userZone && techData.zona !== userZone) {
+      throw new HttpsError("permission-denied", "No tienes permiso para eliminar un técnico de otra zona.");
+    }
+    // Verificar que el técnico no tenga visitas pendientes
+    const technicianName = techData.nombreCompleto;
+    const pendingVisits = await db.collection("visitas")
+      .where("fumigadores_asignados", "array-contains", technicianName)
+      .where("estado_visita", "==", "Programada")
+      .limit(1)
+      .get();
+    if (!pendingVisits.empty) {
+      throw new HttpsError("failed-precondition", "No se puede eliminar un técnico con visitas pendientes. Por favor, reasigna o completa sus visitas primero.");
+    }
+
     await db.collection("fumigadores").doc(technicianId).delete();
     await createAuditLog(
       "DELETE_TECHNICIAN",
@@ -4022,24 +4156,19 @@ exports.onServicePriceAssigned = onDocumentUpdated(
 );
 
 exports.getTechnicianProfileData = onCall({ cors: true }, async (request) => {
-  // ✅ CORRECCIÓN
   const { auth, data } = request;
   if (!auth) {
     throw new HttpsError("unauthenticated", "El usuario no está autenticado.");
   }
 
-  // ✅ CORRECCIÓN: Se cambia la validación para usar technicianId en lugar de technicianName y zone.
-  const { technicianId, month, year } = data; // month es 0-11
+  const { technicianId, month, year } = data;
+  const { zona: userZone, role: userRole } = auth.token;
   if (!technicianId || typeof month !== "number" || typeof year !== "number") {
-    throw new HttpsError(
-      "invalid-argument",
-      "Se requieren el ID del técnico, mes y año."
-    );
+    throw new HttpsError("invalid-argument", "Se requieren el ID del técnico, mes y año.");
   }
 
   try {
     const db = admin.firestore();
-    // ✅ NUEVO: Obtener los datos del técnico usando su ID.
     const techDoc = await db.collection("fumigadores").doc(technicianId).get();
     if (!techDoc.exists) {
       throw new HttpsError("not-found", "Técnico no encontrado.");
@@ -4047,6 +4176,12 @@ exports.getTechnicianProfileData = onCall({ cors: true }, async (request) => {
     const technicianData = techDoc.data();
     const technicianName = technicianData.nombreCompleto;
     const zone = technicianData.zona;
+
+    // Validar que el usuario tiene permiso para ver este técnico
+    const isAdmin = ["Administrador", "Jefe", "Coordinador Nacionales"].includes(userRole);
+    if (!isAdmin && userZone && zone !== userZone) {
+      throw new HttpsError("permission-denied", "No tienes permiso para ver el perfil de este técnico.");
+    }
 
     const startOfMonth = new Date(year, month, 1);
     const endOfMonth = new Date(year, month + 1, 0, 23, 59, 59);
@@ -4061,7 +4196,11 @@ exports.getTechnicianProfileData = onCall({ cors: true }, async (request) => {
 
     const allVisits = allVisitsSnapshot.docs.map((doc) => {
       const data = doc.data();
-      return { ...data, fecha_visita: data.fecha_visita.toDate() };
+      const date = data.fecha_visita;
+      return {
+        ...data,
+        fecha_visita: date && typeof date.toDate === 'function' ? date.toDate() : new Date(date),
+      };
     });
 
     const visitsInMonth = allVisits.filter(
@@ -4094,18 +4233,17 @@ exports.getTechnicianProfileData = onCall({ cors: true }, async (request) => {
       .sort((a, b) => b.fecha_visita - a.fecha_visita)
       .slice(0, 10);
 
+    const formatVisits = (visits) => visits.map((v) => ({
+      ...v,
+      fecha_visita: v.fecha_visita instanceof Date ? v.fecha_visita.toISOString() : new Date(v.fecha_visita).toISOString(),
+    }));
+
     return {
       kpis: { assigned, completed, rate },
       workload: weeklyWorkload,
-      upcomingVisits: upcomingVisits.map((v) => ({
-        ...v,
-        fecha_visita: v.fecha_visita.toISOString(),
-      })),
-      recentHistory: recentHistory.map((v) => ({
-        ...v,
-        fecha_visita: v.fecha_visita.toISOString(),
-      })),
-      technician: { id: techDoc.id, ...technicianData }, // ✅ NUEVO: Devolver los datos del técnico.
+      upcomingVisits: formatVisits(upcomingVisits),
+      recentHistory: formatVisits(recentHistory),
+      technician: { id: techDoc.id, ...technicianData },
     };
   } catch (error) {
     console.error("Error al calcular estadísticas del técnico:", error);
