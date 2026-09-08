@@ -54,12 +54,14 @@ export const useAuthStore = defineStore('auth', () => {
    * Conecta la cuenta de Google (OAuth2 Flow)
    * Se solicitan permisos para Calendar y para leer el perfil del usuario (email/nombre/foto)
    */
+/**
+   * Conecta la cuenta de Google (OAuth2 Code Flow para backend/refresh_token)
+   */
   async function connectGoogleAccount(clientId: string, targetUid: string): Promise<any> {
     return new Promise((resolve, reject) => {
       try {
         if (!user.value) return reject(new Error('No hay usuario autenticado'))
 
-        // Verificación robusta de que el SDK de Google está listo
         if (typeof google === 'undefined' || !google.accounts || !google.accounts.oauth2) {
           return reject(
             new Error(
@@ -71,36 +73,42 @@ export const useAuthStore = defineStore('auth', () => {
         const rawClientId = import.meta.env.VITE_GOOGLE_CLIENT_ID
         if (!rawClientId) return reject(new Error('Falta VITE_GOOGLE_CLIENT_ID en el archivo .env'))
 
-        // 1. Limpieza crítica
-        const clientId = rawClientId.trim()
+        const clientIdClean = rawClientId.trim()
 
         console.log(
-          '🔐 Inicializando Google Auth con Client ID:',
-          clientId.substring(0, 15) + '...',
+          '🔐 Inicializando Google Code Auth con Client ID:',
+          clientIdClean.substring(0, 15) + '...',
         )
 
-        // 2. Configuración PURA (Sin alias cortos, todo URL completa)
-        // Esto suele resolver conflictos de scope en navegadores estrictos
-        const client = google.accounts.oauth2.initTokenClient({
-          client_id: clientId,
-          // ✅ CORRECCIÓN: Añadir el scope de Gmail para poder enviar correos.
-          // 'gmail.send' es el permiso mínimo necesario para enviar correos sin leerlos.
+        // ✅ CAMBIO A initCodeClient: Permite obtener el 'code' para canjear un 'refresh_token' permanente
+        const client = google.accounts.oauth2.initCodeClient({
+          client_id: clientIdClean,
           scope:
             'https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile openid https://www.googleapis.com/auth/gmail.send',
+          ux_mode: 'popup',
+          // ⚠️ PARÁMETROS CLAVE PARA REFRESH TOKEN PERMANENTE
+          access_type: 'offline',
+          prompt: 'consent',
           callback: async (response: any) => {
+            if (response.error) {
+              console.error('Error de OAuth2:', response.error)
+              return reject(new Error(`Error de autenticación: ${response.error}`))
+            }
+
             try {
+              // response.code contiene el código de autorización de un solo uso
               const saveTokensFn = httpsCallable(functions, 'saveGoogleTokens')
-              await saveTokensFn({ tokens: response, targetUid: targetUid })
+              await saveTokensFn({ code: response.code, targetUid: targetUid })
               resolve('OK')
             } catch (error: any) {
-              console.error('Error guardando tokens:', error)
+              console.error('Error guardando tokens en backend:', error)
               reject(error)
             }
           },
         })
 
-        // Iniciar el flujo para el cliente de tokens
-        client.requestAccessToken()
+        // Solicitar el código de autorización
+        client.requestCode()
       } catch (error) {
         console.error('Error inicializando cliente Google:', error)
         reject(error)

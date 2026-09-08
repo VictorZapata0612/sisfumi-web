@@ -1100,6 +1100,7 @@ async function createOrUpdateCalendarEvent(visitData, visitId, uid) {
       .collection("calendar_integrations")
       .doc(uid)
       .get();
+
     if (!integrationDoc.exists) {
       throw new Error(
         `La integración de calendario para el organizador con UID '${uid}' no fue encontrada.`
@@ -1111,11 +1112,24 @@ async function createOrUpdateCalendarEvent(visitData, visitId, uid) {
       googleConfig.clientId,
       googleConfig.clientSecret
     );
+
     oAuth2Client.setCredentials(tokens);
+
+    // 1. RENOVACIÓN AUTOMÁTICA DE TOKENS: Escuchar si Google entrega un nuevo access_token y actualizar Firestore
+    oAuth2Client.on("tokens", async (newTokens) => {
+      const updatedTokens = { ...tokens, ...newTokens };
+      await admin
+        .firestore()
+        .collection("calendar_integrations")
+        .doc(uid)
+        .set(updatedTokens, { merge: true });
+    });
+
     const calendar = google.calendar({ version: "v3", auth: oAuth2Client });
 
     let eventColorId = "8";
     let attendeeEmails = [];
+
     if (
       visitData.fumigadores_asignados &&
       visitData.fumigadores_asignados.length > 0
@@ -1149,55 +1163,73 @@ async function createOrUpdateCalendarEvent(visitData, visitId, uid) {
       attendeeEmails,
       eventColorId
     );
-    logger.info(`[ESPÍA/calendar] Recurso del evento construido:`, {
-      summary: eventResource.summary,
-    });
 
-    if (visitData.googleEventId) {
-      logger.info(
-        `[ESPÍA/calendar] Actualizando evento ${visitData.googleEventId}.`
-      );
+    // 2. ID DETERMINISTA SANITIZADO (Solo a-v y 0-9)
+    const safeVisitId = visitId
+      .toLowerCase()
+      .replace(/[^a-v0-9]/g, (char) => (char.charCodeAt(0) % 22).toString(36));
+
+    const deterministicEventId = `visit${safeVisitId}`.substring(0, 102);
+    const targetEventId = visitData.googleEventId || deterministicEventId;
+
+    try {
+      // 3. INTENTO DE ACTUALIZACIÓN (UPSERT PREVENTIVO)
+      logger.info(`[ESPÍA/calendar] Actualizando/Insertando evento con ID: ${targetEventId}`);
+
       await calendar.events.update({
         calendarId: "primary",
-        eventId: visitData.googleEventId,
-        sendUpdates: "none", // API v3 Moderno
-        sendNotifications: false, // API Legacy (Redundancia)
-        resource: eventResource,
+        eventId: targetEventId,
+        sendUpdates: "none",
+        resource: {
+          ...eventResource,
+          id: targetEventId,
+        },
       });
-      return visitData.googleEventId;
-    } else {
-      logger.info(`[ESPÍA/calendar] Creando nuevo evento.`);
 
-      // ✅ SOLUCIÓN: Generar un ID determinista para Google Calendar basado en el ID de la visita.
-      // Esto evita duplicados si la función se ejecuta varias veces.
-      // Google requiere caracteres [a-v0-9], así que usamos hex.
-      const deterministicId = `v${Buffer.from(visitId).toString('hex')}`;
-      eventResource.id = deterministicId;
+      if (!visitData.googleEventId) {
+        await admin
+          .firestore()
+          .collection("visitas")
+          .doc(visitId)
+          .update({ googleEventId: targetEventId });
+      }
 
-      try {
+      return targetEventId;
+    } catch (updateError) {
+      // Si el evento no existía previamente (404 / 400), se inserta
+      if (updateError.code === 404 || updateError.code === 400) {
+        logger.info(`[ESPÍA/calendar] Creando evento con ID determinista: ${deterministicEventId}`);
+
+        eventResource.id = deterministicEventId;
+
         const createdEvent = await calendar.events.insert({
           calendarId: "primary",
           resource: eventResource,
           sendUpdates: "none",
-          sendNotifications: false,
         });
 
-        await admin.firestore().collection("visitas").doc(visitId).update({ googleEventId: createdEvent.data.id });
-        logger.info(`[ESPÍA/calendar] Evento creado con ID: ${createdEvent.data.id}.`);
-        return createdEvent.data.id;
-      } catch (insertError) {
-        // Si el evento ya existe (error 409), recuperamos el control y actualizamos Firestore si hace falta.
-        if (insertError.code === 409) {
-          logger.warn(`[ESPÍA/calendar] El evento ${deterministicId} ya existía (Idempotencia). Vinculando en Firestore.`);
-          await admin.firestore().collection("visitas").doc(visitId).update({ googleEventId: deterministicId });
-          return deterministicId;
-        }
-        throw insertError;
+        const newEventId = createdEvent.data.id;
+
+        await admin
+          .firestore()
+          .collection("visitas")
+          .doc(visitId)
+          .update({ googleEventId: newEventId });
+
+        return newEventId;
       }
+
+      throw updateError;
     }
   } catch (error) {
     logger.error(`Error createOrUpdateCalendarEvent:`, error);
-    if (error.code === 401 || error.code === 400) {
+
+    // Si las credenciales caducan por falta de permisos o fueron revocadas, eliminar registro
+    if (
+      error.code === 401 ||
+      error.code === 400 ||
+      error.message?.includes("invalid authentication credentials")
+    ) {
       logger.warn(
         `[AUTH_FIX] Token de Google inválido para UID ${uid}. Eliminando integración.`
       );
@@ -1207,8 +1239,10 @@ async function createOrUpdateCalendarEvent(visitData, visitId, uid) {
         .doc(uid)
         .delete();
     }
+    throw error;
   }
 }
+
 async function deleteCalendarEvent(visitData, uid) {
   try {
     const integrationDoc = await admin
@@ -1216,14 +1250,28 @@ async function deleteCalendarEvent(visitData, uid) {
       .collection("calendar_integrations")
       .doc(uid)
       .get();
+
     if (!integrationDoc.exists || !visitData.googleEventId) return;
 
-    // CORRECCIÓN: Usar googleConfig
+    const tokens = integrationDoc.data();
+
     const oAuth2Client = new google.auth.OAuth2(
       googleConfig.clientId,
       googleConfig.clientSecret
     );
-    oAuth2Client.setCredentials(integrationDoc.data());
+
+    oAuth2Client.setCredentials(tokens);
+
+    // Guardar token automáticamente si la librería de Google lo refresca
+    oAuth2Client.on("tokens", async (newTokens) => {
+      const updatedTokens = { ...tokens, ...newTokens };
+      await admin
+        .firestore()
+        .collection("calendar_integrations")
+        .doc(uid)
+        .set(updatedTokens, { merge: true });
+    });
+
     const calendar = google.calendar({ version: "v3", auth: oAuth2Client });
 
     await calendar.events.delete({
@@ -1231,8 +1279,33 @@ async function deleteCalendarEvent(visitData, uid) {
       eventId: visitData.googleEventId,
       sendNotifications: true,
     });
+
+    logger.info(`[ESPÍA/calendar] Evento ${visitData.googleEventId} eliminado exitosamente.`);
   } catch (error) {
-    if (error.code !== 410) logger.error("Error deleteCalendarEvent", error);
+    // Si el evento ya no existía en Google Calendar (404 / 410), se ignora el error de forma segura
+    if (error.code === 404 || error.code === 410) {
+      logger.warn(`[ESPÍA/calendar] El evento ${visitData.googleEventId} ya no existía en Google Calendar.`);
+      return;
+    }
+
+    // Si el token expiró sin refresh_token o fue revocado por el usuario
+    if (
+      error.code === 401 ||
+      error.code === 400 ||
+      error.message?.includes("invalid authentication credentials")
+    ) {
+      logger.error(
+        `[AUTH_FIX] Credenciales inválidas para UID ${uid}. Se elimina integración desactualizada.`
+      );
+      await admin
+        .firestore()
+        .collection("calendar_integrations")
+        .doc(uid)
+        .delete();
+      return;
+    }
+
+    logger.error("Error deleteCalendarEvent:", error);
   }
 }
 // --- El resto de las funciones (Triggers, Callables, etc.) sigue aquí sin cambios ---
@@ -1603,20 +1676,39 @@ exports.deleteVisitTemplate = onCall({ cors: true }, async (request) => {
 });
 
 exports.deleteVisitAndCalendarEvent = onCall(
-  { cors: true },
+  {
+    // Permite los orígenes específicos o pasa true para aceptar cualquier origen autenticado
+    cors: ["http://localhost:5173", "https://sisfumictph.com", "https://controltotalyph.com"],
+  },
   async (request) => {
-    assertAuth(request);
+    // 1. Validar autenticación con HttpsError
+    if (!request.auth) {
+      throw new HttpsError(
+        "unauthenticated",
+        "El usuario no está autenticado."
+      );
+    }
+
     const { visitId } = request.data;
+    if (!visitId) {
+      throw new HttpsError(
+        "invalid-argument",
+        "El parámetro visitId es requerido."
+      );
+    }
 
     const visitRef = db.collection("visitas").doc(visitId);
+
     try {
       const visitDoc = await visitRef.get();
-      if (!visitDoc.exists) return { message: "La visita no existía." };
+      if (!visitDoc.exists) {
+        return { message: "La visita no existía." };
+      }
 
       const visitData = visitDoc.data();
-
-      // Lógica para determinar quién es el dueño del calendario
       let organizerUid = null;
+
+      // 2. Optimización: Consulta en Firestore en lugar de cargar todos los usuarios de Auth
       if (visitData.zona) {
         const roleMap = {
           "Valle del Cauca": "Coordinador Valle",
@@ -1624,21 +1716,27 @@ exports.deleteVisitAndCalendarEvent = onCall(
           Nacionales: "Coordinador Nacionales",
         };
         const expectedRole = roleMap[visitData.zona];
+
         if (expectedRole) {
-          // Buscar usuario con ese rol (Costoso, optimizar en v3)
-          const userRecords = await admin.auth().listUsers(1000);
-          const coordinator = userRecords.users.find(
-            (u) => u.customClaims?.role === expectedRole
-          );
-          if (coordinator) organizerUid = coordinator.uid;
+          // Asumiendo que guardas el rol en la colección 'users'
+          const userQuery = await db
+            .collection("users")
+            .where("role", "==", expectedRole)
+            .limit(1)
+            .get();
+
+          if (!userQuery.empty) {
+            organizerUid = userQuery.docs[0].id;
+          }
         }
       }
 
-      // Fallback si no hay zona
-      if (!organizerUid)
+      // Fallback
+      if (!organizerUid) {
         organizerUid = visitData.calendarOwnerUid || visitData.createdBy;
+      }
 
-      // Intentar borrar evento de calendario
+      // Eliminar de Google Calendar
       if (
         visitData.googleEventId &&
         organizerUid &&
@@ -1656,7 +1754,9 @@ exports.deleteVisitAndCalendarEvent = onCall(
 
       return { message: "Visita eliminada correctamente." };
     } catch (e) {
-      throw new HttpsError("internal", e.message);
+      // Re-lanzar si ya es un HttpsError, de lo contrario encapsular
+      if (e instanceof HttpsError) throw e;
+      throw new HttpsError("internal", e.message || "Error interno del servidor.");
     }
   }
 );
@@ -2657,30 +2757,43 @@ exports.setUserStatus = onCall({ cors: true }, async (request) => {
 });
 
 exports.saveGoogleTokens = onCall(
-  { cors: true, enforceAppCheck: false, region: "us-central1" },
+  {
+    cors: ["http://localhost:5173", "https://sisfumictph.com", "https://controltotalyph.com"],
+    enforceAppCheck: false,
+    region: "us-central1",
+  },
   async (request) => {
-    if (!request.auth)
-      throw new HttpsError("unauthenticated", "Auth requerida");
-    const { tokens, targetUid } = request.data;
+    if (!request.auth) {
+      throw new HttpsError("unauthenticated", "Usuario no autenticado.");
+    }
 
-    // ✅ MEJORA: Añadir validación de entrada para robustecer la función.
-    if (!tokens || !targetUid) {
+    const { code, targetUid } = request.data;
+
+    if (!code || !targetUid) {
       throw new HttpsError(
         "invalid-argument",
-        "La solicitud debe incluir 'tokens' y 'targetUid'."
+        "Se requieren los parámetros 'code' y 'targetUid'."
       );
     }
 
-    if (!tokens.refresh_token) {
-      logger.warn(`[saveGoogleTokens] ADVERTENCIA: Se están guardando tokens para ${targetUid} SIN refresh_token. La integración dejará de funcionar cuando expire el access_token.`);
+    // Validar que el Secreto de Cliente esté presente
+    if (!googleConfig.clientId || !googleConfig.clientSecret) {
+      logger.error("[saveGoogleTokens] Falta clientId o clientSecret en la configuración.");
+      throw new HttpsError(
+        "failed-precondition",
+        "El servidor no tiene configuradas las credenciales secretas de Google."
+      );
     }
 
     try {
-      // CORRECCIÓN: Usar googleConfig
       const oAuth2Client = new google.auth.OAuth2(
         googleConfig.clientId,
-        googleConfig.clientSecret
+        googleConfig.clientSecret,
+        "postmessage" // Requerido para ux_mode: 'popup'
       );
+
+      // Canjear el código
+      const { tokens } = await oAuth2Client.getToken(code);
       oAuth2Client.setCredentials(tokens);
 
       const oauth2 = google.oauth2({ version: "v2", auth: oAuth2Client });
@@ -2700,9 +2813,10 @@ exports.saveGoogleTokens = onCall(
           { merge: true }
         );
 
-      return { message: "Guardado." };
+      return { message: "Integración vinculada exitosamente." };
     } catch (e) {
-      throw new HttpsError("internal", e.message);
+      logger.error(`[saveGoogleTokens] Error OAuth para UID ${targetUid}:`, e.message || e);
+      throw new HttpsError("internal", e.message || "Error al canjear el código con Google.");
     }
   }
 );
@@ -3682,10 +3796,11 @@ exports.batchAssignVisits = onCall({ cors: true }, async (request) => {
 });
 
 exports.getConsolidatedDashboardStats = onCall(
-  {
-    cors: true,
-    timeoutSeconds: 120,
-    memory: "512MB",
+{
+    cors: ["http://localhost:5173", "https://sisfumictph.com", "https://controltotalyph.com"],
+    timeoutSeconds: 60,
+    memory: "256MB", // Disminuir la memoria libera asignación de CPU en Cloud Run
+    maxInstances: 2,  // Limita el número de instancias concurrentes para no consumir cuota extra
   },
   async (request) => {
     const { auth, data } = request;
@@ -3696,28 +3811,27 @@ exports.getConsolidatedDashboardStats = onCall(
         "El usuario debe estar autenticado para ver las estadísticas."
       );
     }
+
     const userZone = auth.token.zona;
     const userRole = auth.token.role;
     const isAdminOrJefe = userRole === "Administrador" || userRole === "Jefe";
-
-    if (!userZone && !isAdminOrJefe) {
-      throw new HttpsError(
-        "permission-denied",
-        "No tienes los permisos o la zona asignada para ver estas estadísticas."
-              );
-    }
 
     const hasGlobalAccess = [
       "Administrador",
       "Jefe",
       "Coordinador Nacionales",
       "Coordinador Nacional",
-      "Gerente"
+      "Gerente",
     ].includes(userRole);
 
-    if (!userZone && !hasGlobalAccess) {    }
+    if (!userZone && !hasGlobalAccess && !isAdminOrJefe) {
+      throw new HttpsError(
+        "permission-denied",
+        "No tienes los permisos o la zona asignada para ver estas estadísticas."
+      );
+    }
 
-    const { clientDate, zone: requestedZone, range = "month" } = data; // Formato YYYY-MM-DD
+    const { clientDate, zone: requestedZone, range = "month" } = data || {};
     if (!clientDate) {
       throw new HttpsError(
         "invalid-argument",
@@ -3728,7 +3842,7 @@ exports.getConsolidatedDashboardStats = onCall(
     try {
       const db = admin.firestore();
 
-      const now = new Date(`${clientDate}T05:00:00.000Z`); // 00:00 en Colombia (UTC-5)
+      const now = new Date(`${clientDate}T05:00:00.000Z`); // 00:00 Colombia (UTC-5)
       let startOfRange, endOfRange;
 
       if (range === "today") {
@@ -3736,16 +3850,15 @@ exports.getConsolidatedDashboardStats = onCall(
         endOfRange = new Date(now);
         endOfRange.setHours(23, 59, 59, 999);
       } else if (range === "week") {
-        const dayOfWeek = now.getDay(); // 0 (Sun) - 6 (Sat)
+        const dayOfWeek = now.getDay();
         startOfRange = new Date(now);
         startOfRange.setDate(
           now.getDate() - dayOfWeek + (dayOfWeek === 0 ? -6 : 1)
-        ); // Lunes de esta semana
+        );
         endOfRange = new Date(startOfRange);
         endOfRange.setDate(startOfRange.getDate() + 6);
         endOfRange.setHours(23, 59, 59, 999);
       } else {
-        // 'month' por defecto
         startOfRange = new Date(now.getFullYear(), now.getMonth(), 1);
         endOfRange = new Date(
           now.getFullYear(),
@@ -3757,16 +3870,9 @@ exports.getConsolidatedDashboardStats = onCall(
         );
       }
 
-      // Para la agenda del día, siempre usamos el día actual.
       const startOfDay = new Date(`${clientDate}T05:00:00.000Z`);
       const startOfNextDay = new Date(startOfDay);
       startOfNextDay.setDate(startOfDay.getDate() + 1);
-
-      // --- OPTIMIZACIÓN: Se definen las consultas base ---
-      let servicesQuery = db.collection("servicios");
-      let visitsQuery = db.collection("visitas");
-      let clientsQuery = db.collection("clientes");
-      let fumigadoresQuery = db.collection("fumigadores");
 
       let zoneToFilter = null;
       if (hasGlobalAccess) {
@@ -3777,6 +3883,12 @@ exports.getConsolidatedDashboardStats = onCall(
         zoneToFilter = userZone;
       }
 
+      // --- CONSULTAS CON ACCESO A FIRESTORE ---
+      let servicesQuery = db.collection("servicios");
+      let visitsQuery = db.collection("visitas");
+      let clientsQuery = db.collection("clientes");
+      let fumigadoresQuery = db.collection("fumigadores");
+
       if (zoneToFilter) {
         servicesQuery = servicesQuery.where("zona", "==", zoneToFilter);
         visitsQuery = visitsQuery.where("zona", "==", zoneToFilter);
@@ -3784,43 +3896,36 @@ exports.getConsolidatedDashboardStats = onCall(
         fumigadoresQuery = fumigadoresQuery.where("zona", "==", zoneToFilter);
       }
 
-      // --- OPTIMIZACIÓN: Se definen las promesas para ejecutar en paralelo ---
       const servicesPromise = servicesQuery.get();
       const clientsPromise = clientsQuery.where("estado", "==", "Activo").get();
 
-      // Consulta de visitas para el rango seleccionado (mes, semana, día)
       const visitsInRangePromise = visitsQuery
         .where("fecha_visita", ">=", startOfRange)
         .where("fecha_visita", "<=", endOfRange)
         .get();
 
-      // Consulta de visitas para los últimos 6 meses para el gráfico de tendencia
       const sixMonthsAgo = new Date(now.getFullYear(), now.getMonth() - 5, 1);
       let baseVisitsQuery = db.collection("visitas");
-      if (zoneToFilter)
+      if (zoneToFilter) {
         baseVisitsQuery = baseVisitsQuery.where("zona", "==", zoneToFilter);
+      }
       const visitsForChartPromise = baseVisitsQuery
         .where("fecha_visita", ">=", sixMonthsAgo)
         .where("estado_visita", "==", "Realizada")
         .get();
 
+      // Ajuste para evitar requirimiento estricto de índice compuesto si no existe
       let pendingVisitsQuery = db
         .collection("visitas")
-        .where("createdBy", "==", "SYSTEM")
-        .orderBy("fecha_visita", "asc")
-        .limit(10);
-      if (zoneToFilter) {
-        pendingVisitsQuery = pendingVisitsQuery.where(
-          "zona",
-          "==",
-          zoneToFilter
-        );
-      }
-      const pendingVisitsPromise = pendingVisitsQuery.get();
+        .where("createdBy", "==", "SYSTEM");
 
+      if (zoneToFilter) {
+        pendingVisitsQuery = pendingVisitsQuery.where("zona", "==", zoneToFilter);
+      }
+
+      const pendingVisitsPromise = pendingVisitsQuery.limit(20).get();
       const fumigadoresPromise = fumigadoresQuery.get();
 
-      // --- Ejecutar todas las promesas ---
       const [
         servicesSnapshot,
         clientsSnapshot,
@@ -3837,7 +3942,7 @@ exports.getConsolidatedDashboardStats = onCall(
         fumigadoresPromise,
       ]);
 
-      // --- Procesamiento de los resultados ---
+      // --- PROCESAMIENTO ---
       const allServices = servicesSnapshot.docs.map((doc) => ({
         id: doc.id,
         ...doc.data(),
@@ -3845,11 +3950,13 @@ exports.getConsolidatedDashboardStats = onCall(
 
       const visitsInRange = (visitsInRangeSnapshot.docs || []).map((doc) => {
         const data = doc.data();
-        const fechaVisita = data.fecha_visita
-          ? data.fecha_visita.toDate()
-          : null;
-        return { id: doc.id, ...data, fecha_visita: fechaVisita };
+        return {
+          id: doc.id,
+          ...data,
+          fecha_visita: data.fecha_visita ? data.fecha_visita.toDate() : null,
+        };
       });
+
       const activeClients = clientsSnapshot.docs.map((doc) => doc.data());
       const totalClients = activeClients.length;
       const totalBranches = activeClients.reduce(
@@ -3873,22 +3980,21 @@ exports.getConsolidatedDashboardStats = onCall(
       const serviceTypeDistribution = {};
       const servicesByFrequency = {};
 
-      // KPI: Servicios Activos y Distribuciones
       allServices.forEach((sheet) => {
         (sheet.services || []).forEach((service) => {
           if (service.estado_servicio === "Activo") activeServices++;
-          if (service.tipo_servicio)
+          if (service.tipo_servicio) {
             serviceTypeDistribution[service.tipo_servicio] =
               (serviceTypeDistribution[service.tipo_servicio] || 0) + 1;
-          if (service.frecuencia)
+          }
+          if (service.frecuencia) {
             servicesByFrequency[service.frecuencia] =
               (servicesByFrequency[service.frecuencia] || 0) + 1;
+          }
         });
       });
 
-      // KPI: Ingresos del Mes
-      const canViewBilling = hasGlobalAccess;
-      if (canViewBilling) {
+      if (hasGlobalAccess) {
         validVisitsInRange.forEach((v) => {
           if (v.estado_visita === "Realizada") {
             const serviceSheet = allServices.find(
@@ -3904,11 +4010,11 @@ exports.getConsolidatedDashboardStats = onCall(
         });
       }
 
-      // Gráfico: Visitas por Mes
       const allFumigadores = fumigadoresSnapshot.docs.map((doc) => ({
         id: doc.id,
         ...doc.data(),
       }));
+
       const visitsPerMonth = {};
       for (let i = 5; i >= 0; i--) {
         const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
@@ -3917,6 +4023,7 @@ exports.getConsolidatedDashboardStats = onCall(
         ).padStart(2, "0")}`;
         visitsPerMonth[monthKey] = 0;
       }
+
       const visitsForChart = visitsForChartSnapshot.docs.map((d) => {
         const data = d.data();
         return {
@@ -3927,16 +4034,16 @@ exports.getConsolidatedDashboardStats = onCall(
 
       visitsForChart.forEach((v) => {
         if (v.estado_visita === "Realizada" && v.fecha_visita) {
-          const d = v.fecha_visita; // Ahora estamos seguros de que 'd' no es nulo.
+          const d = v.fecha_visita;
           const monthKey = `${d.getFullYear()}-${String(
             d.getMonth() + 1
           ).padStart(2, "0")}`;
-          if (visitsPerMonth.hasOwnProperty(monthKey))
+          if (Object.prototype.hasOwnProperty.call(visitsPerMonth, monthKey)) {
             visitsPerMonth[monthKey]++;
+          }
         }
       });
 
-      // Gráfico: Productividad de Técnicos
       const technicianStats = {};
       allFumigadores.forEach((fumigador) => {
         technicianStats[fumigador.nombreCompleto] = {
@@ -3946,6 +4053,7 @@ exports.getConsolidatedDashboardStats = onCall(
           canceladas: 0,
         };
       });
+
       validVisitsInRange.forEach((v) => {
         (v.fumigadores_asignados || []).forEach((techName) => {
           if (technicianStats[techName]) {
@@ -3959,7 +4067,6 @@ exports.getConsolidatedDashboardStats = onCall(
         });
       });
 
-      // Gráfico: Clientes por Ciudad (se calcula a partir de las fichas de servicio)
       const clientsByCity = allServices.reduce((acc, sheet) => {
         if (sheet.clientCity) {
           acc[sheet.clientCity] = (acc[sheet.clientCity] || 0) + 1;
@@ -3967,23 +4074,19 @@ exports.getConsolidatedDashboardStats = onCall(
         return acc;
       }, {});
 
-      // Lista: Agenda del Día
       const todaysAgenda = validVisitsInRange
         .filter(
           (v) => v.fecha_visita >= startOfDay && v.fecha_visita < startOfNextDay
         )
-        .map((visit) => {
-          return {
-            id: visit.id,
-            id_cliente: visit.id_cliente,
-            nombre_cliente: visit.nombre_cliente,
-            tipo_visita: visit.tipo_visita,
-            fecha_visita: visit.fecha_visita.toISOString(),
-            fumigadores_asignados: visit.fumigadores_asignados || [],
-          };
-        });
+        .map((visit) => ({
+          id: visit.id,
+          id_cliente: visit.id_cliente,
+          nombre_cliente: visit.nombre_cliente,
+          tipo_visita: visit.tipo_visita,
+          fecha_visita: visit.fecha_visita.toISOString(),
+          fumigadores_asignados: visit.fumigadores_asignados || [],
+        }));
 
-      // Lista: Visitas Pendientes
       const pendingVisits = pendingVisitsSnapshot.docs
         .map((doc) => ({ id: doc.id, ...doc.data() }))
         .filter(
@@ -3991,11 +4094,19 @@ exports.getConsolidatedDashboardStats = onCall(
             !visit.fumigadores_asignados ||
             visit.fumigadores_asignados.length === 0
         )
+        .sort((a, b) => {
+          const dateA = a.fecha_visita ? a.fecha_visita.toDate() : new Date(0);
+          const dateB = b.fecha_visita ? b.fecha_visita.toDate() : new Date(0);
+          return dateA - dateB;
+        })
+        .slice(0, 10)
         .map((visit) => ({
           id: visit.id,
           nombre_cliente: visit.nombre_cliente,
           tipo_visita: visit.tipo_visita,
-          fecha_visita: visit.fecha_visita.toDate().toISOString(),
+          fecha_visita: visit.fecha_visita
+            ? visit.fecha_visita.toDate().toISOString()
+            : null,
         }));
 
       return {
@@ -4021,7 +4132,7 @@ exports.getConsolidatedDashboardStats = onCall(
       console.error("Error al generar estadísticas consolidadas:", error);
       throw new HttpsError(
         "internal",
-        "Ocurrió un error inesperado al procesar los datos del dashboard."
+        error.message || "Ocurrió un error inesperado al procesar los datos del dashboard."
       );
     }
   }
@@ -4977,40 +5088,30 @@ exports.exportPaymentDataToExcel = onCall(
 exports.handleVisitWrite = onDocumentWritten(
   { document: "visitas/{visitId}" },
   async (event) => {
-    // 1. EXTRAER VISITID DE MANERA SEGURA AL INICIO
     const visitId = event.params.visitId;
-
-    if (!visitId) {
-      logger.error(
-        "Visit ID is undefined in handleVisitWrite event params. Aborting."
-      );
-      return;
-    }
+    if (!visitId) return;
 
     const after = event.data.after.exists ? event.data.after.data() : null;
     const before = event.data.before.exists ? event.data.before.data() : null;
 
-    // --- LOGICA ANTI-BUCLE ---
-    // Si la función se dispara solo porque nosotros mismos acabamos de guardar el googleEventId,
-    // y no ha cambiado nada más importante, DEBEMOS DETENERNOS.
-    if (before && !before.googleEventId && after.googleEventId) {
-      // Asumimos que este cambio lo hizo 'createOrUpdateCalendarEvent' en la ejecución anterior.
-      // Si no paramos aquí, se volverá a enviar el correo.
-      return;
+    if (!after) return; // Si el documento fue eliminado, salir
+
+    // 1. SILENCIAR SI SOLO CAMBIARON CAMPOS DE INFRAESTRUCTURA / SINCRONIZACIÓN
+    if (before) {
+      const isCalendarUpdateOnly =
+        before.googleEventId !== after.googleEventId ||
+        before.assignmentNotificationKey !== after.assignmentNotificationKey ||
+        before.assignmentNotificationClaimedAt !== after.assignmentNotificationClaimedAt;
+
+      // Si lo único que cambió fue la clave o el ID del evento, abortar para no duplicar
+      if (isCalendarUpdateOnly && before.estado_visita === after.estado_visita) {
+        return;
+      }
     }
 
-    if (
-      before &&
-      after &&
-      before.googleEventId !== after.googleEventId &&
-      Object.keys(before).length + 1 === Object.keys(after).length
-    ) {
-      return;
-    }
-    if (!after) return;
-
+    // 2. VERIFICAR SI LA VISITA ESTÁ PROGRAMADA Y ES VÁLIDA
     let isNewOrUpdatedVisit = false;
-    if (after.estado_visita === "Programada") {
+    if (after.estado_visita === "Programada" && after.fecha_visita) {
       const visitDate = after.fecha_visita.toDate();
       const now = new Date();
       visitDate.setHours(0, 0, 0, 0);
@@ -5018,60 +5119,105 @@ exports.handleVisitWrite = onDocumentWritten(
       isNewOrUpdatedVisit = visitDate >= now;
     }
 
-    if (isNewOrUpdatedVisit) {
-      let organizerUid = null;
-      const requesterUid = after.createdBy;
-      const visitZone = after.zona;
-      const calendarOwnerUid = after.calendarOwnerUid || null;
+    if (!isNewOrUpdatedVisit) return;
 
-      // Lógica simplificada de asignación de organizador
-      if (visitZone) {
-        const roleMap = {
-          "Valle del Cauca": "Coordinador Valle",
-          "Norte de Santander": "Coordinador Norte de Santander",
-          Nacionales: "Coordinador Nacionales",
-        };
-        const expectedRole = roleMap[visitZone];
-        if (expectedRole) {
-          const users = await admin.auth().listUsers(1000);
-          const coordinator = users.users.find(
-            (u) => u.customClaims?.role === expectedRole
-          );
-          if (coordinator) organizerUid = coordinator.uid;
+    const assignedTechnicians = Array.isArray(after.fumigadores_asignados)
+      ? [...after.fumigadores_asignados].sort()
+      : [];
+    if (assignedTechnicians.length === 0) return;
+
+    const visitDateKey = after.fecha_visita?.toMillis
+      ? after.fecha_visita.toMillis()
+      : String(after.fecha_visita || "");
+
+    const notificationKey = JSON.stringify({
+      technicians: assignedTechnicians,
+      date: visitDateKey,
+      zone: after.zona || "",
+    });
+
+    // 3. CANDADO ATÓMICO: Evita ejecuciones simultáneas paralelas
+    const currentRef = db.collection("visitas").doc(visitId);
+    let proceedWithExecution = false;
+
+    try {
+      await db.runTransaction(async (transaction) => {
+        const currentDoc = await transaction.get(currentRef);
+        if (!currentDoc.exists) return;
+
+        const currentData = currentDoc.data();
+
+        // Si ya procesamos exactamente esta misma clave, no continuar
+        if (currentData.assignmentNotificationKey === notificationKey) {
+          proceedWithExecution = false;
+          return;
         }
-      }
 
-      // Fallback explícito al calendario elegido en el formulario.
-      if (!organizerUid && calendarOwnerUid) {
-        organizerUid = calendarOwnerUid;
-      }
+        // Marcar la clave inmediatamente antes de realizar llamadas a APIs externas
+        transaction.update(currentRef, {
+          assignmentNotificationKey: notificationKey,
+          assignmentNotificationClaimedAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+        proceedWithExecution = true;
+      });
+    } catch (error) {
+      logger.error(`Error en transacción de bloqueo para ${visitId}:`, error);
+      return;
+    }
 
-      // Fallback: Si quien creó la visita es coordinador, usar su calendario
-      if (!organizerUid && requesterUid) {
-        try {
-          const creator = await admin.auth().getUser(requesterUid);
-          if (creator.customClaims?.role?.startsWith("Coordinador")) {
-            organizerUid = requesterUid;
-          }
-        } catch (e) {}
-      }
+    if (!proceedWithExecution) return;
 
-      if (organizerUid) {
-        const googleEventId = await createOrUpdateCalendarEvent(
-          after,
-          visitId,
-          organizerUid
+    // 4. RESOLVER ORGANIZADOR
+    let organizerUid = null;
+    const requesterUid = after.createdBy;
+    const visitZone = after.zona;
+    const calendarOwnerUid = after.calendarOwnerUid || null;
+
+    if (visitZone) {
+      const roleMap = {
+        "Valle del Cauca": "Coordinador Valle",
+        "Norte de Santander": "Coordinador Norte de Santander",
+        Nacionales: "Coordinador Nacionales",
+      };
+      const expectedRole = roleMap[visitZone];
+      if (expectedRole) {
+        // Sugerencia: Reemplazar listUsers por consulta a Firestore en producción
+        const users = await admin.auth().listUsers(1000);
+        const coordinator = users.users.find(
+          (u) => u.customClaims?.role === expectedRole
         );
-        // ✅ CORRECCIÓN: Eliminada la actualización redundante. 'createOrUpdateCalendarEvent' ya se encarga de guardar el ID.
+        if (coordinator) organizerUid = coordinator.uid;
+      }
+    }
 
-        // Enviamos el correo explícitamente ya que Calendar a veces no envía el HTML completo
+    if (!organizerUid && calendarOwnerUid) {
+      organizerUid = calendarOwnerUid;
+    }
+
+    if (!organizerUid && requesterUid) {
+      try {
+        const creator = await admin.auth().getUser(requesterUid);
+        if (creator.customClaims?.role?.startsWith("Coordinador")) {
+          organizerUid = requesterUid;
+        }
+      } catch (e) {}
+    }
+
+    // 5. CREAR/ACTUALIZAR EN GOOGLE CALENDAR
+    if (organizerUid) {
+      try {
+        // Se ejecuta la sincronización con Google Calendar
+        await createOrUpdateCalendarEvent(after, visitId, organizerUid);
+
+        // Envío de correo complementario (Asegúrate de que no duplique las invitaciones directas de Google)
         await sendVisitNotificationViaGmailAPI(after, visitId, organizerUid);
-      } else {
-        logger.warn(
-          `[VISITA/email] No se pudo resolver una cuenta de Google para la visita ${visitId}. ` +
-            `zona=${visitZone || "N/A"}, calendarOwnerUid=${calendarOwnerUid || "N/A"}, createdBy=${requesterUid || "N/A"}`
-        );
+      } catch (err) {
+        logger.error(`Error al procesar evento/correo para ${visitId}:`, err);
       }
+    } else {
+      logger.warn(
+        `[VISITA/email] No se pudo resolver organizador para ${visitId}`
+      );
     }
   }
 );
@@ -6185,31 +6331,6 @@ exports.makeSupportFilePublic = onCall({ cors: true }, async (request) => {
       "internal",
       `No se pudo establecer el permiso de lectura pública: ${error.message}`
     );
-  }
-});
-
-exports.getSignedUploadUrl = onCall({ cors: true }, async (request) => {
-  assertAuth(request);
-  const { filePath, contentType } = request.data;
-
-  if (!filePath || typeof filePath !== "string" || !contentType || typeof contentType !== "string") {
-    throw new HttpsError(
-      "invalid-argument",
-      "Se requieren filePath y contentType válidos."
-    );
-  }
-
-  try {
-    const bucket = admin.storage().bucket();
-    const file = bucket.file(filePath);
-    const [signedUrl] = await file.getSignedUrl({
-      action: "write",
-      expires: Date.now() + 15 * 60 * 1000, // 15 minutos
-      contentType: contentType,
-    });
-    return { signedUrl };
-  } catch (e) {
-    throw new HttpsError("internal", "Error generando URL de subida.");
   }
 });
 

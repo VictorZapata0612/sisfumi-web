@@ -1,3 +1,6 @@
+<!-- eslint-disable @typescript-eslint/no-unused-vars -->
+<!-- eslint-disable @typescript-eslint/ban-ts-comment -->
+<!-- eslint-disable @typescript-eslint/no-explicit-any -->
 <script setup lang="ts">
 import { ref, watch, computed, nextTick, onMounted } from 'vue'
 import {
@@ -19,6 +22,7 @@ const props = defineProps<{
   show: boolean
   visit: Visit | null
   selectedDate: Date | null
+  saving?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -43,6 +47,7 @@ const newChatNote = ref('')
 const clientSearchTerm = ref('')
 const showClientResults = ref(false)
 const clientSearchContainer = ref<HTMLElement | null>(null)
+const isSubmitting = ref(false)
 
 const formatDateInput = (date: Date) => {
   const year = date.getFullYear()
@@ -138,6 +143,7 @@ watch(
   () => props.show,
   (newVal) => {
     if (newVal) activeTab.value = 'details'
+    if (!newVal) isSubmitting.value = false
 
     if (newVal) {
       if (props.visit) {
@@ -227,6 +233,9 @@ const applyTemplate = (templateId: string) => {
 }
 
 const handleSubmit = async () => {
+  if (isSubmitting.value || props.saving) return
+  isSubmitting.value = true
+
   const client = planningStore.clients.find((c: Client) => c.id === localVisit.value.id_cliente)
   let visitZone = client?.zona || 'Sin Zona'
 
@@ -258,6 +267,7 @@ const handleSubmit = async () => {
   const technicians = visitToSave.fumigadores_asignados || []
 
   if (technicians.length === 0 || visitToSave.isUrgent) {
+    isSubmitting.value = false
     emit('save', visitToSave)
     return
   }
@@ -277,12 +287,17 @@ const handleSubmit = async () => {
         message: `El técnico <strong>${result.data.conflictingTechnician}</strong> ya tiene una visita con <strong>${result.data.conflictingClient}</strong>. <br><br>¿Desea ignorar el aviso y programar de todas formas?`,
         isConfirmation: true,
         confirmationText: 'Sí, programar',
-        onConfirm: () => emit('save', visitToSave)
+        onConfirm: () => {
+          isSubmitting.value = false
+          emit('save', visitToSave)
+        }
       })
     } else {
+      isSubmitting.value = false
       emit('save', visitToSave)
     }
   } catch (error: any) {
+    isSubmitting.value = false
     showToast({
       title: 'Error de Verificación',
       message: `No se pudo verificar disponibilidad: ${error.message}`,
@@ -613,12 +628,13 @@ const addChatNote = () => {
         <div v-else class="hidden sm:block"></div>
 
         <div class="flex gap-3 justify-end">
-          <button @click="$emit('close')" type="button"
-            class="btn btn-secondary bg-white/5 hover:bg-white/10 border-white/10">Cancelar</button>
-          <button @click="handleSubmit" type="button"
-            class="btn btn-primary bg-[#d60000] hover:bg-red-700 shadow-lg shadow-red-500/20 px-8">
-            <i class="fas fa-save mr-2"></i>
-            {{ isEditMode ? 'Guardar Cambios' : 'Confirmar Programación' }}
+          <button @click="$emit('close')" type="button" :disabled="isSubmitting || saving"
+            class="btn btn-secondary bg-white/5 hover:bg-white/10 border-white/10 disabled:opacity-50">Cancelar</button>
+          <button @click="handleSubmit" type="button" :disabled="isSubmitting || saving"
+            class="btn btn-primary bg-[#d60000] hover:bg-red-700 shadow-lg shadow-red-500/20 px-8 disabled:opacity-50">
+            <i v-if="isSubmitting || saving" class="fas fa-spinner fa-spin mr-2"></i>
+            <i v-else class="fas fa-save mr-2"></i>
+            {{ isSubmitting || saving ? (isEditMode ? 'Guardando...' : 'Creando visita...') : (isEditMode ? 'Guardar Cambios' : 'Confirmar Programación') }}
           </button>
         </div>
       </div>

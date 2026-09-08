@@ -904,6 +904,7 @@ const handleQuickComplete = (visit: Visit) => {
 
     <!-- Modales Globales -->
     <VisitFormModal :show="showCreateModal || showEditModal" :visit="editingVisit" :selected-date="selectedDate"
+      :saving="isSavingVisit"
       @close="((showCreateModal = false), (showEditModal = false))" @save="handleSaveVisit"
       @delete="handleDeleteVisit" />
 
