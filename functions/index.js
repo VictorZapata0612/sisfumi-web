@@ -4733,6 +4733,9 @@ exports.generateInvoiceReport = onCall({ cors: true }, async (request) => {
     let clientId = null;
     let clientName = groupName;
     let clientZone = "Sin Zona";
+    let servicePrices = new Map();
+    let clientBaseRate = 0;
+    const visitUpdates = [];
 
     for (const serviceData of servicesToInvoice) {
       const visitRef = db.collection("visitas").doc(serviceData.id);
@@ -4758,11 +4761,28 @@ exports.generateInvoiceReport = onCall({ cors: true }, async (request) => {
           throw new HttpsError("not-found", `Cliente ${clientId} no encontrado.`);
         }
         const clientData = cDoc.data();
-        clientZone = clientData.zona || "Sin Zona";
+        const clientZones = Array.isArray(clientData.zonasDeSucursales)
+          ? clientData.zonasDeSucursales
+          : [clientData.zona].filter(Boolean);
+        clientZone = d.zona || clientData.zona || clientZones[0] || "Sin Zona";
         clientName = clientData.nombreComercial || groupName;
 
-        if (!isAdmin && userZone && clientZone !== userZone) {
+        if (!isAdmin && userZone && !clientZones.includes(userZone) && d.zona !== userZone) {
           throw new HttpsError("permission-denied", `No puedes facturar clientes de la zona ${clientZone}.`);
+        }
+
+        clientBaseRate = Number(clientData.valor_servicio_base) || 0;
+        const serviceSheetDoc = await t.get(
+          db.collection("servicios").doc(clientId)
+        );
+        const serviceSheet = serviceSheetDoc.exists ? serviceSheetDoc.data() : null;
+        if (Array.isArray(serviceSheet?.services)) {
+          serviceSheet.services.forEach((service) => {
+            const price = Number(service.valor);
+            if (service.tipo_servicio && Number.isFinite(price) && price > 0) {
+              servicePrices.set(service.tipo_servicio, price);
+            }
+          });
         }
       }
 
@@ -4770,9 +4790,12 @@ exports.generateInvoiceReport = onCall({ cors: true }, async (request) => {
         throw new HttpsError("failed-precondition", "Todas las visitas deben pertenecer al mismo cliente.");
       }
 
-      const val = parseFloat(d.valor_servicio) || 0;
+      const storedValue = Number(d.valor_servicio);
+      const val = storedValue > 0
+        ? storedValue
+        : servicePrices.get(d.tipo_visita) || clientBaseRate;
       if (val <= 0) {
-        throw new HttpsError("failed-precondition", `La visita ${serviceData.id} tiene un valor inválido (${val}).`);
+        throw new HttpsError("failed-precondition", `La visita ${serviceData.id} no tiene un precio configurado para el servicio ${d.tipo_visita || "seleccionado"}.`);
       }
       total += val;
 
@@ -4784,11 +4807,13 @@ exports.generateInvoiceReport = onCall({ cors: true }, async (request) => {
       };
       services.push(serviceItem);
 
-      t.update(visitRef, {
+      visitUpdates.push({ ref: visitRef, data: {
         estado_facturacion: "Facturada",
         billingData: { invoicedAt: admin.firestore.FieldValue.serverTimestamp() },
-      });
+      }});
     }
+
+    visitUpdates.forEach(({ ref, data }) => t.update(ref, data));
 
     const invoiceRef = db.collection("grupos_facturacion").doc();
     const invoiceNumber = `F-${Date.now().toString().slice(-6)}`;
@@ -6163,7 +6188,15 @@ exports.getSignedUploadUrl = onCall({ cors: true }, async (request) => {
   assertAuth(request);
   const { filePath, contentType } = request.data;
 
+  if (!filePath || typeof filePath !== "string" || !contentType || typeof contentType !== "string") {
+    throw new HttpsError(
+      "invalid-argument",
+      "Se requieren filePath y contentType válidos."
+    );
+  }
+
   try {
+    const bucket = admin.storage().bucket();
     const file = bucket.file(filePath);
     const [signedUrl] = await file.getSignedUrl({
       action: "write",

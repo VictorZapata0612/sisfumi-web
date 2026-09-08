@@ -114,6 +114,12 @@ export const usePermissionsStore = defineStore('permissions', () => {
     // 5. Actualizar estado local
     const visit = pendingVisits.value.find((v) => v.id === visitId)
     if (visit) {
+      if (!visit.gestionPermiso) {
+        visit.gestionPermiso = { aprobado: false, soportes: [] }
+      }
+      if (!Array.isArray(visit.gestionPermiso.soportes)) {
+        visit.gestionPermiso.soportes = []
+      }
       visit.gestionPermiso.soportes.push(fileData)
     }
   }
