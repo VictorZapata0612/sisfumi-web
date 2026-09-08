@@ -165,25 +165,26 @@ export const useBillingStore = defineStore('billing', () => {
   }
 
   /**
-   * Genera un reporte de factura y devuelve el archivo Excel en base64.
+   * Genera una factura validada y segura en el backend.
    */
   async function generateInvoiceReport(options: {
-    visitIds: string[]
+    servicesToInvoice: BillingService[]
     groupName: string
+    clientId: string
     dueDays: number
     observations: string
   }) {
     const generateFn = httpsCallable(functions, 'generateInvoiceReport')
     const result = (await generateFn(options)) as {
-      data: { success: boolean; invoiceId: string; invoiceNumber: string; fileData: string }
+      data: { invoiceNumber: string }
     }
     return result.data
   }
 
   /**
-   * Descarga un reporte de factura existente.
+   * Descarga el archivo Excel de una factura existente.
    */
-  async function downloadExistingInvoice(invoiceNumber: string) {
+  async function getInvoiceExcel(invoiceNumber: string) {
     const downloadFn = httpsCallable(functions, 'getInvoiceExcel')
     const result = (await downloadFn({ invoiceNumber })) as { data: { fileData: string } }
     return result.data
@@ -214,7 +215,7 @@ export const useBillingStore = defineStore('billing', () => {
     kpis,
     fetchBillingData,
     generateInvoiceReport,
-    downloadExistingInvoice,
+    getInvoiceExcel,
     changeMonth,
     // --- ✅ NUEVO: Exponer nuevos estados y getters ---
     // ✅ CORRECCIÓN: Se añaden las propiedades que faltaban al return.

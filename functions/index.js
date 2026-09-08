@@ -3359,14 +3359,25 @@ exports.getBillingDataForMonth = onCall({ cors: true }, async (request) => {
     throw new HttpsError("unauthenticated", "Debe estar autenticado.");
 
   const { month, year } = request.data;
+  const { zona: userZone, role: userRole } = request.auth.token;
   if (month === undefined || !year)
     throw new HttpsError("invalid-argument", "Faltan mes o año.");
 
   try {
+    // Validar que usuario tenga permiso para ver datos de billing
+    const isAdmin = ["Administrador", "Jefe", "Coordinador Nacionales"].includes(userRole);
+    if (!isAdmin && !userZone) {
+      throw new HttpsError("permission-denied", "No tienes zona asignada para acceder a facturación.");
+    }
+
     const startDate = new Date(year, month, 1);
     const endDate = new Date(year, month + 1, 0, 23, 59, 59);
 
-    const visitasRef = db.collection("visitas");
+    let visitasRef = db.collection("visitas");
+    if (!isAdmin && userZone) {
+      visitasRef = visitasRef.where("zona", "==", userZone);
+    }
+
     const snapshot = await visitasRef
       .where("fecha_visita", ">=", startDate)
       .where("fecha_visita", "<=", endDate)
@@ -3376,12 +3387,14 @@ exports.getBillingDataForMonth = onCall({ cors: true }, async (request) => {
       .get();
 
     // ✅ MEJORA: Obtener todas las fichas de servicio de una vez para evitar múltiples lecturas.
-    // Esto es mucho más eficiente que buscar una ficha por cada visita.
-    const serviceSheetsSnapshot = await db.collection("servicios").get();
+    let serviceSheetQuery = db.collection("servicios");
+    if (!isAdmin && userZone) {
+      serviceSheetQuery = serviceSheetQuery.where("zona", "==", userZone);
+    }
+    const serviceSheetsSnapshot = await serviceSheetQuery.get();
     const serviceSheetsMap = new Map();
     serviceSheetsSnapshot.forEach((doc) => {
       const sheet = doc.data();
-      // Creamos un mapa anidado para un acceso rápido: client_id -> tipo_servicio -> valor
       if (sheet.clientId && sheet.services) {
         const servicesMap = new Map();
         sheet.services.forEach((service) => {
@@ -3500,11 +3513,14 @@ exports.getBillingDataForMonth = onCall({ cors: true }, async (request) => {
 
     const pendingGroups = Object.values(groupedPending);
 
-    const invoicedSnapshot = await db
+    let invoicedQuery = db
       .collection("grupos_facturacion")
       .where("month", "==", month)
-      .where("year", "==", year)
-      .get();
+      .where("year", "==", year);
+    if (!isAdmin && userZone) {
+      invoicedQuery = invoicedQuery.where("zona", "==", userZone);
+    }
+    const invoicedSnapshot = await invoicedQuery.get();
 
     const invoicedGroups = invoicedSnapshot.docs.map((doc) => {
       const d = doc.data();
@@ -4283,6 +4299,19 @@ exports.markVisitsAsBilled = onCall({ cors: true }, async (request) => {
 exports.registerPartialPayment = onCall({ cors: true }, async (request) => {
   assertAuth(request);
   const { invoiceNumber, paymentDetails } = request.data;
+  const { zona: userZone, role: userRole } = request.auth.token;
+
+  // Validar datos
+  if (!invoiceNumber || !paymentDetails) {
+    throw new HttpsError("invalid-argument", "Faltan datos de pago.");
+  }
+  const amount = parseFloat(paymentDetails.amount);
+  if (isNaN(amount) || amount <= 0) {
+    throw new HttpsError("invalid-argument", "El monto debe ser un número positivo.");
+  }
+  if (!paymentDetails.date) {
+    throw new HttpsError("invalid-argument", "Debe proporcionar la fecha del pago.");
+  }
 
   // Usamos transacción para garantizar consistencia en el saldo
   await db.runTransaction(async (t) => {
@@ -4295,6 +4324,18 @@ exports.registerPartialPayment = onCall({ cors: true }, async (request) => {
 
     const doc = q.docs[0];
     const data = doc.data();
+
+    // Validar zona del usuario
+    const isAdmin = ["Administrador", "Jefe"].includes(userRole);
+    if (!isAdmin && userZone && data.zona && data.zona !== userZone) {
+      throw new HttpsError("permission-denied", "No tienes permiso para registrar pagos en esta factura.");
+    }
+
+    // Validar que monto no exceda saldo
+    const currentBalance = data.currentBalance || data.totalValue || 0;
+    if (amount > currentBalance) {
+      throw new HttpsError("failed-precondition", `El monto no puede exceder el saldo pendiente: ${currentBalance}`);
+    }
 
     // Crear subcolección de pagos
     const newRef = doc.ref.collection("payments").doc();
@@ -4313,8 +4354,7 @@ exports.registerPartialPayment = onCall({ cors: true }, async (request) => {
     });
 
     // Actualizar saldo
-    const amount = parseFloat(paymentDetails.amount);
-    const newBalance = (data.currentBalance || data.totalValue) - amount;
+    const newBalance = currentBalance - amount;
 
     // Determinar nuevo estado
     let newStatus = "partially_paid";
@@ -4336,12 +4376,19 @@ exports.getPaymentDataForMonth = onCall({ cors: true }, async (request) => {
   }
 
   const userRole = auth.token.role;
+  const userZone = auth.token.zona;
   const allowedRoles = ["Jefe", "Administrador", "Coordinador Nacionales"];
   if (!allowedRoles.includes(userRole)) {
     throw new HttpsError(
       "permission-denied",
       "No tienes permiso para acceder a esta información."
     );
+  }
+
+  // Validar que usuario tenga zona si no es admin/jefe
+  const isAdmin = ["Administrador", "Jefe"].includes(userRole);
+  if (!isAdmin && !userZone) {
+    throw new HttpsError("permission-denied", "No tienes zona asignada para ver pagos.");
   }
 
   // ✅ CORRECCIÓN: Se usan 'month' y 'year' para consistencia con 'getBillingDataForMonth'.
@@ -4352,11 +4399,14 @@ exports.getPaymentDataForMonth = onCall({ cors: true }, async (request) => {
 
   try {
     // 1. Obtener todos los grupos de facturación para el mes/año.
-    const groupsSnapshot = await db
+    let groupsQuery = db
       .collection("grupos_facturacion")
       .where("month", "==", month)
-      .where("year", "==", year)
-      .get();
+      .where("year", "==", year);
+    if (!isAdmin && userZone) {
+      groupsQuery = groupsQuery.where("zona", "==", userZone);
+    }
+    const groupsSnapshot = await groupsQuery.get();
 
     const allGroupsPromises = groupsSnapshot.docs.map(async (doc) => {
       const groupData = doc.data();
@@ -4653,8 +4703,7 @@ exports.backfillInvoiceZones = onCall(
 );
 
 exports.generateInvoiceReport = onCall({ cors: true }, async (request) => {
-  assertRole(request, ["Administrador", "Jefe", "Auxiliar Contable"]);
-  // ✅ CORRECCIÓN: Se cambia de 'visitIds' a 'servicesToInvoice' para recibir los objetos completos.
+  assertRole(request, ["Administrador", "Jefe", "Coordinador Nacionales", "Coordinador Valle", "Coordinador Norte de Santander"]);
   const {
     servicesToInvoice,
     groupName,
@@ -4662,114 +4711,109 @@ exports.generateInvoiceReport = onCall({ cors: true }, async (request) => {
     dueDays,
     observations,
   } = request.data;
+  const { zona: userZone, role: userRole } = request.auth.token;
 
   if (!servicesToInvoice || servicesToInvoice.length === 0)
     throw new HttpsError(
       "invalid-argument",
       "Debe seleccionar servicios para facturar."
     );
+  if (typeof dueDays !== 'number' || dueDays < 0) {
+    throw new HttpsError("invalid-argument", "El vencimiento debe ser un número válido.");
+  }
 
-  const batch = db.batch();
-  let total = 0;
-  const services = [];
-  let clientId = null;
-  let clientName = groupName; // Usar groupName como fallback
-  let clientZone = "Sin Zona";
+  const isAdmin = ["Administrador", "Jefe"].includes(userRole);
+  if (!isAdmin && !userZone) {
+    throw new HttpsError("permission-denied", "No tienes zona asignada para facturar.");
+  }
 
-  // 1. Recopilar datos de visitas
-  // ✅ CORRECCIÓN: Iterar sobre los objetos de servicio recibidos, no sobre IDs.
-  for (const serviceData of servicesToInvoice) {
-    const docRef = db.collection("visitas").doc(serviceData.id);
-    const d = serviceData; // Ya tenemos los datos.
+  return await db.runTransaction(async (t) => {
+    let total = 0;
+    const services = [];
+    let clientId = null;
+    let clientName = groupName;
+    let clientZone = "Sin Zona";
 
-    // Obtener datos del cliente del primer registro
-    if (!clientId) {
-      clientId = d.id_cliente || clientFromFrontend;
-      const cDoc = await db.collection("clientes").doc(clientId).get();
-      if (cDoc.exists) {
+    for (const serviceData of servicesToInvoice) {
+      const visitRef = db.collection("visitas").doc(serviceData.id);
+      const visitDoc = await t.get(visitRef);
+
+      if (!visitDoc.exists) {
+        throw new HttpsError("not-found", `Visita ${serviceData.id} no encontrada.`);
+      }
+
+      const d = visitDoc.data();
+
+      if (d.estado_facturacion === "Facturada") {
+        throw new HttpsError("failed-precondition", `La visita ${serviceData.id} ya fue facturada.`);
+      }
+
+      if (!clientId) {
+        clientId = d.id_cliente || clientFromFrontend;
+        if (!clientId) {
+          throw new HttpsError("invalid-argument", "No se pudo determinar el cliente.");
+        }
+        const cDoc = await t.get(db.collection("clientes").doc(clientId));
+        if (!cDoc.exists) {
+          throw new HttpsError("not-found", `Cliente ${clientId} no encontrado.`);
+        }
         const clientData = cDoc.data();
         clientZone = clientData.zona || "Sin Zona";
         clientName = clientData.nombreComercial || groupName;
+
+        if (!isAdmin && userZone && clientZone !== userZone) {
+          throw new HttpsError("permission-denied", `No puedes facturar clientes de la zona ${clientZone}.`);
+        }
       }
+
+      if (d.id_cliente !== clientId) {
+        throw new HttpsError("failed-precondition", "Todas las visitas deben pertenecer al mismo cliente.");
+      }
+
+      const val = parseFloat(d.valor_servicio) || 0;
+      if (val <= 0) {
+        throw new HttpsError("failed-precondition", `La visita ${serviceData.id} tiene un valor inválido (${val}).`);
+      }
+      total += val;
+
+      const serviceItem = {
+        ...d,
+        value: val,
+        valor_servicio: val,
+        date: d.fecha_visita,
+      };
+      services.push(serviceItem);
+
+      t.update(visitRef, {
+        estado_facturacion: "Facturada",
+        billingData: { invoicedAt: admin.firestore.FieldValue.serverTimestamp() },
+      });
     }
 
-    // ✅ CORRECCIÓN: Usar 'valor_servicio' que ya fue calculado y validado previamente.
-    const val = parseFloat(d.valor_servicio) || 0;
-    total += val;
+    const invoiceRef = db.collection("grupos_facturacion").doc();
+    const invoiceNumber = `F-${Date.now().toString().slice(-6)}`;
+    const dueDate = new Date();
+    dueDate.setDate(dueDate.getDate() + dueDays);
 
-    const serviceItem = {
-      ...d,
-      // ✅ CORRECCIÓN: Asegurar que el campo 'value' se guarde correctamente.
-      value: val,
-      valor_servicio: val,
-      date: d.fecha_visita, // La fecha ya viene en formato ISO string desde el frontend.
-    };
-    services.push(serviceItem);
-
-    // Marcar visita como facturada para que no salga en pendientes
-    batch.update(docRef, {
-      estado_facturacion: "Facturada",
-      billingData: { invoicedAt: admin.firestore.FieldValue.serverTimestamp() },
+    t.set(invoiceRef, {
+      groupName,
+      clientName,
+      clientId,
+      zona: clientZone,
+      totalValue: total,
+      currentBalance: total,
+      status: "billed",
+      services,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      invoiceNumber,
+      dueDate: admin.firestore.Timestamp.fromDate(dueDate),
+      observations: observations || "",
+      month: new Date().getMonth(),
+      year: new Date().getFullYear(),
     });
-  }
 
-  // 2. Crear documento de Factura (Grupo)
-  const invoiceRef = db.collection("grupos_facturacion").doc();
-  const invoiceNumber = `F-${Date.now().toString().slice(-6)}`; // Generador simple de ID
-  const dueDate = new Date();
-  dueDate.setDate(dueDate.getDate() + (parseInt(dueDays) || 30));
-
-  batch.set(invoiceRef, {
-    groupName,
-    clientName: clientName, // ✅ CORRECCIÓN: Guardar el nombre del cliente.
-    clientId,
-    zona: clientZone,
-    totalValue: total,
-    currentBalance: total,
-    status: "billed", // billed, paid, partial
-    services,
-    createdAt: admin.firestore.FieldValue.serverTimestamp(),
-    invoiceNumber,
-    dueDate: admin.firestore.Timestamp.fromDate(dueDate),
-    observations: observations || "",
-    month: new Date().getMonth(),
-    year: new Date().getFullYear(),
+    return { invoiceNumber };
   });
-
-  await batch.commit();
-
-  // 3. Generar Excel (Base64)
-  const wb = XLSX.utils.book_new();
-  const wsData = [
-    ["SISFUMI - FACTURA DE VENTA"],
-    ["Factura No:", invoiceNumber],
-    ["Cliente:", groupName],
-    ["Fecha Emisión:", new Date().toLocaleDateString()],
-    ["Vence:", dueDate.toLocaleDateString()],
-    [],
-    ["Fecha Servicio", "Tipo", "Ubicación", "Valor"],
-  ];
-
-  services.forEach((s) =>
-    wsData.push([
-      new Date(s.date).toLocaleDateString(),
-      s.tipo_visita,
-      s.ubicacion || "Sede Principal",
-      s.value,
-    ])
-  );
-
-  wsData.push([], ["TOTAL A PAGAR", "", "", total]);
-
-  const ws = XLSX.utils.aoa_to_sheet(wsData);
-  // Ajustar anchos de columna
-  ws["!cols"] = [{ wch: 15 }, { wch: 20 }, { wch: 30 }, { wch: 15 }];
-
-  XLSX.utils.book_append_sheet(wb, ws, "Factura");
-
-  const fileData = XLSX.write(wb, { type: "base64", bookType: "xlsx" });
-
-  return { success: true, fileData, invoiceNumber };
 });
 
 exports.getInvoiceExcel = onCall({ cors: true }, async (request) => {

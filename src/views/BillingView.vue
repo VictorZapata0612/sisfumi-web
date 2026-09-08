@@ -13,9 +13,16 @@ const statusFilter = ref('todos')
 const selectedGroup = ref<BillingGroup | null>(null)
 const selectedServices = ref<Set<string>>(new Set())
 const showInvoiceModal = ref(false)
+const formError = ref<string | null>(null)
+const isGenerating = ref(false)
 
-// Control de vista móvil
 const isMobileDetailOpen = computed(() => !!selectedGroup.value)
+
+const normalizeSearch = (term: string) =>
+  term
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
 
 onMounted(() => {
   billingStore.fetchBillingData()
@@ -23,16 +30,17 @@ onMounted(() => {
 
 const filteredPendingGroups = computed(() => {
   if (!pendingSearch.value) return billingStore.pendingGroups
-  return billingStore.pendingGroups.filter((g) =>
-    g.groupName.toLowerCase().includes(pendingSearch.value.toLowerCase()),
+  const term = normalizeSearch(pendingSearch.value)
+  return billingStore.pendingGroups.filter((g: BillingGroup) =>
+    normalizeSearch(g.groupName).includes(term),
   )
 })
 
 const filteredInvoicedGroups = computed(() => {
-  const term = invoicedSearch.value.toLowerCase()
-  return billingStore.invoicedGroups.filter((g) => {
+  const term = normalizeSearch(invoicedSearch.value)
+  return billingStore.invoicedGroups.filter((g: BillingGroup) => {
     const matchesSearch =
-      g.groupName.toLowerCase().includes(term) || g.invoiceNumber?.toLowerCase().includes(term)
+      normalizeSearch(g.groupName).includes(term) || (g.invoiceNumber && normalizeSearch(g.invoiceNumber).includes(term))
     const matchesStatus = statusFilter.value === 'todos' || g.status === statusFilter.value
     return matchesSearch && matchesStatus
   })
@@ -86,25 +94,25 @@ const openInvoiceModal = () => {
 const handleGenerateInvoice = async (options: { dueDays: number; observations: string }) => {
   if (!selectedGroup.value) return
 
-  // ✅ CORRECCIÓN: En lugar de enviar solo los IDs, filtramos y enviamos los objetos de servicio completos.
-  // Esto asegura que el backend reciba el 'valor_servicio' y otros detalles necesarios.
   const selectedServiceObjects = selectedGroup.value.services.filter((s) =>
     selectedServices.value.has(s.id),
   )
 
   try {
+    formError.value = null
+    isGenerating.value = true
+
     const result = await billingStore.generateInvoiceReport({
-      // The store expects an array of service IDs.
-      visitIds: selectedServiceObjects.map((s) => s.id),
+      servicesToInvoice: selectedServiceObjects,
       groupName: selectedGroup.value.groupName,
+      clientId: selectedGroup.value.clientId,
       dueDays: options.dueDays,
       observations: options.observations,
     })
 
-    downloadBase64File(result.fileData, `Factura_${result.invoiceNumber}.xlsx`)
     showToast({
       title: 'Éxito',
-      message: `Factura ${result.invoiceNumber} generada.`,
+      message: `Factura ${result.invoiceNumber} generada correctamente.`,
       type: 'success',
     })
 
@@ -112,17 +120,21 @@ const handleGenerateInvoice = async (options: { dueDays: number; observations: s
     selectedGroup.value = null
     showInvoiceModal.value = false
   } catch (error: any) {
+    const errorMsg = error?.message || 'No se pudo generar la factura'
+    formError.value = errorMsg
     showToast({
       title: 'Error',
-      message: `No se pudo generar la factura: ${error.message}`,
+      message: errorMsg,
       type: 'error',
     })
+  } finally {
+    isGenerating.value = false
   }
 }
 
 const handleDownloadInvoice = async (invoiceNumber: string) => {
   try {
-    const result = await billingStore.downloadExistingInvoice(invoiceNumber)
+    const result = await billingStore.getInvoiceExcel(invoiceNumber)
     downloadBase64File(result.fileData, `Factura_${invoiceNumber}.xlsx`)
   } catch (error: any) {
     showToast({
@@ -435,7 +447,8 @@ const formatCurrency = (value: number) => {
     </main>
 
     <InvoiceModal :show="showInvoiceModal" :selected-count="selectedServices.size"
-      :client-name="selectedGroup?.groupName || ''" :total-amount="selectedTotal" @close="showInvoiceModal = false"
+      :client-name="selectedGroup?.groupName || ''" :total-amount="selectedTotal" :error="formError"
+      :loading="isGenerating" @close="showInvoiceModal = false"
       @generate="handleGenerateInvoice" />
   </div>
 </template>
