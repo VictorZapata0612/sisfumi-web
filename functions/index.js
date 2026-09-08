@@ -4398,6 +4398,16 @@ exports.getPaymentDataForMonth = onCall({ cors: true }, async (request) => {
   }
 
   try {
+    const toIsoString = (value) => {
+      if (!value) return null;
+      const date = typeof value.toDate === "function"
+        ? value.toDate()
+        : value instanceof Date
+          ? value
+          : new Date(value);
+      return Number.isNaN(date.getTime()) ? null : date.toISOString();
+    };
+
     // 1. Obtener todos los grupos de facturación para el mes/año.
     let groupsQuery = db
       .collection("grupos_facturacion")
@@ -4422,34 +4432,24 @@ exports.getPaymentDataForMonth = onCall({ cors: true }, async (request) => {
           ...paymentData,
           // ✅ CORRECCIÓN: Manejar ambos casos, si la fecha es un Timestamp de Firestore o un string.
           // Esto asegura que tanto los pagos antiguos como los nuevos se muestren correctamente.
-          paymentDate: paymentData.paymentDate
-            ? paymentData.paymentDate.toDate
-              ? paymentData.paymentDate.toDate().toISOString()
-              : new Date(paymentData.paymentDate).toISOString()
-            : null,
-          registeredAt: paymentData.registeredAt?.toDate
-            ? paymentData.registeredAt.toDate().toISOString()
-            : null,
+          paymentDate: toIsoString(paymentData.paymentDate),
+          registeredAt: toIsoString(paymentData.registeredAt),
         };
       });
 
       const totalPaid = paymentHistory.reduce(
-        (sum, p) => sum + (p.amount || 0),
+        (sum, p) => sum + (Number(p.amount) || 0),
         0
       );
-      const totalBilled = groupData.totalValue || 0;
+      const totalBilled = Number(groupData.totalValue) || 0;
       const currentBalance = totalBilled - totalPaid;
 
       // 3. Devolver el objeto de grupo enriquecido.
       return {
         id: doc.id,
         ...groupData,
-        createdAt: groupData.createdAt?.toDate
-          ? groupData.createdAt.toDate().toISOString()
-          : null,
-        dueDate: groupData.dueDate?.toDate
-          ? groupData.dueDate.toDate().toISOString()
-          : null,
+        createdAt: toIsoString(groupData.createdAt),
+        dueDate: toIsoString(groupData.dueDate),
         totalBilled: totalBilled,
         totalPaid: totalPaid,
         currentBalance: currentBalance,
@@ -4457,7 +4457,7 @@ exports.getPaymentDataForMonth = onCall({ cors: true }, async (request) => {
         // Asegurar que los servicios también tengan fechas serializadas
         services: (groupData.services || []).map((s) => ({
           ...s,
-          date: s.date ? new Date(s.date).toISOString() : null,
+          date: toIsoString(s.date),
         })),
       };
     });
@@ -5240,7 +5240,11 @@ function calculateNextVisitDate(date, freq) {
 }
 
 exports.getAnnualBillingReport = onCall(
-  { timeoutSeconds: 180, memory: "512MB" },
+  {
+    cors: ["http://localhost:5173", "https://sisfumictph.com", "https://controltotalyph.com"],
+    timeoutSeconds: 180,
+    memory: "512MB",
+  },
   async (request) => {
     const { auth, data } = request;
     if (!auth)
