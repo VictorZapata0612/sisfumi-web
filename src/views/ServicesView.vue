@@ -2,12 +2,14 @@
 import { ref, onMounted, computed } from 'vue'
 import { useServicesStore, type Service } from '@/stores/services'
 import { useAuthStore } from '@/stores/auth'
+import { useSettingsStore } from '@/stores/settings'
 import ServiceFormModal from '@/components/ServiceFormModal.vue'
 import { useToast } from '@/composables/useToast'
 import { onClickOutside } from '@vueuse/core'
 
 const servicesStore = useServicesStore()
 const authStore = useAuthStore()
+const settingsStore = useSettingsStore()
 const { showToast } = useToast()
 const searchTerm = ref('')
 const showModal = ref(false)
@@ -48,7 +50,10 @@ const canApprovePrices = computed(() => {
   )
 })
 
-onMounted(() => {
+onMounted(async () => {
+  // Cargar los datos maestros (tipos de servicio, zonas, etc.) para que el modal los tenga disponibles
+  await settingsStore.fetchBusinessData()
+
   // Aseguramos cargar la lista completa para el buscador local
   servicesStore.fetchClients()
   // Si el usuario tiene permisos, cargamos las solicitudes pendientes
@@ -124,6 +129,20 @@ const handleSaveSheet = async () => {
     })
   }
 }
+
+// Función auxiliar para obtener los nombres de las sucursales a partir de sus IDs
+const getBranchNames = (branchIds: string[]) => {
+  if (!branchIds || branchIds.length === 0) return 'Todas'
+  if (!servicesStore.selectedClient || !servicesStore.selectedClient.sucursales) return branchIds.join(', ')
+
+  const branchNames = branchIds.map(id => {
+    const branch = servicesStore.selectedClient!.sucursales.find((b: any) => b.id === id)
+    return branch ? branch.nombre : id // Si no encuentra el nombre, muestra el ID como fallback
+  })
+
+  return branchNames.join(', ')
+}
+
 </script>
 
 <template>
@@ -139,7 +158,7 @@ const handleSaveSheet = async () => {
       <!-- Corrección Z-Index: Bajamos a z-10 para no tapar el menú lateral -->
       <div class="relative w-full md:w-96 z-10" ref="searchResultsContainer">
         <div class="relative">
-          <input v-model="searchTerm" @focus="handleFocus" type="search" id="clientSearchInput"
+          <input v-model="searchTerm" @focus="handleFocus" type="text" id="clientSearchInput"
             class="w-full pl-10 pr-4 py-2.5 bg-[#0a0a0a] border border-white/10 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-[#d60000] focus:border-[#d60000] transition-all shadow-sm"
             placeholder="Buscar cliente..." autocomplete="off" />
           <i class="fas fa-search absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"></i>
@@ -288,9 +307,12 @@ const handleSaveSheet = async () => {
 
               <div class="flex justify-between items-end border-t border-white/10 pt-3 mt-2">
                 <div class="text-xs text-gray-400 max-w-[60%]">
-                  <p class="truncate">
-                    <i class="fas fa-map-marker-alt mr-1"></i> Sucursales:
-                    {{ service.sucursales_asignadas.length }}
+                  <p class="truncate" :title="getBranchNames(service.sucursales_asignadas)">
+                    <i class="fas fa-map-marker-alt mr-1"></i>
+                    Sucursales: {{ service.sucursales_asignadas.length > 0 ? service.sucursales_asignadas.length : 'Todas' }}
+                  </p>
+                  <p v-if="service.sucursales_asignadas.length > 0" class="truncate mt-1 text-gray-500">
+                    {{ getBranchNames(service.sucursales_asignadas) }}
                   </p>
                 </div>
                 <div class="text-right">
@@ -349,12 +371,8 @@ const handleSaveSheet = async () => {
                   </td>
                   <td class="px-6 py-4">
                     <div class="text-sm text-gray-300 truncate max-w-xs"
-                      :title="service.sucursales_asignadas.join(', ')">
-                      {{
-                        service.sucursales_asignadas.length > 0
-                          ? service.sucursales_asignadas.join(', ')
-                          : 'Todas'
-                      }}
+                      :title="getBranchNames(service.sucursales_asignadas)">
+                      {{ getBranchNames(service.sucursales_asignadas) }}
                     </div>
                   </td>
                   <td class="px-6 py-4 whitespace-nowrap">
