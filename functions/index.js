@@ -122,6 +122,16 @@ function assertAuth(request) {
 }
 
 /**
+ * Mapa global de Zonas a Roles de Coordinador.
+ * Si se abre una nueva sede (ej. "Antioquia"), solo debes agregarla aquí.
+ */
+const ZONES_TO_ROLES_MAP = {
+  'Valle del Cauca': 'Coordinador Valle',
+  'Norte de Santander': 'Coordinador Norte de Santander',
+  Nacionales: 'Coordinador Nacionales',
+}
+
+/**
  * Valida que el usuario tenga uno de los roles permitidos.
  * @param {Object} request - Objeto request de Firebase.
  * @param {Array<string>} allowedRoles - Lista de roles permitidos (ej: ['Administrador', 'Jefe']).
@@ -355,12 +365,7 @@ exports.sendVisitReminders = onSchedule(
         // Determinar organizador para usar sus credenciales de Gmail
         let organizerUid = null
         if (visit.zona) {
-          const roleMap = {
-            'Valle del Cauca': 'Coordinador Valle',
-            'Norte de Santander': 'Coordinador Norte de Santander',
-            Nacionales: 'Coordinador Nacionales',
-          }
-          const expectedRole = roleMap[visit.zona]
+          const expectedRole = ZONES_TO_ROLES_MAP[visit.zona]
           if (expectedRole) {
             const users = await admin.auth().listUsers(1000)
             const coordinator = users.users.find((u) => u.customClaims?.role === expectedRole)
@@ -1156,7 +1161,9 @@ async function deleteCalendarEvent(visitData, uid) {
       .get()
 
     if (!integrationDoc.exists || !visitData.googleEventId) {
-      logger.warn(`[deleteCalendarEvent] No se encontró integración o googleEventId para UID: ${uid}`)
+      logger.warn(
+        `[deleteCalendarEvent] No se encontró integración o googleEventId para UID: ${uid}`,
+      )
       return
     }
 
@@ -1173,13 +1180,14 @@ async function deleteCalendarEvent(visitData, uid) {
     logger.info(`[ESPÍA/calendar] Evento ${visitData.googleEventId} eliminado exitosamente.`)
   } catch (error) {
     if (error.code === 404 || error.code === 410) {
-      logger.warn(`[ESPÍA/calendar] El evento ${visitData.googleEventId} ya no existía en Google Calendar.`)
+      logger.warn(
+        `[ESPÍA/calendar] El evento ${visitData.googleEventId} ya no existía en Google Calendar.`,
+      )
       return
     }
     logger.error('Error deleteCalendarEvent:', error)
   }
 }
-
 
 // --- El resto de las funciones (Triggers, Callables, etc.) sigue aquí sin cambios ---
 // ... (pegar el resto de las funciones desde tu archivo actual) ...
@@ -1520,19 +1528,12 @@ exports.deleteVisitAndCalendarEvent = onCall(
 
       // ✅ RESOLUCIÓN ROBUSTA DE ORGANIZADOR USANDO calendar_integrations y Custom Claims
       if (visitData.zona) {
-        const roleMap = {
-          'Valle del Cauca': 'Coordinador Valle',
-          'Norte de Santander': 'Coordinador Norte de Santander',
-          Nacionales: 'Coordinador Nacionales',
-        }
-        const expectedRole = roleMap[visitData.zona]
+        const expectedRole = ZONES_TO_ROLES_MAP[visitData.zona]
 
         if (expectedRole) {
           try {
             const usersList = await admin.auth().listUsers(1000)
-            const matchedUser = usersList.users.find(
-              (u) => u.customClaims?.role === expectedRole
-            )
+            const matchedUser = usersList.users.find((u) => u.customClaims?.role === expectedRole)
             if (matchedUser) {
               organizerUid = matchedUser.uid
             }
@@ -1552,10 +1553,14 @@ exports.deleteVisitAndCalendarEvent = onCall(
 
       // Eliminar de Google Calendar si tenemos un ID y un UID de organizador válido
       if (visitData.googleEventId && organizerUid && organizerUid !== 'SYSTEM') {
-        logger.info(`[DELETE_VISIT] Borrando evento ${visitData.googleEventId} usando organizador UID: ${organizerUid}`)
+        logger.info(
+          `[DELETE_VISIT] Borrando evento ${visitData.googleEventId} usando organizador UID: ${organizerUid}`,
+        )
         await deleteCalendarEvent(visitData, organizerUid)
       } else {
-        logger.warn(`[DELETE_VISIT] No se pudo borrar de calendario. googleEventId: ${visitData.googleEventId}, organizerUid: ${organizerUid}`)
+        logger.warn(
+          `[DELETE_VISIT] No se pudo borrar de calendario. googleEventId: ${visitData.googleEventId}, organizerUid: ${organizerUid}`,
+        )
       }
 
       await visitRef.delete()
@@ -3189,14 +3194,7 @@ exports.getCoordinatorForZone = onCall({ cors: true }, async (request) => {
     throw new HttpsError('invalid-argument', 'Se requiere una zona.')
   }
 
-  // Mapeo de zonas a roles de coordinador
-  const roleMap = {
-    'Valle del Cauca': 'Coordinador Valle',
-    'Norte de Santander': 'Coordinador Norte de Santander',
-    Nacionales: 'Coordinador Nacionales',
-  }
-
-  const expectedRole = roleMap[zone]
+  const expectedRole = ZONES_TO_ROLES_MAP[zone]
   if (!expectedRole) {
     return { name: 'No hay coordinador para esta zona' }
   }
@@ -4334,12 +4332,7 @@ exports.handleVisitWrite = onDocumentWritten({ document: 'visitas/{visitId}' }, 
   const calendarOwnerUid = after.calendarOwnerUid || null
 
   if (visitZone) {
-    const roleMap = {
-      'Valle del Cauca': 'Coordinador Valle',
-      'Norte de Santander': 'Coordinador Norte de Santander',
-      Nacionales: 'Coordinador Nacionales',
-    }
-    const expectedRole = roleMap[visitZone]
+    const expectedRole = ZONES_TO_ROLES_MAP[visitZone]
     if (expectedRole) {
       // Sugerencia: Reemplazar listUsers por consulta a Firestore en producción
       const users = await admin.auth().listUsers(1000)
