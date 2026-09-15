@@ -1147,7 +1147,6 @@ async function createOrUpdateCalendarEvent(visitData, visitId, uid) {
     throw error
   }
 }
-
 async function deleteCalendarEvent(visitData, uid) {
   try {
     const integrationDoc = await admin
@@ -1156,58 +1155,32 @@ async function deleteCalendarEvent(visitData, uid) {
       .doc(uid)
       .get()
 
-    if (!integrationDoc.exists || !visitData.googleEventId) return
+    if (!integrationDoc.exists || !visitData.googleEventId) {
+      logger.warn(`[deleteCalendarEvent] No se encontró integración o googleEventId para UID: ${uid}`)
+      return
+    }
 
     const tokens = integrationDoc.data()
-
     const oAuth2Client = new google.auth.OAuth2(googleConfig.clientId, googleConfig.clientSecret)
-
     oAuth2Client.setCredentials(tokens)
 
-    // Guardar token automáticamente si la librería de Google lo refresca
-    oAuth2Client.on('tokens', async (newTokens) => {
-      const updatedTokens = { ...tokens, ...newTokens }
-      await admin
-        .firestore()
-        .collection('calendar_integrations')
-        .doc(uid)
-        .set(updatedTokens, { merge: true })
-    })
-
     const calendar = google.calendar({ version: 'v3', auth: oAuth2Client })
-
     await calendar.events.delete({
       calendarId: 'primary',
       eventId: visitData.googleEventId,
-      sendNotifications: true,
+      sendUpdates: 'all',
     })
-
     logger.info(`[ESPÍA/calendar] Evento ${visitData.googleEventId} eliminado exitosamente.`)
   } catch (error) {
-    // Si el evento ya no existía en Google Calendar (404 / 410), se ignora el error de forma segura
     if (error.code === 404 || error.code === 410) {
-      logger.warn(
-        `[ESPÍA/calendar] El evento ${visitData.googleEventId} ya no existía en Google Calendar.`,
-      )
+      logger.warn(`[ESPÍA/calendar] El evento ${visitData.googleEventId} ya no existía en Google Calendar.`)
       return
     }
-
-    // Si el token expiró sin refresh_token o fue revocado por el usuario
-    if (
-      error.code === 401 ||
-      error.code === 400 ||
-      error.message?.includes('invalid authentication credentials')
-    ) {
-      logger.error(
-        `[AUTH_FIX] Credenciales inválidas para UID ${uid}. Se elimina integración desactualizada.`,
-      )
-      await admin.firestore().collection('calendar_integrations').doc(uid).delete()
-      return
-    }
-
     logger.error('Error deleteCalendarEvent:', error)
   }
 }
+
+
 // --- El resto de las funciones (Triggers, Callables, etc.) sigue aquí sin cambios ---
 // ... (pegar el resto de las funciones desde tu archivo actual) ...
 /**
@@ -1522,11 +1495,9 @@ exports.deleteVisitTemplate = onCall({ cors: true }, async (request) => {
 
 exports.deleteVisitAndCalendarEvent = onCall(
   {
-    // Permite los orígenes específicos o pasa true para aceptar cualquier origen autenticado
     cors: ['http://localhost:5173', 'https://sisfumictph.com', 'https://controltotalyph.com'],
   },
   async (request) => {
-    // 1. Validar autenticación con HttpsError
     if (!request.auth) {
       throw new HttpsError('unauthenticated', 'El usuario no está autenticado.')
     }
@@ -1547,7 +1518,7 @@ exports.deleteVisitAndCalendarEvent = onCall(
       const visitData = visitDoc.data()
       let organizerUid = null
 
-      // 2. Optimización: Consulta en Firestore en lugar de cargar todos los usuarios de Auth
+      // ✅ RESOLUCIÓN ROBUSTA DE ORGANIZADOR USANDO calendar_integrations y Custom Claims
       if (visitData.zona) {
         const roleMap = {
           'Valle del Cauca': 'Coordinador Valle',
@@ -1557,27 +1528,34 @@ exports.deleteVisitAndCalendarEvent = onCall(
         const expectedRole = roleMap[visitData.zona]
 
         if (expectedRole) {
-          // Asumiendo que guardas el rol en la colección 'users'
-          const userQuery = await db
-            .collection('users')
-            .where('role', '==', expectedRole)
-            .limit(1)
-            .get()
-
-          if (!userQuery.empty) {
-            organizerUid = userQuery.docs[0].id
+          try {
+            const usersList = await admin.auth().listUsers(1000)
+            const matchedUser = usersList.users.find(
+              (u) => u.customClaims?.role === expectedRole
+            )
+            if (matchedUser) {
+              organizerUid = matchedUser.uid
+            }
+          } catch (listErr) {
+            logger.warn('Error listando usuarios de auth para organizador:', listErr)
           }
         }
       }
 
-      // Fallback
-      if (!organizerUid) {
-        organizerUid = visitData.calendarOwnerUid || visitData.createdBy
+      if (!organizerUid && visitData.calendarOwnerUid) {
+        organizerUid = visitData.calendarOwnerUid
       }
 
-      // Eliminar de Google Calendar
+      if (!organizerUid && visitData.createdBy && visitData.createdBy !== 'SYSTEM') {
+        organizerUid = visitData.createdBy
+      }
+
+      // Eliminar de Google Calendar si tenemos un ID y un UID de organizador válido
       if (visitData.googleEventId && organizerUid && organizerUid !== 'SYSTEM') {
+        logger.info(`[DELETE_VISIT] Borrando evento ${visitData.googleEventId} usando organizador UID: ${organizerUid}`)
         await deleteCalendarEvent(visitData, organizerUid)
+      } else {
+        logger.warn(`[DELETE_VISIT] No se pudo borrar de calendario. googleEventId: ${visitData.googleEventId}, organizerUid: ${organizerUid}`)
       }
 
       await visitRef.delete()
@@ -1589,7 +1567,7 @@ exports.deleteVisitAndCalendarEvent = onCall(
 
       return { message: 'Visita eliminada correctamente.' }
     } catch (e) {
-      // Re-lanzar si ya es un HttpsError, de lo contrario encapsular
+      logger.error('Error en deleteVisitAndCalendarEvent:', e)
       if (e instanceof HttpsError) throw e
       throw new HttpsError('internal', e.message || 'Error interno del servidor.')
     }
