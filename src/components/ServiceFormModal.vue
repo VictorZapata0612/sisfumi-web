@@ -1,10 +1,9 @@
 <script setup lang="ts">
 import { ref, watch, computed, onUnmounted } from 'vue'
-import { httpsCallable } from 'firebase/functions'
-import { functions } from '@/firebase/config'
 import type { Service } from '@/stores/services'
 import { useServicesStore } from '@/stores/services'
 import { useAuthStore } from '@/stores/auth'
+import { useSettingsStore } from '@/stores/settings'
 import { useToast } from '@/composables/useToast'
 
 const props = defineProps<{
@@ -17,6 +16,7 @@ const emit = defineEmits(['close', 'save'])
 
 const servicesStore = useServicesStore()
 const authStore = useAuthStore()
+const settingsStore = useSettingsStore()
 const { showToast } = useToast()
 
 const form = ref<Service>({
@@ -27,7 +27,8 @@ const form = ref<Service>({
   sucursales_asignadas: [],
 })
 
-const businessData = ref<any>({})
+const serviceTypesList = computed(() => settingsStore.businessData?.serviceTypes || [])
+const frequencyOptions = computed(() => settingsStore.businessData?.frequencyOptions || ['Mensual', 'Bimestral', 'Trimestral', 'Semestral', 'Anual', 'Ocasional'])
 
 const formattedValor = computed({
   get() {
@@ -87,12 +88,9 @@ const sucursalesOptions = computed(() => {
 
 watch(
   () => props.show,
-  async (newVal) => {
+  (newVal) => {
     if (newVal) {
       isSaving.value = false
-      const getBusinessData = httpsCallable(functions, 'getBusinessData')
-      const result = (await getBusinessData()) as { data: any }
-      businessData.value = result.data
 
       if (props.service) {
         form.value = JSON.parse(JSON.stringify(props.service))
@@ -147,14 +145,12 @@ const handleSave = async () => {
     // Usamos Promise.race para evitar que se quede colgado indefinidamente
     const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error('El guardado está tardando demasiado. Verifique su conexión.')), 10000))
 
-
     console.log('🕵️ [SPY] Iniciando llamada a servicesStore.saveServiceSheet() con timeout de 10s...')
     await Promise.race([
       servicesStore.saveServiceSheet(),
       timeout
     ])
     console.log('🕵️ [SPY] servicesStore.saveServiceSheet() completado exitosamente.')
-
 
     emit('save', form.value, props.serviceIndex)
     showToast({ title: 'Éxito', message: 'Servicio guardado correctamente.', type: 'success' })
@@ -209,8 +205,8 @@ const handleSave = async () => {
                 <select v-model="form.tipo_servicio" id="serviceType" class="input-field-dark w-full appearance-none"
                   required>
                   <option disabled value="">Seleccione...</option>
-                  <option v-for="s in businessData.serviceTypesList" :key="s" :value="s">
-                    {{ s }}
+                  <option v-for="s in serviceTypesList" :key="s.name" :value="s.name">
+                    {{ s.name }}
                   </option>
                 </select>
                 <div class="absolute inset-y-0 right-0 flex items-center px-2 pointer-events-none text-gray-400">
@@ -235,7 +231,7 @@ const handleSave = async () => {
                 <select v-model="form.frecuencia" id="serviceFrequency" class="input-field-dark w-full appearance-none"
                   required>
                   <option disabled value="">Seleccione...</option>
-                  <option v-for="f in businessData.frequencyOptions" :key="f" :value="f">
+                  <option v-for="f in frequencyOptions" :key="f" :value="f">
                     {{ f }}
                   </option>
                 </select>
