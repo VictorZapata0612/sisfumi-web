@@ -1,20 +1,18 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import MainLayout from '@/layouts/MainLayout.vue'
-import PublicLayout from '@/layouts/PublicLayout.vue' // Importamos el nuevo layout
+import PublicLayout from '@/layouts/PublicLayout.vue'
 import HomeView from '@/views/HomeView.vue'
-import HomePage from '@/views/public/HomePage.vue' // Importamos la nueva página de inicio
+import HomePage from '@/views/public/HomePage.vue'
 import LoginView from '@/views/LoginView.vue'
-import PrivacyPolicyView from '@/views/PrivacyPolicyView.vue'
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
   routes: [
     {
-      // Layout para las páginas públicas
+      // Layout para las páginas públicas (accesibles por visitantes y usuarios logueados)
       path: '/',
       component: PublicLayout,
-      meta: { requiresAuth: false },
       children: [
         {
           path: '',
@@ -24,9 +22,7 @@ const router = createRouter({
         {
           path: 'servicios',
           name: 'public-services',
-          // Usamos un componente wrapper para poder anidar las rutas de detalle.
-          // Esto simplemente renderiza el componente hijo que coincida con la ruta.
-          component: { template: '<RouterView />' },
+          component: { template: '' },
           children: [
             {
               path: '', // Corresponde a /servicios
@@ -53,7 +49,6 @@ const router = createRouter({
               name: 'service-detail-lavado-tanques',
               component: () => import('../views/public/services/LavadoDeTanquesPage.vue'),
             },
-            // Puedes seguir este patrón para los otros servicios.
           ],
         },
         {
@@ -66,87 +61,88 @@ const router = createRouter({
           name: 'public-contact',
           component: () => import('../views/public/ContactPage.vue'),
         },
+        {
+          path: 'politicas-de-privacidad',
+          name: 'public-privacy-policy',
+          component: () => import('../views/public/PrivacyPolicyPage.vue'),
+        },
       ],
     },
+
     {
-      path: '/privacy-policy',
-      name: 'privacy-policy',
-      component: PrivacyPolicyView,
-      meta: { requiresAuth: false },
-    },
-    {
-      path: '/login', // Ruta para el login
+      path: '/login',
       name: 'login',
       component: LoginView,
-      meta: { requiresAuth: false },
     },
+
     {
-      // Layout principal para rutas autenticadas, ahora bajo /dashboard
+      // Layout principal para rutas autenticadas bajo /dashboard
       path: '/dashboard',
       component: MainLayout,
       meta: { requiresAuth: true },
       children: [
         {
-          path: '', // Ruta vacía para /dashboard
-          name: 'dashboard', // Nombre único para el panel
+          path: '',
+          name: 'dashboard',
           component: HomeView,
         },
         {
-          path: 'clientes', // Ruta relativa
+          path: 'clientes',
           name: 'clientes',
           component: () => import('../views/ClientsView.vue'),
         },
         {
-          path: 'servicios', // Ruta relativa
+          path: 'servicios',
           name: 'servicios',
           component: () => import('../views/ServicesView.vue'),
         },
         {
-          path: 'planeacion', // Ruta relativa
+          path: 'planeacion',
           name: 'planeacion',
           component: () => import('../views/PlanningView.vue'),
         },
         {
-          path: 'fumigadores', // Ruta relativa
+          path: 'fumigadores',
           name: 'fumigadores',
           component: () => import('../views/TechniciansView.vue'),
         },
         {
-          path: 'notificaciones', // Ruta relativa
+          path: 'notificaciones',
           name: 'notificaciones',
           component: () => import('../views/NotificationsView.vue'),
         },
         {
-          path: 'facturacion', // Ruta relativa
+          path: 'facturacion',
           name: 'facturacion',
           component: () => import('../views/BillingView.vue'),
           meta: { roles: ['Administrador', 'Jefe'] },
         },
         {
-          path: 'pagos', // Ruta relativa
+          path: 'pagos',
           name: 'pagos',
           component: () => import('../views/PaymentsView.vue'),
           meta: { roles: ['Administrador', 'Jefe'] },
         },
         {
-          path: 'reportes', // Ruta relativa
+          path: 'reportes',
           name: 'reportes',
           component: () => import('../views/ReportsView.vue'),
           meta: { roles: ['Administrador', 'Jefe', 'Coordinador Nacionales'] },
         },
         {
-          path: 'permisos', // Ruta relativa
+          path: 'permisos',
           name: 'permisos',
           component: () => import('../views/PermissionsView.vue'),
           meta: { roles: ['Administrador', 'Jefe', 'Coordinador Nacionales'] },
         },
         {
-          path: 'configuracion', // Ruta relativa
+          path: 'configuracion',
           name: 'configuracion',
           component: () => import('../views/SettingsView.vue'),
         },
       ],
     },
+
     // Redirección para cualquier ruta no encontrada a la página de inicio
     { path: '/:pathMatch(.*)*', redirect: '/' },
   ],
@@ -160,18 +156,20 @@ router.beforeEach(async (to, from, next) => {
     await authStore.init()
   }
 
+  // 1. Si la ruta requiere autenticación y no hay sesión activa -> Va al Login
   if (to.meta.requiresAuth && !authStore.isLoggedIn) {
-    // Si la ruta requiere autenticación y no hay sesión, va al login.
     next({ name: 'login' })
-  } else if (to.meta.requiresAuth === false && authStore.isLoggedIn) {
-    // Si el usuario ya está logueado e intenta ir a una página pública (como landing o login),
-    // lo redirigimos a la página de inicio de la aplicación.
+  }
+  // 2. Si el usuario ya tiene sesión e intenta ir al /login -> Lo redirige al Dashboard
+  else if (to.name === 'login' && authStore.isLoggedIn) {
     next({ name: 'dashboard' })
-  } else if (Array.isArray(to.meta.roles) && !to.meta.roles.includes(authStore.userRole || '')) {
-    // Si la ruta requiere un rol y el usuario no lo tiene, lo redirigimos a la página de inicio.
+  }
+  // 3. Verificación de roles permitidos para la ruta
+  else if (Array.isArray(to.meta.roles) && !to.meta.roles.includes(authStore.userRole || '')) {
     next({ name: 'dashboard' })
-  } else {
-    // En cualquier otro caso, permite la navegación.
+  }
+  // 4. En cualquier otro caso (rutas públicas como políticas, servicios, contacto), permite la navegación libre
+  else {
     next()
   }
 })
