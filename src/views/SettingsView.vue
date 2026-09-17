@@ -37,13 +37,24 @@ ChartJS.register(Title, Tooltip, Legend, BarElement, CategoryScale, LinearScale)
 // Declaramos la variable global de Google para evitar errores de TypeScript
 declare const google: any
 
+// ✅ FIX: solo Administrador/Jefe pueden ver integraciones de calendario y
+// auditoría (el backend ya lo exige con un 403). Antes se llamaba a estos
+// endpoints para TODOS los roles, generando errores 403 en consola y toasts
+// de error innecesarios para Coordinadores/Técnicos.
+const isAdminOrJefe = computed(() =>
+  ['Administrador', 'Jefe'].includes(authStore.userRole || ''),
+)
+
 onMounted(async () => {
   // Asegurar que los datos de negocio se carguen primero.
   await settingsStore.fetchBusinessData()
-  settingsStore.fetchIntegrations()
   planningStore.fetchVisitTemplates()
-  fetchLogs() // Cargar logs iniciales
   settingsStore.fetchUsers()
+
+  if (isAdminOrJefe.value) {
+    settingsStore.fetchIntegrations()
+    fetchLogs() // Cargar logs iniciales
+  }
 })
 
 // Observar cambios en el usuario actual (ej. al subir foto) y actualizar la lista localmente
@@ -778,7 +789,7 @@ const handleImportClick = () => {
       </section>
 
       <!-- Auditoría -->
-      <section v-if="settingsStore.auditLogs.length > 0">
+      <section v-if="isAdminOrJefe && settingsStore.auditLogs.length > 0">
         <div class="flex items-center gap-3 mb-4 text-gray-300">
           <div class="h-px bg-white/10 flex-grow"></div>
           <span class="text-sm font-bold uppercase tracking-wider"><i
@@ -972,7 +983,7 @@ const handleImportClick = () => {
       </section>
 
       <!-- Integraciones -->
-      <section v-if="settingsStore.integrations.length > 0">
+      <section v-if="isAdminOrJefe && settingsStore.integrations.length > 0">
         <div class="flex items-center gap-3 mb-4 text-gray-300">
           <div class="h-px bg-white/10 flex-grow"></div>
           <span class="text-sm font-bold uppercase tracking-wider"><i class="fas fa-link mr-2"></i>Cuentas

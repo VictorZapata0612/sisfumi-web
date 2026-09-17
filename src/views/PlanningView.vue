@@ -438,8 +438,13 @@ const handleDeleteVisit = async (visitId: string) => {
     async onConfirm() {
       try {
         await planningStore.deleteVisit(visitId)
+
+        planningStore.monthlyVisits = planningStore.monthlyVisits.value.filter(v => v.id !== visitId)
+        planningStore.pendingVisits = planningStore.pendingVisits.filter(v => v.id !== visitId)
+
         showToast({ title: 'Éxito', message: 'Visita eliminada.', type: 'success' })
         showEditModal.value = false
+
         loadData()
       } catch (error: any) {
         showToast({ title: 'Error', message: error.message, type: 'error' })

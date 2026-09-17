@@ -202,6 +202,9 @@ watch(
   (newClientId) => {
     const client = planningStore.clients.find((c: Client) => c.id === newClientId)
     updateOrganizerName(client?.zona)
+
+    localVisit.value.zona = client?.zona || 'Sin Zona'
+
     if (!isEditMode.value) {
       localVisit.value.tipo_visita = ''
       localVisit.value.ubicacion = ''
@@ -214,6 +217,10 @@ watch(
   (newLocation) => {
     const client = planningStore.clients.find((c: Client) => c.id === localVisit.value.id_cliente)
     const sucursal = client?.sucursales?.find((s: any) => s.direccion === newLocation)
+
+    const targetZone = sucursal?.zona || client?.zona || 'Sin Zona'
+    localVisit.value.zona = targetZone
+
     updateOrganizerName(sucursal?.zona || client?.zona)
   },
 )
