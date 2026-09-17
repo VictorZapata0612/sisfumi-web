@@ -1,3 +1,5 @@
+<!-- eslint-disable @typescript-eslint/ban-ts-comment -->
+<!-- eslint-disable @typescript-eslint/no-explicit-any -->
 <script setup lang="ts">
 import { ref, onMounted, computed, watch, onUnmounted } from 'vue'
 import { usePlanningStore, type Visit, type Technician } from '@/stores/planning'
@@ -31,7 +33,7 @@ const googleCalendarColors: Record<string, string> = {
   '11': '#d60000', // Tomate
 }
 
-const { loading, error, allCalendarEvents, pendingVisits, technicians, needsAuthRefresh } =
+const { allCalendarEvents, pendingVisits, technicians, needsAuthRefresh } =
   storeToRefs(planningStore)
 
 const currentDate = ref(new Date())
@@ -39,7 +41,6 @@ const selectedDate = ref<Date | null>(new Date())
 const selectedZone = ref('Todos')
 const selectedTechnician = ref('todos')
 const dayEventsStatusFilter = ref<'Todos' | 'Programada' | 'Realizada' | 'Cancelada'>('Todos')
-const calendarViewMode = ref<'month' | 'week' | 'agenda'>('month')
 const calendarView = ref<'month' | 'week' | 'agenda'>('month')
 const selectedCalendarUid = ref('internal')
 
@@ -76,7 +77,13 @@ onMounted(async () => {
   if (authStore.userRole?.startsWith('Coordinador')) {
     selectedZone.value = authStore.userZone || 'Todos'
   }
-  await settingsStore.fetchIntegrations()
+  // ✅ FIX: fetchIntegrations es admin-only en el backend (403 para el
+  // resto de roles). Solo se usa para el selector de calendarios de
+  // Administrador/Jefe (ver el v-if de abajo), así que solo se pide para
+  // esos roles.
+  if (authStore.userRole === 'Administrador' || authStore.userRole === 'Jefe') {
+    await settingsStore.fetchIntegrations()
+  }
   loadData()
 
   window.addEventListener('resize', checkMobile)
@@ -209,11 +216,6 @@ const selectedDateEvents = computed(() => {
   return events.sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime())
 })
 
-const isWeekend = (date: Date) => {
-  const day = date.getDay()
-  return day === 0 || day === 6
-}
-
 const filteredSelectedDateEvents = computed(() => {
   if (dayEventsStatusFilter.value === 'Todos') {
     return selectedDateEvents.value
@@ -244,11 +246,6 @@ const statusCounts = computed(() => {
   })
   return counts
 })
-
-const getVisitFromEvent = (event: any): Visit | null => {
-  if (event.source === 'internal' && event.extendedProps) return event.extendedProps
-  return null
-}
 
 const getTechnicianColor = (techName: string | undefined): string => {
   if (!techName) return '#4a5568'
@@ -438,13 +435,8 @@ const handleDeleteVisit = async (visitId: string) => {
     async onConfirm() {
       try {
         await planningStore.deleteVisit(visitId)
-
-        planningStore.monthlyVisits = planningStore.monthlyVisits.value.filter(v => v.id !== visitId)
-        planningStore.pendingVisits = planningStore.pendingVisits.filter(v => v.id !== visitId)
-
         showToast({ title: 'Éxito', message: 'Visita eliminada.', type: 'success' })
         showEditModal.value = false
-
         loadData()
       } catch (error: any) {
         showToast({ title: 'Error', message: error.message, type: 'error' })
@@ -507,10 +499,6 @@ const hideTooltip = () => {
   tooltipTimeout.value = window.setTimeout(() => {
     hoveredDay.value = null
   }, 200)
-}
-
-const cancelTooltipHide = () => {
-  if (tooltipTimeout.value) clearTimeout(tooltipTimeout.value)
 }
 
 const handleQuickComplete = (visit: Visit) => {

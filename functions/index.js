@@ -71,7 +71,13 @@ const storageBucketName =
 // Configuración de CORS
 // Permitimos localhost para desarrollo y el dominio de producción
 const cors = require('cors')({
-  origin: ['http://localhost:5173', 'https://sisfumictph.com', 'https://controltotalyph.com'],
+  origin: [
+    'http://localhost:5173',
+    'https://sisfumictph.com',
+    'https://www.sisfumictph.com',
+    'https://controltotalyph.com',
+    'https://www.controltotalyph.com'
+  ],
   optionsSuccessStatus: 200,
 })
 
@@ -119,16 +125,6 @@ function assertAuth(request) {
     logger.warn('Intento de acceso no autenticado detectado.')
     throw new HttpsError('unauthenticated', 'Debes iniciar sesión para realizar esta acción.')
   }
-}
-
-/**
- * Mapa global de Zonas a Roles de Coordinador.
- * Si se abre una nueva sede (ej. "Antioquia"), solo debes agregarla aquí.
- */
-const ZONES_TO_ROLES_MAP = {
-  'Valle del Cauca': 'Coordinador Valle',
-  'Norte de Santander': 'Coordinador Norte de Santander',
-  Nacionales: 'Coordinador Nacionales',
 }
 
 /**
@@ -207,26 +203,18 @@ async function getAuthorizedClient(request, clientId) {
  */
 async function createAuditLog(action, details, context, target = null) {
   try {
-    let email = 'Sistema'
-    let uid = 'SYSTEM'
-
-    if (context && context.auth) {
-      uid = context.auth.uid
-      email = context.auth.token?.email || 'Desconocido'
-    }
-
     await db.collection('audit_logs').add({
       action: action,
       details: details,
-      performedBy: uid,
-      performerEmail: email,
-      adminEmail: email, // 👈 Clave para que tu tabla lo muestre siempre
+      performedBy: context.auth ? context.auth.uid : 'SYSTEM',
+      performerEmail: context.auth ? context.auth.token.email : 'SYSTEM',
       targetData: target ? JSON.stringify(target) : null,
       timestamp: admin.firestore.FieldValue.serverTimestamp(),
-      userAgent: context?.rawRequest ? context.rawRequest.headers['user-agent'] : 'Internal',
+      userAgent: context.rawRequest ? context.rawRequest.headers['user-agent'] : 'Internal',
     })
   } catch (error) {
     logger.error('Error al crear log de auditoría:', error)
+    // No lanzamos error para no interrumpir el flujo principal
   }
 }
 /**
@@ -336,6 +324,73 @@ exports.getClientsPage = onCall({ cors: true }, async (request) => {
 })
 
 /**
+ * Tarea programada para enviar recordatorios de visitas a los técnicos.
+ * Se ejecuta cada hora para verificar visitas del día siguiente.
+ */
+exports.sendVisitReminders = onSchedule(
+  {
+    schedule: 'every 1 hours',
+    timeZone: 'America/Bogota',
+  },
+  async (event) => {
+    const db = admin.firestore()
+    const now = new Date()
+    // Buscar visitas para dentro de 24 horas (aprox)
+    const startWindow = new Date(now.getTime() + 23 * 60 * 60 * 1000)
+    const endWindow = new Date(now.getTime() + 25 * 60 * 60 * 1000)
+
+    logger.info(
+      `[REMINDER] Buscando visitas entre ${startWindow.toISOString()} y ${endWindow.toISOString()}`,
+    )
+
+    try {
+      const visitsSnapshot = await db
+        .collection('visitas')
+        .where('estado_visita', '==', 'Programada')
+        .where('fecha_visita', '>=', startWindow)
+        .where('fecha_visita', '<=', endWindow)
+        .get()
+
+      if (visitsSnapshot.empty) {
+        logger.info('[REMINDER] No hay visitas próximas para recordar.')
+        return
+      }
+
+      const batchPromises = visitsSnapshot.docs.map(async (doc) => {
+        const visit = doc.data()
+        // Determinar organizador para usar sus credenciales de Gmail
+        let organizerUid = null
+        if (visit.zona) {
+          const roleMap = {
+            'Valle del Cauca': 'Coordinador Valle',
+            'Norte de Santander': 'Coordinador Norte de Santander',
+            Nacionales: 'Coordinador Nacionales',
+          }
+          const expectedRole = roleMap[visit.zona]
+          if (expectedRole) {
+            const users = await admin.auth().listUsers(1000)
+            const coordinator = users.users.find((u) => u.customClaims?.role === expectedRole)
+            if (coordinator) organizerUid = coordinator.uid
+          }
+        }
+        // Fallback al creador si es coordinador
+        if (!organizerUid) organizerUid = visit.createdBy
+
+        if (organizerUid && organizerUid !== 'SYSTEM') {
+          // Reutilizamos la función de envío de correo existente
+          await sendVisitNotificationViaGmailAPI(visit, doc.id, organizerUid)
+          logger.info(`[REMINDER] Recordatorio enviado para visita ${doc.id}`)
+        }
+      })
+
+      await Promise.all(batchPromises)
+    } catch (error) {
+      logger.error('[REMINDER] Error enviando recordatorios:', error)
+    }
+  },
+)
+
+/**
  * Obtiene todos los clientes de la base de datos (sin paginación).
  * Útil para exportaciones y validaciones de duplicados.
  */
@@ -406,6 +461,7 @@ exports.addClient = onCall({ cors: true }, async (request) => {
   assertClientManager(request)
   const { clientData } = request.data
 
+  // Validación básica de campos requeridos
   if (!clientData.nombreComercial)
     throw new HttpsError('invalid-argument', 'El Nombre Comercial es obligatorio.')
   if (!clientData.nit) throw new HttpsError('invalid-argument', 'El NIT es obligatorio.')
@@ -414,6 +470,7 @@ exports.addClient = onCall({ cors: true }, async (request) => {
   }
 
   try {
+    // Verificar duplicados por NIT
     const duplicateCheck = await db.collection('clientes').where('nit', '==', clientData.nit).get()
     if (!duplicateCheck.empty) {
       throw new HttpsError('already-exists', `Ya existe un cliente con el NIT ${clientData.nit}`)
@@ -429,19 +486,13 @@ exports.addClient = onCall({ cors: true }, async (request) => {
     }
 
     const docRef = await db.collection('clientes').add(dataToSave)
-    const userEmail = request.auth.token.email || 'Desconocido'
 
-    // Registro explícito en auditoría con ambos alias para evitar celdas vacías
-    await db.collection('audit_logs').add({
-      action: 'CREATE_CLIENT',
-      details: `Se creó un nuevo cliente: "${clientData.nombreComercial}".`,
-      performedBy: request.auth.uid,
-      performerEmail: userEmail,
-      adminEmail: userEmail,
-      targetData: JSON.stringify({ id: docRef.id }),
-      timestamp: admin.firestore.FieldValue.serverTimestamp(),
-      userAgent: request.rawRequest ? request.rawRequest.headers['user-agent'] : 'Internal',
-    })
+    await createAuditLog(
+      'CREATE_CLIENT',
+      `Cliente creado: ${clientData.nombreComercial}`,
+      request,
+      { id: docRef.id },
+    )
 
     return { success: true, clientId: docRef.id }
   } catch (error) {
@@ -450,7 +501,6 @@ exports.addClient = onCall({ cors: true }, async (request) => {
     throw new HttpsError('internal', 'No se pudo crear el cliente.')
   }
 })
-
 /**
  * Actualiza un documento de cliente.
  */
@@ -475,23 +525,19 @@ exports.updateClient = onCall({ cors: true }, async (request) => {
       updatedBy: request.auth.uid,
     }
 
+    // Actualizar campo de búsqueda si cambió el nombre
     if (clientData.nombreComercial) {
       updatePayload.nombreComercial_lower = clientData.nombreComercial.toLowerCase()
     }
 
     await db.collection('clientes').doc(clientId).update(updatePayload)
-    const userEmail = request.auth.token.email || 'Desconocido'
 
-    await db.collection('audit_logs').add({
-      action: 'UPDATE_CLIENT',
-      details: `Se actualizó la información del cliente "${clientData.nombreComercial || clientId}".`,
-      performedBy: request.auth.uid,
-      performerEmail: userEmail,
-      adminEmail: userEmail,
-      targetData: JSON.stringify(updatePayload),
-      timestamp: admin.firestore.FieldValue.serverTimestamp(),
-      userAgent: request.rawRequest ? request.rawRequest.headers['user-agent'] : 'Internal',
-    })
+    await createAuditLog(
+      'UPDATE_CLIENT',
+      `Cliente actualizado: ${clientId}`,
+      request,
+      updatePayload,
+    )
 
     return { success: true }
   } catch (error) {
@@ -568,14 +614,54 @@ exports.addFumigador = onCall({ cors: true }, async (request) => {
   const { zona: userZone, role: userRole } = request.auth.token
 
   try {
+    // Validar campos obligatorios
     if (!technicianData.nombreCompleto || !technicianData.nombreCompleto.trim()) {
       throw new HttpsError('invalid-argument', 'El nombre del técnico es obligatorio.')
     }
     if (!technicianData.email || !technicianData.email.trim()) {
       throw new HttpsError('invalid-argument', 'El correo electrónico es obligatorio.')
     }
-
-    // ... (validaciones existentes de formato y zonas) ...
+    if (
+      !technicianData.zona ||
+      !['Norte de Santander', 'Valle del Cauca', 'Nacionales'].includes(technicianData.zona)
+    ) {
+      throw new HttpsError('invalid-argument', 'La zona es obligatoria y debe ser válida.')
+    }
+    if (
+      !technicianData.googleColorId ||
+      !['1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11'].includes(
+        String(technicianData.googleColorId),
+      )
+    ) {
+      throw new HttpsError('invalid-argument', 'El color de calendario debe ser válido.')
+    }
+    // Validar formato de email
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(technicianData.email)) {
+      throw new HttpsError('invalid-argument', 'El formato del correo electrónico es inválido.')
+    }
+    // Coordinadores de zona solo pueden crear en su zona
+    const isAdmin = ['Administrador', 'Jefe', 'Coordinador Nacionales'].includes(userRole)
+    if (!isAdmin && userZone && technicianData.zona !== userZone) {
+      throw new HttpsError('permission-denied', 'Solo puedes crear técnicos en tu zona.')
+    }
+    // Verificar que no exista técnico con mismo nombre
+    const nameQuery = await db
+      .collection('fumigadores')
+      .where('nombreCompleto_lower', '==', technicianData.nombreCompleto.toLowerCase())
+      .limit(1)
+      .get()
+    if (!nameQuery.empty) {
+      throw new HttpsError('already-exists', 'Ya existe un técnico con ese nombre.')
+    }
+    // Verificar que no exista técnico con mismo email
+    const emailQuery = await db
+      .collection('fumigadores')
+      .where('email', '==', technicianData.email)
+      .limit(1)
+      .get()
+    if (!emailQuery.empty) {
+      throw new HttpsError('already-exists', 'Ya existe un técnico con ese correo electrónico.')
+    }
 
     const data = {
       ...technicianData,
@@ -585,18 +671,11 @@ exports.addFumigador = onCall({ cors: true }, async (request) => {
       status: 'Active',
     }
     const res = await db.collection('fumigadores').add(data)
-
-    const userEmail = request.auth.token.email || 'Desconocido'
-    await db.collection('audit_logs').add({
-      action: 'CREATE_TECHNICIAN',
-      details: `Técnico creado: ${technicianData.nombreCompleto}`,
-      performedBy: request.auth.uid,
-      performerEmail: userEmail,
-      adminEmail: userEmail,
-      timestamp: admin.firestore.FieldValue.serverTimestamp(),
-      userAgent: request.rawRequest ? request.rawRequest.headers['user-agent'] : 'Internal',
-    })
-
+    await createAuditLog(
+      'CREATE_TECHNICIAN',
+      `Técnico creado: ${technicianData.nombreCompleto}`,
+      request,
+    )
     return { success: true, technicianId: res.id }
   } catch (e) {
     throw new HttpsError('internal', e.message)
@@ -720,21 +799,23 @@ exports.deleteFumigador = onCall({ cors: true }, async (request) => {
         'No tienes permiso para eliminar un técnico de otra zona.',
       )
     }
-    // ... (validaciones de zona y visitas pendientes) ...
+    // Verificar que el técnico no tenga visitas pendientes
+    const technicianName = techData.nombreCompleto
+    const pendingVisits = await db
+      .collection('visitas')
+      .where('fumigadores_asignados', 'array-contains', technicianName)
+      .where('estado_visita', '==', 'Programada')
+      .limit(1)
+      .get()
+    if (!pendingVisits.empty) {
+      throw new HttpsError(
+        'failed-precondition',
+        'No se puede eliminar un técnico con visitas pendientes. Por favor, reasigna o completa sus visitas primero.',
+      )
+    }
 
     await db.collection('fumigadores').doc(technicianId).delete()
-
-    const userEmail = request.auth.token.email || 'Desconocido'
-    await db.collection('audit_logs').add({
-      action: 'DELETE_TECHNICIAN',
-      details: `Técnico eliminado ID: ${technicianId} (${techData.nombreCompleto})`,
-      performedBy: request.auth.uid,
-      performerEmail: userEmail,
-      adminEmail: userEmail,
-      timestamp: admin.firestore.FieldValue.serverTimestamp(),
-      userAgent: request.rawRequest ? request.rawRequest.headers['user-agent'] : 'Internal',
-    })
-
+    await createAuditLog('DELETE_TECHNICIAN', `Técnico eliminado ID: ${technicianId}`, request)
     return { success: true }
   } catch (e) {
     throw new HttpsError('internal', e.message)
@@ -749,45 +830,6 @@ exports.getBusinessData = onCall({ cors: true }, async (request) => {
   const doc = await db.collection('settings').doc('businessData').get()
   return doc.exists ? doc.data() : {}
 })
-
-async function resolveOrganizerUid(visitData) {
-  let organizerUid = null
-  const expectedRole = visitData.zona ? ZONES_TO_ROLES_MAP[visitData.zona] : null
-
-  if (expectedRole) {
-    const configDoc = await db.collection('config').doc('coordinators_mapping').get()
-    if (configDoc.exists) {
-      organizerUid = (configDoc.data() || {})[expectedRole] || null
-    }
-    if (!organizerUid) {
-      const users = await admin.auth().listUsers(1000)
-      const coordinator = users.users.find((u) => u.customClaims?.role === expectedRole)
-      if (coordinator) organizerUid = coordinator.uid
-    }
-  }
-
-  if (!organizerUid && visitData.calendarOwnerUid) {
-    organizerUid = visitData.calendarOwnerUid
-  }
-
-  if (!organizerUid && visitData.createdBy) {
-    try {
-      const creator = await admin.auth().getUser(visitData.createdBy)
-      if (creator.customClaims?.role?.startsWith('Coordinador')) {
-        organizerUid = visitData.createdBy
-      }
-    } catch (e) {
-      logger.warn(`No se pudo resolver createdBy como organizador: ${visitData.createdBy}`, e)
-    }
-  }
-
-  return organizerUid
-}
-
-async function resolveDeletionOwnerUid(visitData) {
-  if (visitData.activeOrganizerUid) return visitData.activeOrganizerUid
-  return resolveOrganizerUid(visitData) // fallback para visitas viejas sin el campo
-}
 
 async function sendVisitNotificationViaGmailAPI(visitData, visitId, organizerUid) {
   logger.info(`[ESPÍA/sendMail] Iniciando para visita ${visitId} con organizador ${organizerUid}.`)
@@ -844,93 +886,41 @@ async function sendVisitNotificationViaGmailAPI(visitData, visitId, organizerUid
     // --- CONSTRUCCIÓN DEL HTML ENRIQUECIDO ---
     const encodedAddress = encodeURIComponent(visitData.ubicacion)
     const mapsLink = `https://www.google.com/maps/search/?api=1&query=${encodedAddress}`
-    // Plantilla de correo súper top adaptada a los colores de SisFumi
+
     const htmlBody = `
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <meta charset="utf-8">
-      <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    </head>
-    <body style="margin: 0; padding: 0; background-color: #0a0a0a; font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;">
-      <table border="0" cellpadding="0" cellspacing="0" width="100%" style="background-color: #0a0a0a; padding: 40px 20px;">
-        <tr>
-          <td align="center">
-            <table border="0" cellpadding="0" cellspacing="0" width="600" style="background-color: #151515; border-radius: 12px; border: 1px solid #333; overflow: hidden; box-shadow: 0 8px 20px rgba(0,0,0,0.5);">
+      <div style="font-family: Arial, sans-serif; color: #333; max-width: 600px;">
+        <h2 style="color: #2563eb;">Nueva Visita Asignada</h2>
+        <p>Hola, se te ha asignado una nueva visita técnica.</p>
+        <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;">
 
-              <!-- Encabezado -->
-              <tr>
-                <td align="center" style="background-color: #151515; padding: 40px 20px; border-bottom: 2px solid #d60000;">
-                  <h1 style="color: #ffffff; margin: 0; font-size: 26px; font-weight: 700; letter-spacing: 1px;">Control Total P&H</h1>
-                  <p style="color: #888888; margin: 8px 0 0 0; font-size: 14px; text-transform: uppercase; letter-spacing: 2px;">Gestión de Servicios</p>
-                </td>
-              </tr>
+        <p><strong>Cliente:</strong> ${escapeHTML(visitData.nombre_cliente)}</p>
+        <p><strong>Servicio:</strong> ${escapeHTML(visitData.tipo_visita)}</p>
+        <p><strong>Fecha:</strong> ${visitDate.toLocaleString('es-CO', {
+          timeZone: 'America/Bogota',
+        })}</p>
+        <p><strong>Ubicación:</strong> <a href="${mapsLink}" style="color: #2563eb;">${escapeHTML(
+          visitData.ubicacion,
+        )}</a></p>
 
-              <!-- Cuerpo principal -->
-              <tr>
-                <td style="padding: 40px;">
-                  <h2 style="color: #e11d48; font-size: 22px; margin: 0 0 15px 0;">¡Nueva Visita Asignada!</h2>
-                  <p style="color: #dddddd; font-size: 16px; line-height: 1.6; margin: 0 0 25px 0;">
-                    Hola, se te ha asignado un nuevo servicio técnico. Aquí tienes los detalles:
-                  </p>
+        ${
+          visitData.fumigadores_asignados?.length
+            ? `<p><strong>Equipo:</strong> ${escapeHTML(
+                visitData.fumigadores_asignados.join(', '),
+              )}</p>`
+            : ''
+        }
+        ${
+          visitData.notas_visita
+            ? `<div style="background: #f3f4f6; padding: 10px; border-radius: 5px; margin-top: 10px;"><strong>Notas:</strong><br>${escapeHTML(
+                visitData.notas_visita,
+              )}</div>`
+            : ''
+        }
 
-                  <!-- Caja de detalles (Resaltada) -->
-                  <table border="0" cellpadding="0" cellspacing="0" width="100%" style="background-color: #202020; border-left: 4px solid #d60000; border-radius: 6px; padding: 20px; margin-bottom: 25px;">
-                    <tr>
-                      <td>
-                        <p style="margin: 0 0 12px 0; color: #aaaaaa; font-size: 15px;">
-                          <strong style="color: #ffffff;">🏢 Cliente:</strong> ${escapeHTML(visitData.nombre_cliente)}
-                        </p>
-                        <p style="margin: 0 0 12px 0; color: #aaaaaa; font-size: 15px;">
-                          <strong style="color: #ffffff;">🛠️ Servicio:</strong> ${escapeHTML(visitData.tipo_visita)}
-                        </p>
-                        <p style="margin: 0 0 12px 0; color: #aaaaaa; font-size: 15px;">
-                          <strong style="color: #ffffff;">📅 Fecha:</strong> ${visitDate.toLocaleString('es-CO', { timeZone: 'America/Bogota', dateStyle: 'full', timeStyle: 'short' })}
-                        </p>
-                        <p style="margin: 0; color: #aaaaaa; font-size: 15px;">
-                          <strong style="color: #ffffff;">📍 Ubicación:</strong> <a href="${mapsLink}" style="color: #e11d48; text-decoration: none;">${escapeHTML(visitData.ubicacion)}</a>
-                        </p>
-                      </td>
-                    </tr>
-                  </table>
-
-                  ${
-                    visitData.fumigadores_asignados?.length
-                      ? `
-                  <p style="color: #dddddd; font-size: 15px; margin: 0 0 15px 0;">
-                    <strong style="color: #ffffff;">👥 Equipo:</strong> ${escapeHTML(visitData.fumigadores_asignados.join(', '))}
-                  </p>`
-                      : ''
-                  }
-
-                  ${
-                    visitData.notas_visita
-                      ? `
-                  <div style="background-color: #2a2a2a; padding: 15px; border-radius: 6px; margin-top: 15px;">
-                    <strong style="color: #e11d48; font-size: 14px; text-transform: uppercase;">Notas adicionales:</strong><br>
-                    <p style="color: #cccccc; font-size: 14px; margin: 8px 0 0 0; line-height: 1.5; font-style: italic;">
-                      ${escapeHTML(visitData.notas_visita)}
-                    </p>
-                  </div>`
-                      : ''
-                  }
-
-                </td>
-              </tr>
-
-              <!-- Footer -->
-              <tr>
-                <td align="center" style="background-color: #111111; padding: 25px 40px; border-top: 1px solid #222222;">
-                  <p style="color: #666666; font-size: 12px; margin: 0 0 8px 0;">Por favor, acepta la invitación adjunta para añadir este evento a tu calendario.</p>
-                  <p style="color: #444444; font-size: 11px; margin: 0;">Este mensaje fue enviado automáticamente por SISFUMI.</p>
-                </td>
-              </tr>
-            </table>
-          </td>
-        </tr>
-      </table>
-    </body>
-    </html>
+        <p style="margin-top: 20px; font-size: 0.9em; color: #666;">
+          Por favor, acepta la invitación adjunta para añadir este evento a tu calendario.
+        </p>
+      </div>
     `
 
     const subject = `Visita Asignada: ${visitData.nombre_cliente}`
@@ -1028,16 +1018,9 @@ function buildEventResource(visitData, attendeeEmails = [], colorId = '8') {
   }
 }
 
-async function createOrUpdateCalendarEvent(
-  visitData,
-  visitId,
-  uid,
-  { forceRecreate = false } = {},
-) {
-  const visitRef = admin.firestore().collection('visitas').doc(visitId)
-
+async function createOrUpdateCalendarEvent(visitData, visitId, uid) {
   try {
-    logger.info(`[calendar] Sincronizando visita ${visitId} en calendario de ${uid}.`)
+    logger.info(`[ESPÍA/calendar] Iniciando evento para visita ${visitId} en calendario de ${uid}.`)
 
     const integrationDoc = await admin
       .firestore()
@@ -1047,111 +1030,118 @@ async function createOrUpdateCalendarEvent(
 
     if (!integrationDoc.exists) {
       throw new Error(
-        `La integración de calendario para el organizador '${uid}' no fue encontrada.`,
+        `La integración de calendario para el organizador con UID '${uid}' no fue encontrada.`,
       )
     }
 
     const tokens = integrationDoc.data()
     const oAuth2Client = new google.auth.OAuth2(googleConfig.clientId, googleConfig.clientSecret)
+
     oAuth2Client.setCredentials(tokens)
+
+    // 1. RENOVACIÓN AUTOMÁTICA DE TOKENS: Escuchar si Google entrega un nuevo access_token y actualizar Firestore
     oAuth2Client.on('tokens', async (newTokens) => {
+      const updatedTokens = { ...tokens, ...newTokens }
       await admin
         .firestore()
         .collection('calendar_integrations')
         .doc(uid)
-        .set({ ...tokens, ...newTokens }, { merge: true })
+        .set(updatedTokens, { merge: true })
     })
 
     const calendar = google.calendar({ version: 'v3', auth: oAuth2Client })
 
     let eventColorId = '8'
     let attendeeEmails = []
-    if (visitData.fumigadores_asignados?.length) {
-      const snap = await db
+
+    if (visitData.fumigadores_asignados && visitData.fumigadores_asignados.length > 0) {
+      const fumigadoresSnapshot = await db
         .collection('fumigadores')
         .where('nombreCompleto', 'in', visitData.fumigadores_asignados)
         .get()
 
       const primaryTechnicianName = visitData.fumigadores_asignados[0]
-      let primaryFound = false
-      snap.forEach((doc) => {
-        const t = doc.data()
-        if (t.email) attendeeEmails.push(t.email)
-        if (!primaryFound && t.nombreCompleto === primaryTechnicianName && t.googleColorId) {
-          eventColorId = t.googleColorId
-          primaryFound = true
+      let primaryTechnicianFound = false
+
+      fumigadoresSnapshot.forEach((doc) => {
+        const techData = doc.data()
+        if (techData.email) {
+          attendeeEmails.push(techData.email)
+        }
+        if (
+          !primaryTechnicianFound &&
+          techData.nombreCompleto === primaryTechnicianName &&
+          techData.googleColorId
+        ) {
+          eventColorId = techData.googleColorId
+          primaryTechnicianFound = true
         }
       })
     }
 
     const eventResource = buildEventResource(visitData, attendeeEmails, eventColorId)
 
+    // 2. ID DETERMINISTA SANITIZADO (Solo a-v y 0-9)
     const safeVisitId = visitId
       .toLowerCase()
       .replace(/[^a-v0-9]/g, (char) => (char.charCodeAt(0) % 22).toString(36))
+
     const deterministicEventId = `visit${safeVisitId}`.substring(0, 102)
     const targetEventId = visitData.googleEventId || deterministicEventId
 
-    // CONSULTAMOS el estado real del evento para evitar zombis
-    let existingEvent = null
     try {
-      const res = await calendar.events.get({ calendarId: 'primary', eventId: targetEventId })
-      existingEvent = res.data
-    } catch (getError) {
-      if (getError.code !== 404) throw getError
-      existingEvent = null
-    }
+      // 3. INTENTO DE ACTUALIZACIÓN (UPSERT PREVENTIVO)
+      logger.info(`[ESPÍA/calendar] Actualizando/Insertando evento con ID: ${targetEventId}`)
 
-    const eventIsGone = !existingEvent || existingEvent.status === 'cancelled'
+      await calendar.events.update({
+        calendarId: 'primary',
+        eventId: targetEventId,
+        sendUpdates: 'all',
+        resource: {
+          ...eventResource,
+          id: targetEventId,
+        },
+      })
 
-    if (eventIsGone) {
-      if (visitData.calendarEventMissing && !forceRecreate) {
-        logger.warn(
-          `[calendar] Evento ${targetEventId} sigue eliminado/cancelado y no hay cambios significativos. Se omite recreación (evento zombi evitado).`,
-        )
-        return null
+      if (!visitData.googleEventId) {
+        await admin
+          .firestore()
+          .collection('visitas')
+          .doc(visitId)
+          .update({ googleEventId: targetEventId })
       }
 
-      logger.info(
-        `[calendar] Evento ${targetEventId} no existe o está cancelado. Creando uno nuevo.`,
-      )
-      eventResource.id = deterministicEventId
+      return targetEventId
+    } catch (updateError) {
+      // Si el evento no existía previamente (404 / 400), se inserta
+      if (updateError.code === 404 || updateError.code === 400) {
+        logger.info(`[ESPÍA/calendar] Creando evento con ID determinista: ${deterministicEventId}`)
 
-      const created = await calendar.events.insert({
-        calendarId: 'primary',
-        resource: eventResource,
-        sendUpdates: 'none',
-      })
+        eventResource.id = deterministicEventId
 
-      await visitRef.update({
-        googleEventId: created.data.id,
-        activeOrganizerUid: uid,
-        calendarEventMissing: false,
-        calendarEventMissingAt: admin.firestore.FieldValue.delete(),
-      })
+        const createdEvent = await calendar.events.insert({
+          calendarId: 'primary',
+          resource: eventResource,
+          sendUpdates: 'all',
+        })
 
-      return created.data.id
+        const newEventId = createdEvent.data.id
+
+        await admin
+          .firestore()
+          .collection('visitas')
+          .doc(visitId)
+          .update({ googleEventId: newEventId })
+
+        return newEventId
+      }
+
+      throw updateError
     }
-
-    await calendar.events.update({
-      calendarId: 'primary',
-      eventId: targetEventId,
-      sendUpdates: 'none',
-      resource: { ...eventResource, id: targetEventId },
-    })
-
-    const updates = { activeOrganizerUid: uid }
-    if (!visitData.googleEventId) updates.googleEventId = targetEventId
-    if (visitData.calendarEventMissing) {
-      updates.calendarEventMissing = false
-      updates.calendarEventMissingAt = admin.firestore.FieldValue.delete()
-    }
-    await visitRef.update(updates)
-
-    return targetEventId
   } catch (error) {
     logger.error(`Error createOrUpdateCalendarEvent:`, error)
 
+    // Si las credenciales caducan por falta de permisos o fueron revocadas, eliminar registro
     if (
       error.code === 401 ||
       error.code === 400 ||
@@ -1172,35 +1162,58 @@ async function deleteCalendarEvent(visitData, uid) {
       .doc(uid)
       .get()
 
-    if (!integrationDoc.exists || !visitData.googleEventId) {
-      logger.warn(
-        `[deleteCalendarEvent] No se encontró integración o googleEventId para UID: ${uid}`,
-      )
-      return
-    }
+    if (!integrationDoc.exists || !visitData.googleEventId) return
 
     const tokens = integrationDoc.data()
+
     const oAuth2Client = new google.auth.OAuth2(googleConfig.clientId, googleConfig.clientSecret)
+
     oAuth2Client.setCredentials(tokens)
 
+    // Guardar token automáticamente si la librería de Google lo refresca
+    oAuth2Client.on('tokens', async (newTokens) => {
+      const updatedTokens = { ...tokens, ...newTokens }
+      await admin
+        .firestore()
+        .collection('calendar_integrations')
+        .doc(uid)
+        .set(updatedTokens, { merge: true })
+    })
+
     const calendar = google.calendar({ version: 'v3', auth: oAuth2Client })
+
     await calendar.events.delete({
       calendarId: 'primary',
       eventId: visitData.googleEventId,
-      sendUpdates: 'all',
+      sendNotifications: true,
     })
+
     logger.info(`[ESPÍA/calendar] Evento ${visitData.googleEventId} eliminado exitosamente.`)
   } catch (error) {
+    // Si el evento ya no existía en Google Calendar (404 / 410), se ignora el error de forma segura
     if (error.code === 404 || error.code === 410) {
       logger.warn(
         `[ESPÍA/calendar] El evento ${visitData.googleEventId} ya no existía en Google Calendar.`,
       )
       return
     }
+
+    // Si el token expiró sin refresh_token o fue revocado por el usuario
+    if (
+      error.code === 401 ||
+      error.code === 400 ||
+      error.message?.includes('invalid authentication credentials')
+    ) {
+      logger.error(
+        `[AUTH_FIX] Credenciales inválidas para UID ${uid}. Se elimina integración desactualizada.`,
+      )
+      await admin.firestore().collection('calendar_integrations').doc(uid).delete()
+      return
+    }
+
     logger.error('Error deleteCalendarEvent:', error)
   }
 }
-
 // --- El resto de las funciones (Triggers, Callables, etc.) sigue aquí sin cambios ---
 // ... (pegar el resto de las funciones desde tu archivo actual) ...
 /**
@@ -1214,30 +1227,28 @@ exports.deleteClientAndRelatedData = onCall({ cors: true }, async (request) => {
   try {
     await getAuthorizedClient(request, clientId)
 
+    // 1. Eliminar Visitas
     const visitsSnap = await db.collection('visitas').where('id_cliente', '==', clientId).get()
     const documentsToDelete = [...visitsSnap.docs]
 
+    // 2. Eliminar Fichas de Servicio
     const servicesSnap = await db.collection('servicios').where('clientId', '==', clientId).get()
     documentsToDelete.push(...servicesSnap.docs)
 
+    // 3. Eliminar Facturas (Opcional, a veces se prefiere mantener por histórico contable)
+    // En este caso, NO eliminamos facturas para mantener integridad fiscal.
+
+    // 4. Eliminar Cliente
     documentsToDelete.push(db.collection('clientes').doc(clientId))
 
+    // Firestore limita cada batch a 500 operaciones.
     for (let index = 0; index < documentsToDelete.length; index += 450) {
       const batch = db.batch()
       documentsToDelete.slice(index, index + 450).forEach((docRef) => batch.delete(docRef))
       await batch.commit()
     }
 
-    const userEmail = request.auth.token.email || 'Desconocido'
-    await db.collection('audit_logs').add({
-      action: 'DELETE_CLIENT',
-      details: `Cliente eliminado permanentemente junto con sus datos relacionados: ${clientId}`,
-      performedBy: request.auth.uid,
-      performerEmail: userEmail,
-      adminEmail: userEmail,
-      timestamp: admin.firestore.FieldValue.serverTimestamp(),
-      userAgent: request.rawRequest ? request.rawRequest.headers['user-agent'] : 'Internal',
-    })
+    await createAuditLog('DELETE_CLIENT', `Cliente eliminado permanentemente: ${clientId}`, request)
 
     return {
       success: true,
@@ -1517,9 +1528,14 @@ exports.deleteVisitTemplate = onCall({ cors: true }, async (request) => {
 
 exports.deleteVisitAndCalendarEvent = onCall(
   {
-    cors: ['http://localhost:5173', 'https://sisfumictph.com', 'https://controltotalyph.com'],
+    // Permite los orígenes específicos o pasa true para aceptar cualquier origen autenticado
+cors: ['http://localhost:5173', 'https://sisfumictph.com', 'https://www.sisfumictph.com', 'https://controltotalyph.com', 'https://www.controltotalyph.com'],    // ✅ FIX 503/CORS por cold start: mantiene al menos 1 instancia caliente
+    // para que el preflight OPTIONS nunca tenga que esperar un arranque de
+    // instancia (evita el 503 con latencia 0ms visto en los logs).
+    minInstances: 1,
   },
   async (request) => {
+    // 1. Validar autenticación con HttpsError
     if (!request.auth) {
       throw new HttpsError('unauthenticated', 'El usuario no está autenticado.')
     }
@@ -1538,17 +1554,39 @@ exports.deleteVisitAndCalendarEvent = onCall(
       }
 
       const visitData = visitDoc.data()
-      const organizerUid = await resolveDeletionOwnerUid(visitData)
+      let organizerUid = null
 
+      // 2. Optimización: Consulta en Firestore en lugar de cargar todos los usuarios de Auth
+      if (visitData.zona) {
+        const roleMap = {
+          'Valle del Cauca': 'Coordinador Valle',
+          'Norte de Santander': 'Coordinador Norte de Santander',
+          Nacionales: 'Coordinador Nacionales',
+        }
+        const expectedRole = roleMap[visitData.zona]
+
+        if (expectedRole) {
+          // Asumiendo que guardas el rol en la colección 'users'
+          const userQuery = await db
+            .collection('users')
+            .where('role', '==', expectedRole)
+            .limit(1)
+            .get()
+
+          if (!userQuery.empty) {
+            organizerUid = userQuery.docs[0].id
+          }
+        }
+      }
+
+      // Fallback
+      if (!organizerUid) {
+        organizerUid = visitData.calendarOwnerUid || visitData.createdBy
+      }
+
+      // Eliminar de Google Calendar
       if (visitData.googleEventId && organizerUid && organizerUid !== 'SYSTEM') {
-        logger.info(
-          `[DELETE_VISIT] Borrando evento ${visitData.googleEventId} usando organizador UID: ${organizerUid}`,
-        )
         await deleteCalendarEvent(visitData, organizerUid)
-      } else {
-        logger.warn(
-          `[DELETE_VISIT] No se pudo borrar de calendario. googleEventId: ${visitData.googleEventId}, organizerUid: ${organizerUid}`,
-        )
       }
 
       await visitRef.delete()
@@ -1560,7 +1598,7 @@ exports.deleteVisitAndCalendarEvent = onCall(
 
       return { message: 'Visita eliminada correctamente.' }
     } catch (e) {
-      logger.error('Error en deleteVisitAndCalendarEvent:', e)
+      // Re-lanzar si ya es un HttpsError, de lo contrario encapsular
       if (e instanceof HttpsError) throw e
       throw new HttpsError('internal', e.message || 'Error interno del servidor.')
     }
@@ -1595,6 +1633,29 @@ exports.getSignedUploadUrl = onCall({ cors: true }, async (request) => {
   } catch (error) {
     logger.error(`Error al generar URL firmada para ${filePath}:`, error)
     throw new HttpsError('internal', 'No se pudo generar la URL de carga.')
+  }
+})
+
+/**
+ * Hace público un archivo subido a Firebase Storage.
+ */
+exports.makeSupportFilePublic = onCall({ cors: true }, async (request) => {
+  if (!request.auth) {
+    throw new HttpsError('unauthenticated', 'La solicitud debe estar autenticada.')
+  }
+
+  const { filePath } = request.data
+  if (!filePath) {
+    throw new HttpsError('invalid-argument', 'Se requiere la ruta del archivo (filePath).')
+  }
+
+  try {
+    const bucket = admin.storage().bucket(admin.instanceId().app.options.storageBucket)
+    await bucket.file(filePath).makePublic()
+    return { success: true, message: 'Archivo hecho público.' }
+  } catch (error) {
+    logger.error(`Error al hacer público el archivo ${filePath}:`, error)
+    throw new HttpsError('internal', 'No se pudo hacer público el archivo.')
   }
 })
 
@@ -1716,7 +1777,7 @@ exports.getPendingPriceRequests = onCall({ cors: true }, async (request) => {
 /**
  * Crea una nueva visita en Firestore.
  */
-exports.createVisit = onCall({ cors: true }, async (request) => {
+exports.createVisit = onCall({ cors: true, minInstances: 1 }, async (request) => {
   assertAuth(request)
   const { visitData } = request.data
 
@@ -1761,7 +1822,7 @@ exports.createVisit = onCall({ cors: true }, async (request) => {
 /**
  * Actualiza una visita existente en Firestore.
  */
-exports.updateVisit = onCall({ cors: true }, async (request) => {
+exports.updateVisit = onCall({ cors: true, minInstances: 1 }, async (request) => {
   assertAuth(request)
   const { visitId, visitData } = request.data
 
@@ -2079,6 +2140,77 @@ exports.updateBusinessData = onCall({ cors: true }, async (request) => {
 })
 
 /**
+ * Elimina un archivo de soporte tanto de Storage como de la referencia en Firestore.
+ */
+exports.deleteSupportFile = onCall({ cors: true }, async (request) => {
+  if (!request.auth) {
+    throw new HttpsError('unauthenticated', 'La solicitud debe estar autenticada.')
+  }
+
+  const { visitId, fileData } = request.data
+  const filePath = fileData?.path
+
+  if (!visitId || !filePath) {
+    throw new HttpsError(
+      'invalid-argument',
+      'Los parámetros visitId y fileData.path son obligatorios.',
+    )
+  }
+
+  try {
+    // 1. Eliminar el archivo de Firebase Storage
+    const bucketName = admin.instanceId().app.options.storageBucket
+    const bucket = admin.storage().bucket(bucketName)
+    await bucket.file(filePath).delete()
+    logger.log(`[deleteSupportFile] Archivo eliminado de Storage: ${filePath}`)
+
+    // 2. Obtener el documento de la visita para encontrar el objeto de soporte completo
+    const visitRef = db.collection('visitas').doc(visitId)
+    const visitDoc = await visitRef.get()
+    if (!visitDoc.exists) {
+      throw new HttpsError('not-found', 'La visita no fue encontrada.')
+    }
+
+    const currentSoportes = visitDoc.data().gestionPermiso?.soportes || []
+    const supportObjectToRemove = currentSoportes.find((s) => s.path === filePath)
+
+    if (!supportObjectToRemove) {
+      logger.warn(
+        `[deleteSupportFile] No se encontró el objeto de soporte con path ${filePath} en la visita ${visitId}. La referencia podría haber sido eliminada previamente.`,
+      )
+      return {
+        success: true,
+        message: 'El archivo ya no existía en la base de datos, pero fue eliminado de Storage.',
+      }
+    }
+
+    // 2. Eliminar la referencia del documento de Firestore usando arrayRemove
+    await visitRef.update({
+      'gestionPermiso.soportes': admin.firestore.FieldValue.arrayRemove(supportObjectToRemove),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    })
+    logger.log(`[deleteSupportFile] Referencia eliminada de Firestore para visita: ${visitId}`)
+
+    // 3. (Opcional) Registrar en auditoría
+    const adminEmail = request.auth.token.email || 'Desconocido'
+    const logEntry = {
+      timestamp: admin.firestore.FieldValue.serverTimestamp(),
+      adminEmail,
+      action: 'DELETE_SUPPORT_FILE',
+      details: `El usuario ${adminEmail} eliminó el soporte "${supportObjectToRemove.name}" de la visita ${visitId}.`,
+      targetUser: { uid: visitId, email: `Visita ID: ${visitId}` },
+      adminUser: { uid: request.auth.uid, email: adminEmail },
+    }
+    await db.collection('audit_logs').add(logEntry)
+
+    return { success: true, message: 'Soporte eliminado con éxito.' }
+  } catch (error) {
+    logger.error(`[deleteSupportFile] Error al eliminar soporte:`, error)
+    throw new HttpsError('internal', `Error al eliminar el soporte: ${error.message}`)
+  }
+})
+
+/**
  * Elimina una visita de Firestore.
  */
 exports.deleteVisit = onCall({ cors: true }, async (request) => {
@@ -2098,7 +2230,21 @@ exports.deleteVisit = onCall({ cors: true }, async (request) => {
   }
 })
 
-exports.quickCompleteVisit = onCall({ cors: true }, async (request) => {
+/**
+ * Marca una visita como 'Realizada' rápidamente.
+ */
+exports.completeVisit = onCall(async (request) => {
+  assertAuth(request)
+  const { visitId } = request.data
+  await db.collection('visitas').doc(visitId).update({
+    estado_visita: 'Realizada',
+    completedAt: admin.firestore.FieldValue.serverTimestamp(),
+    completedBy: request.auth.uid,
+  })
+  return { message: 'Visita marcada como realizada' }
+})
+
+exports.quickCompleteVisit = onCall({ cors: true, minInstances: 1 }, async (request) => {
   assertAuth(request)
   try {
     await db.collection('visitas').doc(request.data.visitId).update({
@@ -2323,6 +2469,72 @@ exports.setUserStatus = onCall({ cors: true }, async (request) => {
     throw new HttpsError('internal', 'Ocurrió un error al actualizar el estado del usuario.')
   }
 })
+
+exports.saveGoogleTokens = onCall(
+  {
+cors: ['http://localhost:5173', 'https://sisfumictph.com', 'https://www.sisfumictph.com', 'https://controltotalyph.com', 'https://www.controltotalyph.com'],    enforceAppCheck: false,
+    region: 'us-central1',
+  },
+  async (request) => {
+    if (!request.auth) {
+      throw new HttpsError('unauthenticated', 'Usuario no autenticado.')
+    }
+
+    const { code, targetUid } = request.data
+
+    if (!code || !targetUid) {
+      throw new HttpsError('invalid-argument', "Se requieren los parámetros 'code' y 'targetUid'.")
+    }
+
+    // Validar que el Secreto de Cliente esté presente
+    if (!googleConfig.clientId || !googleConfig.clientSecret) {
+      logger.error('[saveGoogleTokens] Falta clientId o clientSecret en la configuración.')
+      throw new HttpsError(
+        'failed-precondition',
+        'El servidor no tiene configuradas las credenciales secretas de Google.',
+      )
+    }
+
+    try {
+      logger.info(
+        `[saveGoogleTokens] Intentando canjear código con ClientID: ${googleConfig.clientId.substring(0, 15)}...`,
+      )
+      logger.info(`[saveGoogleTokens] Código recibido: ${code.substring(0, 10)}...`)
+
+      const oAuth2Client = new google.auth.OAuth2(
+        googleConfig.clientId,
+        googleConfig.clientSecret,
+        'postmessage', // OBLIGATORIO: Debe coincidir con el mecanismo frontend de initCodeClient popup
+      )
+
+      // Canjear el código
+      const { tokens } = await oAuth2Client.getToken(code)
+      oAuth2Client.setCredentials(tokens)
+
+      const oauth2 = google.oauth2({ version: 'v2', auth: oAuth2Client })
+      const { data: userInfo } = await oauth2.userinfo.get()
+
+      await admin
+        .firestore()
+        .collection('calendar_integrations')
+        .doc(targetUid)
+        .set(
+          {
+            ...tokens,
+            googleEmail: userInfo.email,
+            googleUserName: userInfo.name,
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          },
+          { merge: true },
+        )
+
+      return { message: 'Integración vinculada exitosamente.' }
+    } catch (e) {
+      logger.error(`[saveGoogleTokens] Error OAuth para UID ${targetUid}:`, e.message || e)
+      throw new HttpsError('internal', e.message || 'Error al canjear el código con Google.')
+    }
+  },
+)
 
 /**
  * Solo los Jefes o Administradores pueden llamar a esta función.
@@ -2653,7 +2865,7 @@ exports.getGoogleCalendarEvents = onCall({ cors: true }, async (request) => {
   }
 })
 
-exports.getConsolidatedPlanningData = onCall({ cors: true }, async (request) => {
+exports.getConsolidatedPlanningData = onCall({ cors: true, minInstances: 1 }, async (request) => {
   const { auth, data } = request
   if (!auth) {
     // ✅ MEJORA: Lanzar error si no hay autenticación.
@@ -2879,7 +3091,7 @@ exports.getConsolidatedPlanningData = onCall({ cors: true }, async (request) => 
   }
 })
 
-exports.getBillingDataForMonth = onCall({ cors: true }, async (request) => {
+exports.getBillingDataForMonth = onCall({ cors: true, minInstances: 1 }, async (request) => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'Debe estar autenticado.')
 
   const { month, year } = request.data
@@ -3071,29 +3283,16 @@ exports.listAllCoordinatorsForAdmin = onCall({ cors: true }, async (request) => 
   }
 
   try {
-    // Consultar directamente los usuarios con rol de coordinador en Firestore
-    const usersSnapshot = await db
-      .collection('users')
-      .where('role', '>=', 'Coordinador')
-      .where('role', '<=', 'Coordinador\uf8ff')
-      .get()
-
-    // Si prefieres asegurar cualquier variante que empiece por Coordinador:
-    const allUsersSnap = await db.collection('users').get()
-    const coordinators = []
-
-    allUsersSnap.forEach((doc) => {
-      const uData = doc.data()
-      if (uData.role && uData.role.startsWith('Coordinador')) {
-        coordinators.push({
-          uid: doc.id,
-          displayName: uData.displayName || uData.email,
-          email: uData.email,
-          role: uData.role,
-          zona: uData.zona || 'N/A',
-        })
-      }
-    })
+    const usersResult = await admin.auth().listUsers(1000)
+    const coordinators = usersResult.users
+      .filter((user) => user.customClaims?.role?.startsWith('Coordinador'))
+      .map((user) => ({
+        uid: user.uid,
+        displayName: user.displayName || user.email,
+        email: user.email,
+        role: user.customClaims.role,
+        zona: user.customClaims.zona,
+      }))
 
     const integrationsSnapshot = await admin.firestore().collection('calendar_integrations').get()
     const integrations = {}
@@ -3128,27 +3327,19 @@ exports.getCoordinatorForZone = onCall({ cors: true }, async (request) => {
     throw new HttpsError('invalid-argument', 'Se requiere una zona.')
   }
 
-  const expectedRole = ZONES_TO_ROLES_MAP[zone]
+  // Mapeo de zonas a roles de coordinador
+  const roleMap = {
+    'Valle del Cauca': 'Coordinador Valle',
+    'Norte de Santander': 'Coordinador Norte de Santander',
+    Nacionales: 'Coordinador Nacionales',
+  }
+
+  const expectedRole = roleMap[zone]
   if (!expectedRole) {
     return { name: 'No hay coordinador para esta zona' }
   }
 
   try {
-    // 🚀 BÚSQUEDA OPTIMIZADA: Consultamos el mapeo rápido en Firestore en lugar de listUsers(1000)
-    const configDoc = await db.collection('config').doc('coordinators_mapping').get()
-
-    if (configDoc.exists) {
-      const mappings = configDoc.data() || {}
-      const coordinatorUid = mappings[expectedRole]
-
-      if (coordinatorUid) {
-        // Obtenemos únicamente al usuario necesario mediante su UID específico
-        const userRecord = await admin.auth().getUser(coordinatorUid)
-        return { name: userRecord.displayName || userRecord.email }
-      }
-    }
-
-    // Fallback de seguridad por si el documento aún no ha sido inicializado
     const userRecords = await admin.auth().listUsers(1000)
     const coordinator = userRecords.users.find(
       (user) => user.customClaims && user.customClaims.role === expectedRole,
@@ -3198,8 +3389,7 @@ exports.batchAssignVisits = onCall({ cors: true }, async (request) => {
 
 exports.getConsolidatedDashboardStats = onCall(
   {
-    cors: ['http://localhost:5173', 'https://sisfumictph.com', 'https://controltotalyph.com'],
-    timeoutSeconds: 60,
+cors: ['http://localhost:5173', 'https://sisfumictph.com', 'https://www.sisfumictph.com', 'https://controltotalyph.com', 'https://www.controltotalyph.com'],    timeoutSeconds: 60,
     memory: '256MB', // Disminuir la memoria libera asignación de CPU en Cloud Run
     maxInstances: 2, // Limita el número de instancias concurrentes para no consumir cuota extra
   },
@@ -3552,14 +3742,16 @@ async function sendNotificationToAdmins(payload) {
     'Coordinador Nacional',
     'Gerente',
   ]
+  const users = await admin.auth().listUsers(1000)
+  const adminUids = users.users
+    .filter((user) => user.customClaims && targetRoles.includes(user.customClaims.role))
+    .map((user) => user.uid)
 
-  try {
-    const usersSnapshot = await db.collection('users').where('role', 'in', targetRoles).get()
-    if (usersSnapshot.empty) return
-
+  if (adminUids.length > 0) {
+    const db = admin.firestore()
     const batch = db.batch()
-    usersSnapshot.forEach((userDoc) => {
-      const ref = db.collection('users').doc(userDoc.id).collection('direct_notifications').doc()
+    adminUids.forEach((uid) => {
+      const ref = db.collection('users').doc(uid).collection('direct_notifications').doc()
       batch.set(ref, {
         ...payload,
         received: false,
@@ -3567,8 +3759,6 @@ async function sendNotificationToAdmins(payload) {
       })
     })
     await batch.commit()
-  } catch (error) {
-    logger.error('Error enviando notificación a administradores:', error)
   }
 }
 
@@ -3925,6 +4115,216 @@ exports.getPaymentDataForMonth = onCall({ cors: true }, async (request) => {
   }
 })
 
+/**
+ * Script de ejecución única para rellenar el campo 'fumigadores_asignados'
+ * en los servicios anidados dentro de las facturas antiguas.
+ */
+exports.backfillInvoiceTechnicians = onCall(
+  {
+    cors: true,
+    timeoutSeconds: 540,
+    memory: '1GiB',
+  },
+  async (request) => {
+    // 1. Verificación de seguridad: solo para administradores.
+    if (!request.auth || request.auth.token.role !== 'Administrador') {
+      throw new HttpsError(
+        'permission-denied',
+        'Solo los administradores pueden ejecutar este script.',
+      )
+    }
+
+    const db = admin.firestore()
+    const invoicesRef = db.collection('grupos_facturacion')
+    let updatedInvoicesCount = 0
+    const batchSize = 50 // Procesar en lotes más pequeños por la complejidad
+    let lastDoc = null
+
+    logger.log('Iniciando script de backfill para técnicos en facturas...')
+
+    try {
+      while (true) {
+        const query = lastDoc
+          ? invoicesRef
+              .orderBy(admin.firestore.FieldPath.documentId())
+              .startAfter(lastDoc)
+              .limit(batchSize)
+          : invoicesRef.orderBy(admin.firestore.FieldPath.documentId()).limit(batchSize)
+
+        const snapshot = await query.get()
+        if (snapshot.empty) break
+
+        const batch = db.batch()
+
+        for (const invoiceDoc of snapshot.docs) {
+          const invoiceData = invoiceDoc.data()
+          let needsUpdate = false
+
+          if (invoiceData.services && Array.isArray(invoiceData.services)) {
+            const updatedServices = [...invoiceData.services] // Copia para modificar
+
+            // ✅ CORRECCIÓN DEFINITIVA: Reconstruir la búsqueda de la visita original
+            // usando una combinación de cliente, tipo y fecha, ya que visitId puede no existir.
+            const servicePromises = updatedServices.map(async (service) => {
+              // Si ya tiene el campo, lo saltamos para ser eficientes.
+              if (Array.isArray(service.fumigadores_asignados)) {
+                return service
+              }
+
+              // 1. Reconstruir la fecha del servicio, manejando ambos casos (Timestamp y String).
+              let serviceDate
+              if (service.date && typeof service.date.toDate === 'function') {
+                // Es un Timestamp de Firestore
+                serviceDate = service.date.toDate()
+              } else if (typeof service.date === 'string') {
+                // Es un string ISO
+                serviceDate = new Date(service.date)
+              } else {
+                // No se puede determinar la fecha, saltar este servicio.
+                return service
+              }
+
+              const startOfDay = new Date(serviceDate)
+              startOfDay.setUTCHours(0, 0, 0, 0)
+              const endOfDay = new Date(serviceDate)
+              endOfDay.setUTCHours(23, 59, 59, 999)
+
+              // 2. Crear una consulta precisa para encontrar la visita original.
+              const visitQuery = db
+                .collection('visitas')
+                .where('id_cliente', '==', invoiceData.clientId)
+                .where('tipo_visita', '==', service.tipo_visita)
+                .where('fecha_visita', '>=', startOfDay)
+                .where('fecha_visita', '<=', endOfDay)
+                .limit(1)
+
+              const visitSnapshot = await visitQuery.get()
+
+              if (!visitSnapshot.empty) {
+                const originalVisitData = visitSnapshot.docs[0].data()
+                // 3. Devolver el servicio actualizado con los técnicos.
+                return {
+                  ...service,
+                  fumigadores_asignados: originalVisitData.fumigadores_asignados || [],
+                }
+              }
+
+              // Si no se encuentra la visita, devolver el servicio sin cambios.
+              return service
+            })
+
+            const rebuiltServices = await Promise.all(servicePromises)
+
+            // Comparamos el array original con el reconstruido para ver si hubo cambios.
+            if (JSON.stringify(invoiceData.services) !== JSON.stringify(rebuiltServices)) {
+              batch.update(invoiceDoc.ref, { services: rebuiltServices })
+              updatedInvoicesCount++
+            }
+          }
+        }
+
+        await batch.commit()
+        lastDoc = snapshot.docs[snapshot.docs.length - 1]
+      }
+
+      const message = `¡Éxito! Se actualizaron los datos de técnicos en ${updatedInvoicesCount} facturas.`
+      logger.log(message)
+      return { success: true, message }
+    } catch (error) {
+      logger.error('Error durante el backfill de técnicos en facturas:', error)
+      throw new HttpsError('internal', 'Ocurrió un error al actualizar las facturas.')
+    }
+  },
+)
+
+/**
+ * Script de ejecución única para rellenar el campo 'zona' en facturas antiguas.
+ * Recorre las facturas, busca la zona del cliente asociado y actualiza la factura.
+ */
+exports.backfillInvoiceZones = onCall(
+  {
+    cors: true,
+    timeoutSeconds: 540, // Timeout largo para un script de migración
+    memory: '1GiB',
+  },
+  async (request) => {
+    // 1. Verificación de seguridad: solo para administradores.
+    if (!request.auth || request.auth.token.role !== 'Administrador') {
+      throw new HttpsError(
+        'permission-denied',
+        'Solo los administradores pueden ejecutar este script.',
+      )
+    }
+
+    const db = admin.firestore()
+    const invoicesRef = db.collection('grupos_facturacion')
+    const clientsRef = db.collection('clientes')
+    let updatedCount = 0
+    const batchSize = 100 // Procesar 100 facturas a la vez para no exceder la memoria.
+    let lastDoc = null
+
+    logger.log('Iniciando script de backfill para zonas de facturas...')
+
+    try {
+      while (true) {
+        // 2. Obtener un lote de facturas.
+        const query = lastDoc
+          ? invoicesRef
+              .orderBy(admin.firestore.FieldPath.documentId())
+              .startAfter(lastDoc)
+              .limit(batchSize)
+          : invoicesRef.orderBy(admin.firestore.FieldPath.documentId()).limit(batchSize)
+
+        const snapshot = await query.get()
+        if (snapshot.empty) {
+          break // No hay más facturas, terminamos el bucle.
+        }
+
+        const batch = db.batch()
+        const invoicesToUpdate = []
+
+        // 3. Filtrar las que no tienen zona.
+        snapshot.forEach((doc) => {
+          const data = doc.data()
+          if (!data.zona && data.clientId) {
+            invoicesToUpdate.push({ id: doc.id, clientId: data.clientId })
+          }
+        })
+
+        // 4. Obtener los datos de los clientes necesarios.
+        if (invoicesToUpdate.length > 0) {
+          const clientIds = [...new Set(invoicesToUpdate.map((inv) => inv.clientId))]
+          const clientDocs = await clientsRef
+            .where(admin.firestore.FieldPath.documentId(), 'in', clientIds)
+            .get()
+          const clientZoneMap = new Map()
+          clientDocs.forEach((doc) => clientZoneMap.set(doc.id, doc.data().zona || 'Sin Zona'))
+
+          // 5. Preparar las actualizaciones en un lote.
+          invoicesToUpdate.forEach((invoice) => {
+            const zone = clientZoneMap.get(invoice.clientId)
+            if (zone) {
+              const invoiceRef = invoicesRef.doc(invoice.id)
+              batch.update(invoiceRef, { zona: zone })
+              updatedCount++
+            }
+          })
+          await batch.commit() // Ejecutar el lote de actualizaciones.
+        }
+
+        lastDoc = snapshot.docs[snapshot.docs.length - 1]
+      }
+
+      const message = `¡Éxito! Se actualizaron ${updatedCount} facturas con su zona correspondiente.`
+      logger.log(message)
+      return { success: true, message }
+    } catch (error) {
+      logger.error('Error durante el backfill de zonas de facturas:', error)
+      throw new HttpsError('internal', 'Ocurrió un error al actualizar las facturas.')
+    }
+  },
+)
+
 exports.generateInvoiceReport = onCall({ cors: true }, async (request) => {
   assertRole(request, [
     'Administrador',
@@ -4200,21 +4600,23 @@ exports.handleVisitWrite = onDocumentWritten({ document: 'visitas/{visitId}' }, 
 
   const after = event.data.after.exists ? event.data.after.data() : null
   const before = event.data.before.exists ? event.data.before.data() : null
-  if (!after) return
 
+  if (!after) return // Si el documento fue eliminado, salir
+
+  // 1. SILENCIAR SI SOLO CAMBIARON CAMPOS DE INFRAESTRUCTURA / SINCRONIZACIÓN
   if (before) {
     const isCalendarUpdateOnly =
       before.googleEventId !== after.googleEventId ||
       before.assignmentNotificationKey !== after.assignmentNotificationKey ||
-      before.assignmentNotificationClaimedAt !== after.assignmentNotificationClaimedAt ||
-      before.activeOrganizerUid !== after.activeOrganizerUid ||
-      before.calendarEventMissing !== after.calendarEventMissing
+      before.assignmentNotificationClaimedAt !== after.assignmentNotificationClaimedAt
 
+    // Si lo único que cambió fue la clave o el ID del evento, abortar para no duplicar
     if (isCalendarUpdateOnly && before.estado_visita === after.estado_visita) {
       return
     }
   }
 
+  // 2. VERIFICAR SI LA VISITA ESTÁ PROGRAMADA Y ES VÁLIDA
   let isNewOrUpdatedVisit = false
   if (after.estado_visita === 'Programada' && after.fecha_visita) {
     const visitDate = after.fecha_visita.toDate()
@@ -4223,6 +4625,7 @@ exports.handleVisitWrite = onDocumentWritten({ document: 'visitas/{visitId}' }, 
     now.setHours(0, 0, 0, 0)
     isNewOrUpdatedVisit = visitDate >= now
   }
+
   if (!isNewOrUpdatedVisit) return
 
   const assignedTechnicians = Array.isArray(after.fumigadores_asignados)
@@ -4240,6 +4643,7 @@ exports.handleVisitWrite = onDocumentWritten({ document: 'visitas/{visitId}' }, 
     zone: after.zona || '',
   })
 
+  // 3. CANDADO ATÓMICO: Evita ejecuciones simultáneas paralelas
   const currentRef = db.collection('visitas').doc(visitId)
   let proceedWithExecution = false
 
@@ -4247,13 +4651,16 @@ exports.handleVisitWrite = onDocumentWritten({ document: 'visitas/{visitId}' }, 
     await db.runTransaction(async (transaction) => {
       const currentDoc = await transaction.get(currentRef)
       if (!currentDoc.exists) return
+
       const currentData = currentDoc.data()
 
+      // Si ya procesamos exactamente esta misma clave, no continuar
       if (currentData.assignmentNotificationKey === notificationKey) {
         proceedWithExecution = false
         return
       }
 
+      // Marcar la clave inmediatamente antes de realizar llamadas a APIs externas
       transaction.update(currentRef, {
         assignmentNotificationKey: notificationKey,
         assignmentNotificationClaimedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -4267,35 +4674,53 @@ exports.handleVisitWrite = onDocumentWritten({ document: 'visitas/{visitId}' }, 
 
   if (!proceedWithExecution) return
 
-  const organizerUid = await resolveOrganizerUid(after)
-  if (!organizerUid) {
-    logger.warn(`[VISITA] No se pudo resolver organizador para ${visitId}`)
-    return
-  }
+  // 4. RESOLVER ORGANIZADOR
+  let organizerUid = null
+  const requesterUid = after.createdBy
+  const visitZone = after.zona
+  const calendarOwnerUid = after.calendarOwnerUid || null
 
-  const previousOwnerUid = after.activeOrganizerUid || null
-  let forceRecreate = false
-
-  if (previousOwnerUid && previousOwnerUid !== organizerUid && after.googleEventId) {
-    logger.info(
-      `[VISITA] Organizador cambió (${previousOwnerUid} -> ${organizerUid}) para ${visitId}. Limpiando evento huérfano.`,
-    )
-    try {
-      await deleteCalendarEvent(after, previousOwnerUid)
-    } catch (e) {
-      logger.warn(
-        `No se pudo borrar el evento huérfano del organizador anterior (${previousOwnerUid}):`,
-        e,
-      )
+  if (visitZone) {
+    const roleMap = {
+      'Valle del Cauca': 'Coordinador Valle',
+      'Norte de Santander': 'Coordinador Norte de Santander',
+      Nacionales: 'Coordinador Nacionales',
     }
-    forceRecreate = true
+    const expectedRole = roleMap[visitZone]
+    if (expectedRole) {
+      // Sugerencia: Reemplazar listUsers por consulta a Firestore en producción
+      const users = await admin.auth().listUsers(1000)
+      const coordinator = users.users.find((u) => u.customClaims?.role === expectedRole)
+      if (coordinator) organizerUid = coordinator.uid
+    }
   }
 
-  try {
-    await createOrUpdateCalendarEvent(after, visitId, organizerUid, { forceRecreate })
-    await sendVisitNotificationViaGmailAPI(after, visitId, organizerUid)
-  } catch (err) {
-    logger.error(`Error al procesar evento/correo para ${visitId}:`, err)
+  if (!organizerUid && calendarOwnerUid) {
+    organizerUid = calendarOwnerUid
+  }
+
+  if (!organizerUid && requesterUid) {
+    try {
+      const creator = await admin.auth().getUser(requesterUid)
+      if (creator.customClaims?.role?.startsWith('Coordinador')) {
+        organizerUid = requesterUid
+      }
+    } catch (e) {}
+  }
+
+  // 5. CREAR/ACTUALIZAR EN GOOGLE CALENDAR
+  if (organizerUid) {
+    try {
+      // Se ejecuta la sincronización con Google Calendar
+      await createOrUpdateCalendarEvent(after, visitId, organizerUid)
+
+      // Envío de correo complementario (Asegúrate de que no duplique las invitaciones directas de Google)
+      await sendVisitNotificationViaGmailAPI(after, visitId, organizerUid)
+    } catch (err) {
+      logger.error(`Error al procesar evento/correo para ${visitId}:`, err)
+    }
+  } else {
+    logger.warn(`[VISITA/email] No se pudo resolver organizador para ${visitId}`)
   }
 })
 
@@ -4350,18 +4775,20 @@ exports.scheduleRecurringVisits = onSchedule(
           .limit(1)
           .get()
 
-        // 🛑 CORRECCIÓN: Si no hay ninguna visita previa, el bot NO debe crear nada de la nada.
-        // La primera visita siempre debe ser creada manualmente por el coordinador desde la app.
+        // Calcular próxima fecha
+        let nextDate
         if (lastSnap.empty) {
-          continue
+          // Si nunca se ha hecho, ¿deberíamos crearla ya?
+          // Asumimos fecha de inicio de contrato si existiera, o today + frecuencia
+          nextDate = new Date()
+        } else {
+          const lastDate = lastSnap.docs[0].data().fecha_visita.toDate()
+          nextDate = calculateNextVisitDate(lastDate, s.frecuencia)
         }
 
-        // Si sí existe una visita previa, calculamos la próxima fecha basada en esa última
-        const lastDate = lastSnap.docs[0].data().fecha_visita.toDate()
-        const nextDate = calculateNextVisitDate(lastDate, s.frecuencia)
-
-        // Si la fecha ya llegó o falta una semana (7 días) o menos
+        // Si la fecha ya llegó o pasó, y no existe visita agendada para ese día
         if (nextDate <= today || nextDate - today < 7 * 86400000) {
+          // Crear con 7 días de antelación
           const checkExists = await db
             .collection('visitas')
             .where('id_cliente', '==', sheet.clientId)
@@ -4375,7 +4802,7 @@ exports.scheduleRecurringVisits = onSchedule(
               nombre_cliente: sheet.clientName || 'Cliente Sistema',
               fecha_visita: admin.firestore.Timestamp.fromDate(nextDate),
               tipo_visita: s.tipo_servicio,
-              estado_visita: 'Programada', // Dejar como Programada o Agendada según manejes
+              estado_visita: 'Agendada', // Estado inicial
               estado_facturacion: 'Pendiente',
               createdBy: 'SYSTEM',
               createdAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -4388,7 +4815,7 @@ exports.scheduleRecurringVisits = onSchedule(
         }
       }
     }
-    logger.info(`🤖 [BOT] Finalizado. Visitas recurrentes creadas: ${createdCount}`)
+    logger.info(`🤖 [BOT] Finalizado. Visitas creadas: ${createdCount}`)
   },
 )
 
@@ -4450,8 +4877,7 @@ function calculateNextVisitDate(date, freq) {
 
 exports.getAnnualBillingReport = onCall(
   {
-    cors: ['http://localhost:5173', 'https://sisfumictph.com', 'https://controltotalyph.com'],
-    timeoutSeconds: 180,
+cors: ['http://localhost:5173', 'https://sisfumictph.com', 'https://www.sisfumictph.com', 'https://controltotalyph.com', 'https://www.controltotalyph.com'],    timeoutSeconds: 180,
     memory: '512MB',
   },
   async (request) => {
@@ -4599,7 +5025,7 @@ exports.getAnnualBillingReport = onCall(
   },
 )
 
-exports.getAuditLogs = onCall({ cors: true }, async (request) => {
+exports.getAuditLogs = onCall(async (request) => {
   const { auth, data } = request
   // 1. Verificar permisos: Solo Jefes y Administradores pueden ver los logs.
   const allowedRoles = [
@@ -5008,6 +5434,237 @@ exports.batchImportClients = onCall({ cors: true }, async (request) => {
   return { success: true, imported: count }
 })
 
+// La plantilla se genera exclusivamente en el frontend para mantener un único formato.
+// Este bloque se conserva temporalmente como referencia histórica y no se exporta.
+const legacyGenerateClientImportTemplate = onCall({ cors: true }, async (request) => {
+  const { auth } = request
+  // Helper para añadir validación de datos a un rango de celdas
+  const addDataValidation = (ws, column, formula, rowCount = 1000) => {
+    for (let i = 2; i <= rowCount; i++) {
+      // Empezar desde la fila 2 para saltar la cabecera
+      const cellAddress = `${column}${i}`
+      if (!ws[cellAddress]) ws[cellAddress] = { t: 's', v: '' } // Asegurarse de que la celda exista
+      ws[cellAddress].v = undefined // Limpiar valor por defecto
+      ws[cellAddress].z = '@' // Formato de texto
+      ws[cellAddress].s = {
+        dataValidation: {
+          type: 'list',
+          allowBlank: true,
+          formula1: formula,
+          showDropDown: true,
+          errorStyle: 'stop',
+          errorTitle: 'Valor no válido',
+          error: 'Por favor, seleccione un valor de la lista.',
+        },
+      }
+    }
+  }
+
+  // 1. Verificar permisos
+  if (!auth || (auth.token.role !== 'Administrador' && auth.token.role !== 'Jefe')) {
+    throw new HttpsError('permission-denied', 'No tienes permiso para realizar esta acción.')
+  }
+
+  functions.logger.log('[ESPÍA] Iniciando generateClientImportTemplate...')
+
+  try {
+    let headers = [
+      'nombreComercial',
+      'razonSocial',
+      'nit',
+      'zona',
+      'departamento',
+      'ciudad',
+      'direccion',
+      'estado',
+      'tipo',
+      'aliado',
+      'tipoDirecto',
+      'sede',
+      'contactoPrincipal_nombre',
+      'contactoPrincipal_celular',
+      'contactoPrincipal_email',
+      'contactoFinanciero_nombre',
+      'contactoFinanciero_celular',
+      'contactoFinanciero_email',
+    ]
+
+    const defaultSucursalesCount = 50
+    for (let i = 1; i <= defaultSucursalesCount; i++) {
+      headers.push(`sucursal${i}_nombre`)
+      headers.push(`sucursal${i}_direccion`)
+      headers.push(`sucursal${i}_zona`)
+    }
+
+    // Obtener datos de configuración para las listas
+    logger.log('[ESPÍA] Intentando leer "settings/businessData" de Firestore...')
+    const businessDataDoc = await admin.firestore().collection('settings').doc('businessData').get()
+    const settingsData = businessDataDoc.exists ? businessDataDoc.data() : {}
+    logger.log(`[ESPÍA] ¿Documento businessData existe?: ${businessDataDoc.exists}`)
+
+    const alliesList = settingsData.alliesList || []
+    const businessZones = (settingsData.businessZones || []).map((z) => z.name)
+    const colombiaData = settingsData.colombiaData || {}
+
+    // Crear la hoja principal
+    const mainWs = XLSX.utils.aoa_to_sheet([headers])
+    mainWs['!cols'] = headers.map((h) => ({
+      wch: h.length > 15 ? h.length + 2 : 15,
+    }))
+
+    // Crear el libro de trabajo y añadir la hoja principal
+    const wb = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(wb, mainWs, 'Plantilla Clientes')
+
+    const addDataSheet = (sheetName, dataArray) => {
+      if (dataArray && dataArray.length > 0) {
+        const sheetData = dataArray.map((item) => [item])
+        const dataWs = XLSX.utils.aoa_to_sheet(sheetData)
+        XLSX.utils.book_append_sheet(wb, dataWs, sheetName)
+        // Ocultar la hoja de datos
+        wb.Sheets[sheetName].Hidden = 1
+        return `'${sheetName}'!$A$1:$A$${dataArray.length}`
+      }
+      return null
+    }
+
+    const zonasFormula = addDataSheet('Datos_Zonas', businessZones)
+    const tiposFormula = addDataSheet('Datos_Tipos', ['Aliado', 'Directo'])
+    const aliadosFormula = addDataSheet('Datos_Aliados', alliesList.sort())
+    const tiposDirectoFormula = addDataSheet('Datos_TiposDirecto', ['Sedes', 'Otros'])
+    const sedesFormula = addDataSheet('Datos_Sedes', businessZones)
+    const estadosFormula = addDataSheet('Datos_Estados', ['Activo', 'Inactivo'])
+    const departamentosFormula = addDataSheet(
+      'Datos_Departamentos',
+      Object.keys(colombiaData).sort(),
+    )
+
+    wb.Names = []
+    Object.keys(colombiaData).forEach((dep) => {
+      const citiesSheetName = `Ciudades_${dep.replace(/\s/g, '_').substring(0, 21)}`
+      const citiesFormula = addDataSheet(citiesSheetName, colombiaData[dep].sort())
+      if (citiesFormula) {
+        wb.Names.push({
+          Name: dep.replace(/\s/g, '_'), // Nombre del rango (sin espacios)
+          Ref: citiesFormula,
+        })
+      }
+    })
+
+    if (zonasFormula) addDataValidation(mainWs, 'D', zonasFormula)
+    if (departamentosFormula) addDataValidation(mainWs, 'E', departamentosFormula)
+    // Para la ciudad, usamos la función INDIRECT para crear una lista dependiente del departamento
+    addDataValidation(mainWs, 'F', '=INDIRECT(SUBSTITUTE(E2," ","_"))')
+    if (estadosFormula) addDataValidation(mainWs, 'H', estadosFormula)
+    if (tiposFormula) addDataValidation(mainWs, 'I', tiposFormula)
+    if (aliadosFormula) addDataValidation(mainWs, 'J', aliadosFormula)
+    if (tiposDirectoFormula) addDataValidation(mainWs, 'K', tiposDirectoFormula)
+    if (sedesFormula) addDataValidation(mainWs, 'L', sedesFormula)
+
+    if (zonasFormula) {
+      for (let i = 1; i <= defaultSucursalesCount; i++) {
+        const colIndex = headers.indexOf(`sucursal${i}_zona`)
+        if (colIndex !== -1) {
+          const colLetter = XLSX.utils.encode_col(colIndex)
+          addDataValidation(mainWs, colLetter, zonasFormula)
+        }
+      }
+    }
+
+    const instructions = [
+      ['Instrucciones para la Plantilla de Importación de Clientes'],
+      [],
+      [
+        '1. Llenado de Datos:',
+        "Complete la información de cada cliente en una fila separada en la hoja 'Plantilla Clientes'.",
+      ],
+      [
+        '2. Campos Obligatorios:',
+        'Asegúrese de llenar como mínimo: nombreComercial, nit, zona y tipo.',
+      ],
+      [
+        '3. Listas Desplegables:',
+        "Para columnas como 'zona', 'tipo', 'departamento', etc., use la flecha que aparece al seleccionar la celda para elegir un valor válido.",
+      ],
+      [
+        '4. Ciudades:',
+        "Primero seleccione un 'departamento'. Luego, la columna 'ciudad' mostrará automáticamente la lista de ciudades para ese departamento.",
+      ],
+      [
+        '5. Tipo de Cliente:',
+        "Si el 'tipo' es 'Aliado', llene la columna 'aliado'. Si es 'Directo' y aplica, llene 'tipoDirecto' y 'sede'.",
+      ],
+      [
+        '6. Sucursales:',
+        'La plantilla incluye columnas para 50 sucursales. Si un cliente tiene más, puede añadir columnas manualmente siguiendo el patrón: sucursal51_nombre, sucursal51_direccion, sucursal51_zona, etc. El sistema las importará todas.',
+      ],
+      [
+        '7. Zona de Sucursal:',
+        "Cada sucursal ahora tiene su propia columna de 'zona'. Es importante llenarla para una correcta asignación de visitas.",
+      ],
+      ['8. Ejemplo:', ''],
+      [
+        'nombreComercial',
+        'razonSocial',
+        'nit',
+        'zona',
+        'departamento',
+        'ciudad',
+        'direccion',
+        'estado',
+        'tipo',
+        'aliado',
+        'tipoDirecto',
+        'sede',
+        'sucursal1_nombre',
+        'sucursal1_direccion',
+        'sucursal1_zona',
+      ],
+      [
+        'Cliente de Prueba S.A.S',
+        'Cliente de Prueba S.A.S',
+        '900123456',
+        'Valle del Cauca',
+        'Valle del Cauca',
+        'Cali',
+        'Calle Falsa 123',
+        'Activo',
+        'Directo',
+        '',
+        'Sedes',
+        'Valle del Cauca',
+        'Sucursal Norte',
+        'Av. Siempre Viva 742',
+        'Norte de Santander',
+      ],
+    ]
+    const instructionsWs = XLSX.utils.aoa_to_sheet(instructions)
+    instructionsWs['!cols'] = [{ wch: 30 }, { wch: 100 }]
+    XLSX.utils.book_append_sheet(wb, instructionsWs, 'Instrucciones')
+
+    // Mover la hoja de instrucciones para que sea la primera
+    wb.SheetNames.unshift(wb.SheetNames.pop())
+
+    logger.log(
+      '[ESPÍA] Hojas de datos y validaciones preparadas. Procediendo a crear el archivo Excel...',
+    )
+
+    const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'buffer' })
+
+    logger.log(
+      `[ESPÍA] Archivo Excel generado con éxito. Tamaño del buffer: ${wbout.length} bytes.`,
+    )
+
+    return {
+      success: true,
+      file: Buffer.from(wbout).toString('base64'),
+    }
+  } catch (error) {
+    logger.error('Error al generar la plantilla de Excel:', error)
+    throw new HttpsError('internal', 'No se pudo generar el archivo de plantilla.')
+  }
+})
+
 exports.makeSupportFilePublic = onCall({ cors: true }, async (request) => {
   if (!request.auth) {
     throw new HttpsError('unauthenticated', 'La solicitud debe estar autenticada.')
@@ -5033,6 +5690,44 @@ exports.makeSupportFilePublic = onCall({ cors: true }, async (request) => {
       'internal',
       `No se pudo establecer el permiso de lectura pública: ${error.message}`,
     )
+  }
+})
+
+exports.deleteProfilePicture = onCall({ cors: true }, async (request) => {
+  // 1. Verificar autenticación
+  if (!request.auth) {
+    throw new HttpsError('unauthenticated', 'La solicitud debe estar autenticada.')
+  }
+
+  const uid = request.auth.uid
+
+  try {
+    const user = await admin.auth().getUser(uid)
+    const currentPhotoURL = user.photoURL
+
+    if (!currentPhotoURL) {
+      return { message: 'No hay foto de perfil para eliminar.' }
+    }
+
+    // 2. Extraer la ruta del archivo desde la URL de Storage
+    const url = new URL(currentPhotoURL)
+    // La ruta del archivo es todo lo que viene después del nombre del bucket en el path.
+    // Ejemplo: /sisfumi2.appspot.com/profile_pictures/uid/file.jpg -> profile_pictures/uid/file.jpg
+    const filePath = decodeURIComponent(url.pathname.split('/').slice(2).join('/'))
+
+    // 3. Eliminar el archivo de Firebase Storage
+    const bucket = admin.storage().bucket(admin.instanceId().app.options.storageBucket)
+    await bucket.file(filePath).delete()
+    logger.log(`[deleteProfilePicture] Archivo eliminado de Storage: ${filePath}`)
+
+    // 4. Actualizar el perfil del usuario en Auth para quitar la URL
+    await admin.auth().updateUser(uid, { photoURL: null })
+    logger.log(`[deleteProfilePicture] photoURL eliminada del perfil de Auth para UID: ${uid}`)
+
+    return { success: true, message: 'Foto de perfil eliminada con éxito.' }
+  } catch (error) {
+    logger.error(`[deleteProfilePicture] Error al eliminar la foto para UID ${uid}:`, error)
+    throw new HttpsError('internal', `No se pudo eliminar la foto de perfil: ${error.message}`)
   }
 })
 
@@ -5335,7 +6030,7 @@ exports.getClientProfileData = onCall({ cors: true }, async (request) => {
 exports.getServiceSheetByClientId = onCall(
   {
     // ✅ CORRECCIÓN: Especificar los orígenes permitidos para CORS.
-    cors: ['http://localhost:5173', 'https://sisfumictph.com', 'https://controltotalyph.com'],
+cors: ['http://localhost:5173', 'https://sisfumictph.com', 'https://www.sisfumictph.com', 'https://controltotalyph.com', 'https://www.controltotalyph.com'],    // ✅ FIX 503/CORS por cold start: mantiene al menos 1 instancia caliente
   },
   async (request) => {
     if (!request.auth) {
@@ -5396,8 +6091,7 @@ exports.getServiceSheetByClientId = onCall(
 exports.saveServiceSheet = onCall(
   {
     // ✅ CORRECCIÓN: Especificar los orígenes permitidos para CORS.
-    cors: ['http://localhost:5173', 'https://sisfumictph.com', 'https://controltotalyph.com'],
-  },
+cors: ['http://localhost:5173', 'https://sisfumictph.com', 'https://www.sisfumictph.com', 'https://controltotalyph.com', 'https://www.controltotalyph.com'],  },
   async (request) => {
     if (!request.auth) {
       throw new HttpsError('unauthenticated', 'La solicitud debe estar autenticada.')
@@ -5655,48 +6349,41 @@ exports.onServiceSheetUpdateForPriceRequest = onDocumentWritten(
       `Detectadas ${newPriceRequests.length} nuevas solicitudes de precio para el cliente ${afterData.clientName}.`,
     )
 
-    // Obtener la lista de administradores directamente desde Firestore.
+    // Obtener la lista de UIDs de los administradores y jefes.
     const targetRoles = ['Administrador', 'Jefe', 'Coordinador Nacionales']
-    const usersSnapshot = await db.collection('users').where('role', 'in', targetRoles).get()
+    const usersSnapshot = await admin.auth().listUsers(1000)
+    const adminUids = usersSnapshot.users
+      .filter((user) => user.customClaims && targetRoles.includes(user.customClaims.role))
+      .map((user) => user.uid)
 
-    if (usersSnapshot.empty) {
-      logger.warn(
-        'No se encontraron administradores en Firestore para notificar sobre la solicitud de precio.',
-      )
+    if (adminUids.length === 0) {
+      logger.warn('No se encontraron administradores para notificar sobre la solicitud de precio.')
       return null
     }
 
+    // Crear una notificación para cada administrador en un lote.
     const batch = db.batch()
-    // Intentar obtener el nombre del emisor de forma segura sin romper si falla
-    let requesterName = 'Sistema'
-    try {
-      const requester = await admin.auth().getUser(afterData.updatedBy || afterData.createdBy)
-      requesterName = requester.displayName || requester.email || 'Sistema'
-    } catch (e) {}
+    const requester = await admin.auth().getUser(afterData.updatedBy || afterData.createdBy)
 
     newPriceRequests.forEach((service) => {
       const notificationPayload = {
         title: 'Solicitud de Precio',
-        message: `El usuario ${requesterName} solicita precio para el servicio "${service.tipo_servicio}" del cliente "${afterData.clientName}".`,
-        type: 'price_request',
-        link: `/servicios?clientId=${afterData.clientId}`,
+        message: `El usuario ${requester.displayName} solicita precio para el servicio "${service.tipo_servicio}" del cliente "${afterData.clientName}".`,
+        type: 'price_request', // Tipo específico para el contador del menú.
+        link: `/servicios?clientId=${afterData.clientId}`, // Enlace directo al cliente.
         read: false,
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
       }
 
-      usersSnapshot.forEach((userDoc) => {
-        const notifRef = db
-          .collection('users')
-          .doc(userDoc.id)
-          .collection('direct_notifications')
-          .doc()
+      adminUids.forEach((uid) => {
+        const notifRef = db.collection('users').doc(uid).collection('direct_notifications').doc()
         batch.set(notifRef, notificationPayload)
       })
     })
 
     await batch.commit()
     logger.info(
-      `Notificaciones de solicitud de precio enviadas a ${usersSnapshot.size} administradores.`,
+      `Notificaciones de solicitud de precio enviadas a ${adminUids.length} administradores.`,
     )
     return null
   },
