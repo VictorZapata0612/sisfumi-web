@@ -158,29 +158,41 @@ const userInitials = computed(() => {
         </Transition>
       </div>
 
-      <!-- Admin Dropdown -->
-      <div class="relative">
+<!-- Administración Dropdown -->
+      <div class="relative" v-if="['Administrador', 'Jefe', 'Coordinador Nacionales', 'Coordinador Valle', 'Coordinador Norte de Santander'].includes(authStore.userRole ?? '')">
         <button @click="isAdminOpen = !isAdminOpen" class="nav-item w-full group"
           :class="[isAdminOpen && !isCollapsed ? 'bg-white/5 text-white' : '']">
           <div class="flex items-center min-w-0">
-            <div class="nav-icon-wrapper text-indigo-400">
-              <i class="fas fa-shield-halved w-5 text-center"></i>
+            <div class="nav-icon-wrapper text-red-500">
+              <i class="fas fa-tools w-5 text-center"></i>
             </div>
-            <span class="nav-text" :class="{ collapsed: isCollapsed }">Configuración</span>
+            <span class="nav-text" :class="{ collapsed: isCollapsed }">Administración</span>
           </div>
           <i v-if="!isCollapsed" class="fas fa-chevron-down text-[10px] transition-transform duration-300"
             :class="{ 'rotate-180': isAdminOpen }"></i>
-          <div v-if="isCollapsed" class="nav-tooltip">Admin</div>
+          <div v-if="isCollapsed" class="nav-tooltip">Administración</div>
         </button>
         <Transition name="expand">
           <div v-show="isAdminOpen && !isCollapsed" class="sub-nav-container">
-            <RouterLink to="/reportes" class="sub-nav-item" active-class="sub-active">Reportes Ejecutivos</RouterLink>
-            <RouterLink to="/permisos" class="sub-nav-item" active-class="sub-active">Control de Permisos</RouterLink>
-            <RouterLink to="/configuracion" class="sub-nav-item" active-class="sub-active">Ajustes del Sistema
-            </RouterLink>
+            <RouterLink to="/reportes" class="sub-nav-item" active-class="sub-active">Reportes</RouterLink>
+            <RouterLink to="/permisos" class="sub-nav-item" active-class="sub-active">Permisos</RouterLink>
           </div>
         </Transition>
       </div>
+
+      <!-- Configuración (Independiente) -->
+      <RouterLink
+        v-if="['Administrador', 'Jefe'].includes(authStore.userRole ?? '')"
+        to="/configuracion"
+        class="nav-item group"
+        active-class="active"
+      >
+        <div class="nav-icon-wrapper text-gray-400">
+          <i class="fas fa-gear w-5 text-center"></i>
+        </div>
+        <span class="nav-text" :class="{ collapsed: isCollapsed }">Configuración</span>
+        <div v-if="isCollapsed" class="nav-tooltip">Configuración</div>
+      </RouterLink>
     </nav>
 
     <!-- User Section -->

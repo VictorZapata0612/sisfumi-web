@@ -1,7 +1,44 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { ref, computed } from 'vue'
 import { defineStore } from 'pinia'
 import { httpsCallable } from 'firebase/functions'
 import { functions } from '@/firebase/config'
+
+// ✅ NUEVO: reintento automático para llamadas a Cloud Functions.
+// Motivo: cuando una función lleva un rato sin tráfico, Cloud Run la escala
+// a 0 instancias. La primera petición (el preflight OPTIONS) puede tardar
+// más de lo tolerado en lo que arranca una instancia nueva, y responde 503
+// sin headers de CORS — el navegador lo reporta como error de CORS aunque
+// el problema real es un "cold start". Reintentar una vez tras una breve
+// espera resuelve el caso sin que el usuario vea nada.
+function isLikelyColdStartError(err: any): boolean {
+  const code = err?.code || ''
+  const message = String(err?.message || '')
+  return (
+    code === 'functions/internal' ||
+    code === 'functions/unavailable' ||
+    code === 'functions/deadline-exceeded' ||
+    message.toLowerCase().includes('cors') ||
+    message.toLowerCase().includes('failed to fetch') ||
+    message.toLowerCase().includes('network')
+  )
+}
+
+async function callWithRetry<T>(
+  fn: () => Promise<T>,
+  retries = 1,
+  delayMs = 1500,
+): Promise<T> {
+  try {
+    return await fn()
+  } catch (err: any) {
+    if (retries > 0 && isLikelyColdStartError(err)) {
+      await new Promise((resolve) => setTimeout(resolve, delayMs))
+      return callWithRetry(fn, retries - 1, delayMs)
+    }
+    throw err
+  }
+}
 
 // --- Interfaces para un tipado fuerte ---
 
@@ -26,6 +63,7 @@ export interface Client {
   ciudad?: string
   zona: string
   direccion: string
+  // eslint-disable-next-line @typescript-eslint/ban-ts-comment
   // @ts-ignore
   serviceSheet?: { services: Service[] }
   sucursales?: { nombre: string; direccion: string; zona: string }[]
@@ -126,13 +164,15 @@ export const usePlanningStore = defineStore('planning', () => {
 
     try {
       const getPlanningDataFn = httpsCallable(functions, 'getConsolidatedPlanningData')
-      const result = (await getPlanningDataFn({
-        year,
-        month,
-        zone,
-        calendarTargetUid,
-        ...dateRange,
-      })) as {
+      const result = (await callWithRetry(() =>
+        getPlanningDataFn({
+          year,
+          month,
+          zone,
+          calendarTargetUid,
+          ...dateRange,
+        }),
+      )) as {
         data: {
           monthlyVisits: Visit[]
           pendingVisits: Visit[]
@@ -208,9 +248,9 @@ export const usePlanningStore = defineStore('planning', () => {
     }
 
     if (visitData.id) {
-      await saveVisitFn({ visitId: visitData.id, visitData: dataToSend })
+      await callWithRetry(() => saveVisitFn({ visitId: visitData.id, visitData: dataToSend }))
     } else {
-      await saveVisitFn({ visitData: dataToSend })
+      await callWithRetry(() => saveVisitFn({ visitData: dataToSend }))
     }
   }
 
@@ -219,7 +259,7 @@ export const usePlanningStore = defineStore('planning', () => {
    */
   async function deleteVisit(visitId: string) {
     const deleteVisitFn = httpsCallable(functions, 'deleteVisitAndCalendarEvent')
-    await deleteVisitFn({ visitId })
+    await callWithRetry(() => deleteVisitFn({ visitId }))
   }
 
   /**
@@ -246,7 +286,7 @@ export const usePlanningStore = defineStore('planning', () => {
    */
   async function quickCompleteVisit(visitId: string) {
     const completeVisitFn = httpsCallable(functions, 'quickCompleteVisit')
-    await completeVisitFn({ visitId })
+    await callWithRetry(() => completeVisitFn({ visitId }))
     // Actualiza el estado en el store para que la UI reaccione inmediatamente
     const eventIndex = allCalendarEvents.value.findIndex((e) => e.id === visitId)
     const eventToUpdate = allCalendarEvents.value[eventIndex]

@@ -37,13 +37,24 @@ ChartJS.register(Title, Tooltip, Legend, BarElement, CategoryScale, LinearScale)
 // Declaramos la variable global de Google para evitar errores de TypeScript
 declare const google: any
 
+// ✅ FIX: solo Administrador/Jefe pueden ver integraciones de calendario y
+// auditoría (el backend ya lo exige con un 403). Antes se llamaba a estos
+// endpoints para TODOS los roles, generando errores 403 en consola y toasts
+// de error innecesarios para Coordinadores/Técnicos.
+const isAdminOrJefe = computed(() =>
+  ['Administrador', 'Jefe'].includes(authStore.userRole || ''),
+)
+
 onMounted(async () => {
   // Asegurar que los datos de negocio se carguen primero.
   await settingsStore.fetchBusinessData()
-  settingsStore.fetchIntegrations()
   planningStore.fetchVisitTemplates()
-  fetchLogs() // Cargar logs iniciales
   settingsStore.fetchUsers()
+
+  if (isAdminOrJefe.value) {
+    settingsStore.fetchIntegrations()
+    fetchLogs() // Cargar logs iniciales
+  }
 })
 
 // Observar cambios en el usuario actual (ej. al subir foto) y actualizar la lista localmente
@@ -365,6 +376,14 @@ const isCurrentUser = (uid: string) => {
   return authStore.user?.uid === uid
 }
 
+// ✅ NUEVO: estado de la integración del propio usuario, derivado de
+// settingsStore.users (endpoint accesible para todos los roles), sin
+// depender de settingsStore.integrations (solo Administrador/Jefe).
+const myUserRecord = computed(() =>
+  settingsStore.users.find((u) => u.uid === authStore.user?.uid) || null,
+)
+const myIntegrationConnected = computed(() => myUserRecord.value?.isConnected ?? false)
+
 const handleConnectGoogle = (targetUid: string) => {
   const clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID
 
@@ -386,7 +405,9 @@ const handleConnectGoogle = (targetUid: string) => {
         type: 'success',
       })
       settingsStore.fetchUsers()
-      settingsStore.fetchIntegrations()
+      // ✅ FIX: solo refrescar la tabla de integraciones (admin-only) si el
+      // usuario actual tiene permiso; si no, dispararía otro 403.
+      if (isAdminOrJefe.value) settingsStore.fetchIntegrations()
     })
     .catch((error: any) => {
       showToast({
@@ -395,6 +416,38 @@ const handleConnectGoogle = (targetUid: string) => {
         type: 'error',
       })
     })
+}
+
+// ✅ NUEVO: desconectar la propia cuenta. El backend ya permite que el
+// dueño (isOwner) se desconecte a sí mismo, sin necesitar rol de admin.
+const handleDisconnectMyAccount = () => {
+  const uid = authStore.user?.uid
+  if (!uid) return
+
+  showDialog({
+    title: 'Confirmar Desconexión',
+    message:
+      '¿Estás seguro de que deseas desconectar tu cuenta de Google? Dejarás de recibir eventos y notificaciones automáticas hasta que vuelvas a conectarla.',
+    isConfirmation: true,
+    confirmationText: 'Sí, Desconectar',
+    async onConfirm() {
+      try {
+        await settingsStore.disconnectAccount(uid)
+        await settingsStore.fetchUsers()
+        showToast({
+          title: 'Listo',
+          message: 'Tu cuenta de Google ha sido desconectada.',
+          type: 'success',
+        })
+      } catch (error: any) {
+        showToast({
+          title: 'Error',
+          message: `No se pudo desconectar: ${error.message}`,
+          type: 'error',
+        })
+      }
+    },
+  })
 }
 
 const handleUndoRoleChange = (log: AuditLog) => {
@@ -778,7 +831,7 @@ const handleImportClick = () => {
       </section>
 
       <!-- Auditoría -->
-      <section v-if="settingsStore.auditLogs.length > 0">
+      <section v-if="isAdminOrJefe && settingsStore.auditLogs.length > 0">
         <div class="flex items-center gap-3 mb-4 text-gray-300">
           <div class="h-px bg-white/10 flex-grow"></div>
           <span class="text-sm font-bold uppercase tracking-wider"><i
@@ -858,7 +911,7 @@ const handleImportClick = () => {
       </section>
 
       <!-- Gestión de Usuarios -->
-      <section>
+      <section v-if="isAdminOrJefe">
         <div class="flex items-center gap-3 mb-4 text-gray-300">
           <div class="h-px bg-white/10 flex-grow"></div>
           <span class="text-sm font-bold uppercase tracking-wider"><i class="fas fa-users-cog mr-2"></i>Usuarios del
@@ -971,8 +1024,44 @@ const handleImportClick = () => {
         </div>
       </section>
 
+      <!-- Mi Cuenta de Google (Coordinadores y demás roles no-admin) -->
+      <section v-if="!isAdminOrJefe">
+        <div class="flex items-center gap-3 mb-4 text-gray-300">
+          <div class="h-px bg-white/10 flex-grow"></div>
+          <span class="text-sm font-bold uppercase tracking-wider"><i class="fab fa-google mr-2"></i>Mi Cuenta de
+            Google</span>
+          <div class="h-px bg-white/10 flex-grow"></div>
+        </div>
+
+        <div class="bg-[#151515] rounded-xl border border-white/10 shadow-lg p-6 flex items-center justify-between gap-4 flex-wrap">
+          <div class="flex items-center gap-3">
+            <div class="w-2.5 h-2.5 rounded-full flex-shrink-0"
+              :class="myIntegrationConnected ? 'bg-green-500' : 'bg-red-500'"></div>
+            <div>
+              <p class="text-sm font-bold text-white">
+                {{ myIntegrationConnected ? 'Cuenta conectada correctamente' : 'Cuenta no conectada' }}
+              </p>
+              <p class="text-xs text-gray-400">
+                {{ myIntegrationConnected
+                  ? 'Tu calendario y correo están sincronizados con SISFUMI.'
+                  : 'Conecta tu cuenta de Google para recibir tus visitas en el calendario y las notificaciones por correo.' }}
+              </p>
+            </div>
+          </div>
+          <button
+            @click="myIntegrationConnected ? handleDisconnectMyAccount() : handleConnectGoogle(authStore.user!.uid)"
+            :class="myIntegrationConnected
+              ? 'border-red-900/50 bg-red-900/20 text-red-400 hover:bg-red-900/40'
+              : 'border-blue-900/50 bg-blue-900/20 text-blue-400 hover:bg-blue-900/40'"
+            class="text-xs font-bold uppercase tracking-wide border px-3 py-1.5 rounded transition-colors flex-shrink-0">
+            <i class="fab fa-google mr-1.5"></i>
+            {{ myIntegrationConnected ? 'Desconectar' : 'Conectar / Reintegrar' }}
+          </button>
+        </div>
+      </section>
+
       <!-- Integraciones -->
-      <section v-if="settingsStore.integrations.length > 0">
+      <section v-if="isAdminOrJefe && settingsStore.integrations.length > 0">
         <div class="flex items-center gap-3 mb-4 text-gray-300">
           <div class="h-px bg-white/10 flex-grow"></div>
           <span class="text-sm font-bold uppercase tracking-wider"><i class="fas fa-link mr-2"></i>Cuentas
