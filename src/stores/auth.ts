@@ -54,9 +54,9 @@ export const useAuthStore = defineStore('auth', () => {
    * Conecta la cuenta de Google (OAuth2 Flow)
    * Se solicitan permisos para Calendar y para leer el perfil del usuario (email/nombre/foto)
    */
-/**
-   * Conecta la cuenta de Google (OAuth2 Code Flow para backend/refresh_token)
-   */
+  /**
+     * Conecta la cuenta de Google (OAuth2 Code Flow para backend/refresh_token)
+     */
   async function connectGoogleAccount(clientId: string, targetUid: string): Promise<any> {
     return new Promise((resolve, reject) => {
       try {
@@ -97,8 +97,8 @@ export const useAuthStore = defineStore('auth', () => {
 
             try {
               // response.code contiene el código de autorización de un solo uso
-              const saveTokensFn = httpsCallable(functions, 'saveGoogleTokens')
-              await saveTokensFn({ code: response.code, targetUid: targetUid })
+              const exchangeTokensFn = httpsCallable(functions, 'exchangeAuthCodeForTokens')
+              await exchangeTokensFn({ code: response.code, targetUid: targetUid })
               resolve('OK')
             } catch (error: any) {
               console.error('Error guardando tokens en backend:', error)
@@ -221,9 +221,8 @@ export const useAuthStore = defineStore('auth', () => {
     const makePublicFn = httpsCallable(functions, 'makeSupportFilePublic')
     await makePublicFn({ filePath })
 
-    const publicUrl = `https://storage.googleapis.com/${
-      (functions as any).app.options.storageBucket
-    }/${filePath}`
+    const publicUrl = `https://storage.googleapis.com/${(functions as any).app.options.storageBucket
+      }/${filePath}`
     await updateUserProfile({ photoURL: publicUrl })
   }
 

@@ -28,8 +28,7 @@ const form = ref<Service>({
 })
 
 const serviceTypesList = computed(() => settingsStore.businessData?.serviceTypes || [])
-const frequencyOptions = computed(() => settingsStore.businessData?.frequencyOptions || ['Mensual', 'Bimestral', 'Trimestral', 'Semestral', 'Anual', 'Ocasional'])
-
+const frequencyOptions = computed(() => (settingsStore.businessData as any)?.frequencyOptions || ['Mensual', 'Bimestral', 'Trimestral', 'Semestral', 'Anual', 'Ocasional'])
 const formattedValor = computed({
   get() {
     return form.value.valor.toLocaleString('es-CO')
