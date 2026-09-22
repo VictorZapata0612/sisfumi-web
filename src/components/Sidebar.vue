@@ -54,12 +54,17 @@ const userInitials = computed(() => {
 <template>
   <aside
     class="bg-[#151515] border-r border-white/10 shadow-2xl flex flex-col flex-shrink-0 text-gray-300 transition-all duration-300 ease-in-out relative z-40"
-    :class="isCollapsed ? 'w-20' : 'w-72'">
+    :class="isCollapsed ? 'w-20' : 'w-72'"
+  >
     <!-- Logo & Toggle -->
-    <div class="h-20 flex items-center border-b border-white/10 px-4 bg-[#0a0a0a]/20"
-      :class="isCollapsed ? 'justify-center' : 'justify-between'">
-      <div class="flex items-center gap-3 overflow-hidden transition-all duration-300"
-        :class="{ 'w-0 opacity-0': isCollapsed, 'w-auto opacity-100': !isCollapsed }">
+    <div
+      class="h-20 flex items-center border-b border-white/10 px-4 bg-[#0a0a0a]/20"
+      :class="isCollapsed ? 'justify-center' : 'justify-between'"
+    >
+      <div
+        class="flex items-center gap-3 overflow-hidden transition-all duration-300"
+        :class="{ 'w-0 opacity-0': isCollapsed, 'w-auto opacity-100': !isCollapsed }"
+      >
         <div class="p-1.5 bg-red-600 rounded-lg shadow-lg shadow-red-600/20">
           <img src="/logo.png" alt="Sisfumi" class="h-7 w-auto brightness-0 invert" />
         </div>
@@ -68,9 +73,14 @@ const userInitials = computed(() => {
 
       <img v-if="isCollapsed" src="/logo.png" alt="Sisfumi" class="h-10 w-10 object-contain p-1" />
 
-      <button @click="isCollapsed = !isCollapsed"
-        class="absolute -right-3 top-8 bg-[#151515] border border-white/10 text-gray-400 hover:text-white p-1.5 rounded-full shadow-xl transition-all hover:scale-110 z-50 hidden md:block">
-        <i class="fas text-[10px]" :class="isCollapsed ? 'fa-chevron-right' : 'fa-chevron-left'"></i>
+      <button
+        @click="isCollapsed = !isCollapsed"
+        class="absolute -right-3 top-8 bg-[#151515] border border-white/10 text-gray-400 hover:text-white p-1.5 rounded-full shadow-xl transition-all hover:scale-110 z-50 hidden md:block"
+      >
+        <i
+          class="fas text-[10px]"
+          :class="isCollapsed ? 'fa-chevron-right' : 'fa-chevron-left'"
+        ></i>
       </button>
     </div>
 
@@ -88,8 +98,11 @@ const userInitials = computed(() => {
       <RouterLink to="/notificaciones" class="nav-item group relative" active-class="active">
         <div class="nav-icon-wrapper"><i class="fas fa-bell w-5 text-center"></i></div>
         <span class="nav-text" :class="{ collapsed: isCollapsed }">Notificaciones</span>
-        <span v-if="notificationStore.generalNotificationsCount > 0" class="nav-badge !bg-blue-500"
-          :class="{ 'badge-collapsed': isCollapsed }">
+        <span
+          v-if="notificationStore.generalNotificationsCount > 0"
+          class="nav-badge !bg-blue-500"
+          :class="{ 'badge-collapsed': isCollapsed }"
+        >
           {{ notificationStore.generalNotificationsCount }}
         </span>
         <div v-if="isCollapsed" class="nav-tooltip">Notificaciones</div>
@@ -113,8 +126,11 @@ const userInitials = computed(() => {
           <i class="fas fa-file-signature w-5 text-center"></i>
         </div>
         <span class="nav-text" :class="{ collapsed: isCollapsed }">Servicios</span>
-        <span v-if="notificationStore.priceRequestsCount > 0" class="nav-badge"
-          :class="{ 'badge-collapsed': isCollapsed }">
+        <span
+          v-if="notificationStore.priceRequestsCount > 0"
+          class="nav-badge"
+          :class="{ 'badge-collapsed': isCollapsed }"
+        >
           {{ notificationStore.priceRequestsCount }}
         </span>
         <div v-if="isCollapsed" class="nav-tooltip">Servicios</div>
@@ -137,45 +153,81 @@ const userInitials = computed(() => {
       </RouterLink>
 
       <!-- Finance Dropdown -->
-      <div class="relative">
-        <button @click="isFinanceOpen = !isFinanceOpen" class="nav-item w-full group"
-          :class="[isFinanceOpen && !isCollapsed ? 'bg-white/5 text-white' : '']">
+      <div
+        class="relative"
+        v-if="
+          ['Administrador', 'Jefe', 'Coordinador Nacionales'].includes(authStore.userRole ?? '')
+        "
+      >
+        <button
+          @click="isFinanceOpen = !isFinanceOpen"
+          class="nav-item w-full group"
+          :class="[isFinanceOpen && !isCollapsed ? 'bg-white/5 text-white' : '']"
+        >
           <div class="flex items-center min-w-0">
             <div class="nav-icon-wrapper text-emerald-500">
               <i class="fas fa-sack-dollar w-5 text-center"></i>
             </div>
             <span class="nav-text" :class="{ collapsed: isCollapsed }">Finanzas</span>
           </div>
-          <i v-if="!isCollapsed" class="fas fa-chevron-down text-[10px] transition-transform duration-300"
-            :class="{ 'rotate-180': isFinanceOpen }"></i>
+          <i
+            v-if="!isCollapsed"
+            class="fas fa-chevron-down text-[10px] transition-transform duration-300"
+            :class="{ 'rotate-180': isFinanceOpen }"
+          ></i>
           <div v-if="isCollapsed" class="nav-tooltip">Finanzas</div>
         </button>
         <Transition name="expand">
           <div v-show="isFinanceOpen && !isCollapsed" class="sub-nav-container">
-            <RouterLink to="/facturacion" class="sub-nav-item" active-class="sub-active">Facturación</RouterLink>
-            <RouterLink to="/pagos" class="sub-nav-item" active-class="sub-active">Gestión de Pagos</RouterLink>
+            <RouterLink to="/facturacion" class="sub-nav-item" active-class="sub-active"
+              >Facturación</RouterLink
+            >
+            <RouterLink to="/pagos" class="sub-nav-item" active-class="sub-active"
+              >Gestión de Pagos</RouterLink
+            >
           </div>
         </Transition>
       </div>
 
-<!-- Administración Dropdown -->
-      <div class="relative" v-if="['Administrador', 'Jefe', 'Coordinador Nacionales', 'Coordinador Valle', 'Coordinador Norte de Santander'].includes(authStore.userRole ?? '')">
-        <button @click="isAdminOpen = !isAdminOpen" class="nav-item w-full group"
-          :class="[isAdminOpen && !isCollapsed ? 'bg-white/5 text-white' : '']">
+      <!-- Administración Dropdown -->
+      <div
+        class="relative"
+        v-if="
+          [
+            'Administrador',
+            'Jefe',
+            'Coordinador Nacionales',
+            'Coordinador Valle',
+            'Coordinador Norte de Santander',
+          ].includes(authStore.userRole ?? '')
+        "
+      >
+        <button
+          @click="isAdminOpen = !isAdminOpen"
+          class="nav-item w-full group"
+          :class="[isAdminOpen && !isCollapsed ? 'bg-white/5 text-white' : '']"
+        >
           <div class="flex items-center min-w-0">
             <div class="nav-icon-wrapper text-red-500">
               <i class="fas fa-tools w-5 text-center"></i>
             </div>
             <span class="nav-text" :class="{ collapsed: isCollapsed }">Administración</span>
           </div>
-          <i v-if="!isCollapsed" class="fas fa-chevron-down text-[10px] transition-transform duration-300"
-            :class="{ 'rotate-180': isAdminOpen }"></i>
+          <i
+            v-if="!isCollapsed"
+            class="fas fa-chevron-down text-[10px] transition-transform duration-300"
+            :class="{ 'rotate-180': isAdminOpen }"
+          ></i>
           <div v-if="isCollapsed" class="nav-tooltip">Administración</div>
         </button>
         <Transition name="expand">
           <div v-show="isAdminOpen && !isCollapsed" class="sub-nav-container">
-            <RouterLink to="/reportes" class="sub-nav-item" active-class="sub-active">Reportes</RouterLink>
-            <RouterLink to="/permisos" class="sub-nav-item" active-class="sub-active">Permisos</RouterLink>
+            <RouterLink to="/reportes" class="sub-nav-item" active-class="sub-active"
+              >Reportes</RouterLink
+            >
+            <RouterLink to="/permisos" class="sub-nav-item" active-class="sub-active"
+              >Permisos</RouterLink
+            >
           </div>
         </Transition>
       </div>
@@ -197,17 +249,22 @@ const userInitials = computed(() => {
 
     <!-- User Section -->
     <div class="p-4 border-t border-white/10 bg-[#0a0a0a]/20">
-      <div @click="showProfileModal = true"
+      <div
+        @click="showProfileModal = true"
         class="flex items-center gap-3 p-2 rounded-2xl hover:bg-white/5 cursor-pointer transition-all group relative"
-        :class="{ 'justify-center': isCollapsed }">
+        :class="{ 'justify-center': isCollapsed }"
+      >
         <div
           class="w-10 h-10 rounded-xl flex items-center justify-center font-bold text-white shadow-lg flex-shrink-0 transition-all group-hover:scale-105 border border-white/10"
-          :class="roleColorClass">
+          :class="roleColorClass"
+        >
           {{ userInitials }}
         </div>
 
-        <div class="overflow-hidden transition-all duration-300"
-          :class="{ 'w-0 opacity-0': isCollapsed, 'w-auto opacity-100': !isCollapsed }">
+        <div
+          class="overflow-hidden transition-all duration-300"
+          :class="{ 'w-0 opacity-0': isCollapsed, 'w-auto opacity-100': !isCollapsed }"
+        >
           <p class="font-bold text-white text-sm truncate leading-tight">
             {{ authStore.user?.displayName || 'Usuario' }}
           </p>
@@ -219,17 +276,24 @@ const userInitials = computed(() => {
         <div v-if="isCollapsed" class="nav-tooltip">Perfil de Usuario</div>
       </div>
 
-      <button @click="handleLogout"
+      <button
+        @click="handleLogout"
         class="w-full mt-4 flex items-center px-3 py-2.5 text-sm text-gray-500 hover:text-red-400 hover:bg-red-500/10 rounded-xl transition-all"
-        :class="isCollapsed ? 'justify-center' : ''">
+        :class="isCollapsed ? 'justify-center' : ''"
+      >
         <i class="fas fa-power-off text-base"></i>
-        <span class="ml-3 font-bold uppercase text-[11px] tracking-widest" :class="{ hidden: isCollapsed }">Cerrar
-          Sesión</span>
+        <span
+          class="ml-3 font-bold uppercase text-[11px] tracking-widest"
+          :class="{ hidden: isCollapsed }"
+          >Cerrar Sesión</span
+        >
       </button>
 
       <div class="mt-4 flex justify-center opacity-30 hover:opacity-100 transition-opacity">
-        <RouterLink to="/about"
-          class="text-[10px] text-gray-500 hover:text-indigo-400 transition-colors flex items-center gap-1">
+        <RouterLink
+          to="/about"
+          class="text-[10px] text-gray-500 hover:text-indigo-400 transition-colors flex items-center gap-1"
+        >
           <i class="fas fa-code-branch"></i>
           <span :class="{ hidden: isCollapsed }">Sisfumi v2.4.0</span>
         </RouterLink>

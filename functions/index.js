@@ -76,7 +76,7 @@ const cors = require('cors')({
     'https://sisfumictph.com',
     'https://www.sisfumictph.com',
     'https://controltotalyph.com',
-    'https://www.controltotalyph.com'
+    'https://www.controltotalyph.com',
   ],
   optionsSuccessStatus: 200,
 })
@@ -134,7 +134,7 @@ function assertAuth(request) {
 const ZONES_TO_ROLES_MAP = {
   'Valle del Cauca': 'Coordinador Valle',
   'Norte de Santander': 'Coordinador Norte de Santander',
-  'Nacionales': 'Coordinador Nacionales',
+  Nacionales: 'Coordinador Nacionales',
 }
 
 /**
@@ -387,28 +387,26 @@ exports.sendVisitReminders = onSchedule(
         return
       }
 
+      // ✅ FIX: listUsers se llama UNA sola vez fuera del loop
+      const usersResult = await admin.auth().listUsers(1000)
+
       const batchPromises = visitsSnapshot.docs.map(async (doc) => {
         const visit = doc.data()
-        // Determinar organizador para usar sus credenciales de Gmail
         let organizerUid = null
+
         if (visit.zona) {
-          const roleMap = {
-            'Valle del Cauca': 'Coordinador Valle',
-            'Norte de Santander': 'Coordinador Norte de Santander',
-            Nacionales: 'Coordinador Nacionales',
-          }
-          const expectedRole = roleMap[visit.zona]
+          // ✅ FIX: Usa el mapa global ZONES_TO_ROLES_MAP en lugar de duplicarlo
+          const expectedRole = ZONES_TO_ROLES_MAP[visit.zona]
           if (expectedRole) {
-            const users = await admin.auth().listUsers(1000)
-            const coordinator = users.users.find((u) => u.customClaims?.role === expectedRole)
+            // ✅ FIX: Reutiliza la lista ya obtenida, sin llamar listUsers de nuevo
+            const coordinator = usersResult.users.find((u) => u.customClaims?.role === expectedRole)
             if (coordinator) organizerUid = coordinator.uid
           }
         }
-        // Fallback al creador si es coordinador
+
         if (!organizerUid) organizerUid = visit.createdBy
 
         if (organizerUid && organizerUid !== 'SYSTEM') {
-          // Reutilizamos la función de envío de correo existente
           await sendVisitNotificationViaGmailAPI(visit, doc.id, organizerUid)
           logger.info(`[REMINDER] Recordatorio enviado para visita ${doc.id}`)
         }
@@ -1256,7 +1254,6 @@ async function createOrUpdateCalendarEvent(
   }
 }
 
-
 async function deleteCalendarEvent(visitData, uid) {
   try {
     const integrationDoc = await admin
@@ -1510,15 +1507,18 @@ exports.updateUserConfiguration = onCall({ cors: true }, async (request) => {
     // onServiceSheetUpdateForPriceRequest, onServicePriceAssigned) consultan
     // esta colección por 'role'. Sin esto esas notificaciones nunca
     // encuentran destinatarios porque este doc no se creaba en ningún lado.
-    await db.collection('users').doc(uid).set(
-      {
-        role,
-        zona: zona || null,
-        email: user.email || null,
-        displayName: user.displayName || null,
-      },
-      { merge: true },
-    )
+    await db
+      .collection('users')
+      .doc(uid)
+      .set(
+        {
+          role,
+          zona: zona || null,
+          email: user.email || null,
+          displayName: user.displayName || null,
+        },
+        { merge: true },
+      )
 
     // 2. Actualizar el color en la colección de fumigadores
     // Buscamos al fumigador por su email para encontrar el documento correcto.
@@ -1649,7 +1649,13 @@ exports.deleteVisitTemplate = onCall({ cors: true }, async (request) => {
 exports.deleteVisitAndCalendarEvent = onCall(
   {
     // Permite los orígenes específicos o pasa true para aceptar cualquier origen autenticado
-cors: ['http://localhost:5173', 'https://sisfumictph.com', 'https://www.sisfumictph.com', 'https://controltotalyph.com', 'https://www.controltotalyph.com'],
+    cors: [
+      'http://localhost:5173',
+      'https://sisfumictph.com',
+      'https://www.sisfumictph.com',
+      'https://controltotalyph.com',
+      'https://www.controltotalyph.com',
+    ],
     // ✅ minInstances retirado temporalmente: cuota de CPU regional agotada
     // (ver conversación de deploy). El frontend (planning.ts) ya reintenta
     // automáticamente ante fallos de cold-start, así que esto es tolerable
@@ -2522,15 +2528,18 @@ exports.setUserRole = onCall({ cors: true }, async (request) => {
 
   // ✅ FIX: igual que en updateUserConfiguration, mantener sincronizado
   // users/{uid} en Firestore para que las notificaciones por rol funcionen.
-  await db.collection('users').doc(uid).set(
-    {
-      role,
-      zona: zona || null,
-      email: user.email || null,
-      displayName: user.displayName || null,
-    },
-    { merge: true },
-  )
+  await db
+    .collection('users')
+    .doc(uid)
+    .set(
+      {
+        role,
+        zona: zona || null,
+        email: user.email || null,
+        displayName: user.displayName || null,
+      },
+      { merge: true },
+    )
 
   await createAuditLog('UPDATE_ROLE', `Rol cambiado a ${role} (${zona})`, request, {
     uid,
@@ -3406,14 +3415,10 @@ exports.getCoordinatorForZone = onCall({ cors: true }, async (request) => {
     throw new HttpsError('invalid-argument', 'Se requiere una zona.')
   }
 
-  // Mapeo de zonas a roles de coordinador
-  const roleMap = {
-    'Valle del Cauca': 'Coordinador Valle',
-    'Norte de Santander': 'Coordinador Norte de Santander',
-    Nacionales: 'Coordinador Nacionales',
-  }
+    // ✅ FIX: Usa el mapa global ZONES_TO_ROLES_MAP en lugar de duplicarlo
+  const expectedRole = ZONES_TO_ROLES_MAP[zone]
 
-  const expectedRole = roleMap[zone]
+
   if (!expectedRole) {
     return { name: 'No hay coordinador para esta zona' }
   }
@@ -3483,7 +3488,14 @@ exports.batchAssignVisits = onCall({ cors: true }, async (request) => {
 
 exports.getConsolidatedDashboardStats = onCall(
   {
-cors: ['http://localhost:5173', 'https://sisfumictph.com', 'https://www.sisfumictph.com', 'https://controltotalyph.com', 'https://www.controltotalyph.com'],    timeoutSeconds: 60,
+    cors: [
+      'http://localhost:5173',
+      'https://sisfumictph.com',
+      'https://www.sisfumictph.com',
+      'https://controltotalyph.com',
+      'https://www.controltotalyph.com',
+    ],
+    timeoutSeconds: 60,
     memory: '256MB', // Disminuir la memoria libera asignación de CPU en Cloud Run
     maxInstances: 2, // Limita el número de instancias concurrentes para no consumir cuota extra
   },
@@ -4932,7 +4944,14 @@ function calculateNextVisitDate(date, freq) {
 
 exports.getAnnualBillingReport = onCall(
   {
-cors: ['http://localhost:5173', 'https://sisfumictph.com', 'https://www.sisfumictph.com', 'https://controltotalyph.com', 'https://www.controltotalyph.com'],    timeoutSeconds: 180,
+    cors: [
+      'http://localhost:5173',
+      'https://sisfumictph.com',
+      'https://www.sisfumictph.com',
+      'https://controltotalyph.com',
+      'https://www.controltotalyph.com',
+    ],
+    timeoutSeconds: 180,
     memory: '512MB',
   },
   async (request) => {
@@ -5293,8 +5312,8 @@ exports.logClientUpdate = onDocumentUpdated('clientes/{clientId}', async (event)
 })
 
 exports.getClientVisitHistoryPage = onCall({ cors: true }, async (request) => {
-  const { auth: context, data } = request
-  if (!context.auth) {
+  const { auth, data } = request
+  if (!auth) {
     throw new HttpsError('unauthenticated', 'El usuario no está autenticado.')
   }
 
@@ -5339,8 +5358,8 @@ exports.getClientVisitHistoryPage = onCall({ cors: true }, async (request) => {
 })
 
 exports.getClientServicesPage = onCall({ cors: true }, async (request) => {
-  const { auth: context, data } = request
-  if (!context.auth) {
+  const { auth, data } = request
+  if (!auth) {
     throw new HttpsError('unauthenticated', 'El usuario no está autenticado.')
   }
 
@@ -5378,8 +5397,8 @@ exports.getClientServicesPage = onCall({ cors: true }, async (request) => {
 })
 
 exports.getTechnicianVisitHistoryPage = onCall({ cors: true }, async (request) => {
-  const { auth: context, data } = request
-  if (!context.auth) {
+  const { auth, data } = request
+  if (!auth) {
     throw new HttpsError('unauthenticated', 'El usuario no está autenticado.')
   }
 
@@ -5397,7 +5416,7 @@ exports.getTechnicianVisitHistoryPage = onCall({ cors: true }, async (request) =
 
   if (startAfterTimestamp) {
     const startAfterDate = new Date(startAfterTimestamp)
-    query = query.where('fecha_visita', '<', startAfterDate)
+    query = query.startAfter(admin.firestore.Timestamp.fromDate(startAfterDate))
   }
 
   try {
@@ -5603,8 +5622,8 @@ exports.updateSupportFileName = onCall({ cors: true }, async (request) => {
       let found = false
       const updatedSoportes = currentSoportes.map((s) => {
         if (s.path === filePath) {
-          s.name = newName
           found = true
+          return { ...s, name: newName }
         }
         return s
       })
@@ -5726,7 +5745,13 @@ exports.getClientProfileData = onCall({ cors: true }, async (request) => {
  */
 exports.getServiceSheetByClientId = onCall(
   {
-cors: ['http://localhost:5173', 'https://sisfumictph.com', 'https://www.sisfumictph.com', 'https://controltotalyph.com', 'https://www.controltotalyph.com'],
+    cors: [
+      'http://localhost:5173',
+      'https://sisfumictph.com',
+      'https://www.sisfumictph.com',
+      'https://controltotalyph.com',
+      'https://www.controltotalyph.com',
+    ],
     // ✅ minInstances retirado temporalmente: cuota de CPU regional agotada.
   },
   async (request) => {
@@ -5787,7 +5812,13 @@ cors: ['http://localhost:5173', 'https://sisfumictph.com', 'https://www.sisfumic
  */
 exports.saveServiceSheet = onCall(
   {
-cors: ['http://localhost:5173', 'https://sisfumictph.com', 'https://www.sisfumictph.com', 'https://controltotalyph.com', 'https://www.controltotalyph.com'],
+    cors: [
+      'http://localhost:5173',
+      'https://sisfumictph.com',
+      'https://www.sisfumictph.com',
+      'https://controltotalyph.com',
+      'https://www.controltotalyph.com',
+    ],
     // ✅ minInstances retirado temporalmente: cuota de CPU regional agotada.
   },
   async (request) => {

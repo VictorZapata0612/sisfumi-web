@@ -115,25 +115,23 @@ const router = createRouter({
           path: 'facturacion',
           name: 'facturacion',
           component: () => import('../views/BillingView.vue'),
-          meta: { roles: ['Administrador', 'Jefe'] },
+          meta: { roles: ['Administrador', 'Jefe', 'Coordinador Nacionales'] },
         },
         {
           path: 'pagos',
           name: 'pagos',
           component: () => import('../views/PaymentsView.vue'),
-          meta: { roles: ['Administrador', 'Jefe'] },
+          meta: { roles: ['Administrador', 'Jefe', 'Coordinador Nacionales'] },
         },
         {
           path: 'reportes',
           name: 'reportes',
           component: () => import('../views/ReportsView.vue'),
-          meta: { roles: ['Administrador', 'Jefe', 'Coordinador Nacionales'] },
         },
         {
           path: 'permisos',
           name: 'permisos',
           component: () => import('../views/PermissionsView.vue'),
-          meta: { roles: ['Administrador', 'Jefe', 'Coordinador Nacionales'] },
         },
         {
           path: 'configuracion',

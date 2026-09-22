@@ -1,3 +1,4 @@
+<!-- eslint-disable @typescript-eslint/no-explicit-any -->
 <script setup lang="ts">
 import { ref, watch, computed, onUnmounted } from 'vue'
 import type { Service } from '@/stores/services'
@@ -108,9 +109,7 @@ watch(
 )
 
 const handleSave = async () => {
-  console.log('🕵️ [SPY] handleSave iniciado. Datos del formulario:', JSON.parse(JSON.stringify(form.value)))
   if (!form.value.tipo_servicio || !form.value.frecuencia) {
-    console.warn('🕵️ [SPY] Validación fallida: Campos incompletos (tipo o frecuencia)')
     showToast({
       title: 'Campos Incompletos',
       message: 'Por favor, complete todos los campos requeridos.',
@@ -120,7 +119,6 @@ const handleSave = async () => {
   }
 
   if (form.value.valor < 0) {
-    console.warn('🕵️ [SPY] Validación fallida: Valor negativo')
     showToast({
       title: 'Valor Inválido',
       message: 'El valor del servicio no puede ser negativo.',
@@ -129,35 +127,45 @@ const handleSave = async () => {
     return
   }
 
+  // Salvaguarda: Si no tiene permisos, forzamos el valor a 0
+  if (!canSetPrice.value) {
+    form.value.valor = 0
+  }
+
   isSaving.value = true
-  console.log('🕵️ [SPY] Estado isSaving establecido a TRUE. Botón debería deshabilitarse.')
   const previousSheet = servicesStore.serviceSheet
     ? JSON.parse(JSON.stringify(servicesStore.serviceSheet))
     : null
 
   try {
-    // Actualizar localmente, guardar y restaurar si la nube rechaza la operación.
     servicesStore.upsertService(form.value, props.serviceIndex)
 
-    // 2. Persistir en Base de Datos
-    // @ts-ignore: Acción del store para guardar la ficha completa
-    // Usamos Promise.race para evitar que se quede colgado indefinidamente
-    const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error('El guardado está tardando demasiado. Verifique su conexión.')), 10000))
+    const timeout = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('El guardado está tardando demasiado. Verifique su conexión.')), 10000)
+    )
 
-    console.log('🕵️ [SPY] Iniciando llamada a servicesStore.saveServiceSheet() con timeout de 10s...')
     await Promise.race([
       servicesStore.saveServiceSheet(),
       timeout
     ])
-    console.log('🕵️ [SPY] servicesStore.saveServiceSheet() completado exitosamente.')
 
     emit('save', form.value, props.serviceIndex)
-    showToast({ title: 'Éxito', message: 'Servicio guardado correctamente.', type: 'success' })
+
+    // Retroalimentación visual diferenciada según el rol
+    if (!canSetPrice.value) {
+      showToast({
+        title: 'Servicio en Revisión',
+        message: 'Servicio creado sin precio. Se ha notificado al Coordinador Nacional para su asignación.',
+        type: 'info'
+      })
+    } else {
+      showToast({ title: 'Éxito', message: 'Servicio guardado correctamente.', type: 'success' })
+    }
+
     emit('close')
   } catch (error: any) {
     if (previousSheet) servicesStore.serviceSheet = previousSheet
     servicesStore.hasUnsavedChanges = Boolean(previousSheet)
-    console.error('🕵️ [SPY] ERROR CAPTURADO en handleSave:', error)
     showToast({
       title: 'Error de Guardado',
       message: `Se actualizó localmente pero falló en la nube: ${error.message}`,
@@ -165,7 +173,6 @@ const handleSave = async () => {
     })
   } finally {
     isSaving.value = false
-    console.log('🕵️ [SPY] Bloque finally ejecutado. isSaving establecido a FALSE.')
   }
 }
 </script>
