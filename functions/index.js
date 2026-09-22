@@ -1455,7 +1455,7 @@ exports.getVisitHistory = onCall({ cors: true }, async (request) => {
   }
 
   try {
-    // ✅ MEJORA: Verificar que el usuario tiene acceso a la visita
+    // Verificar que el usuario tiene acceso a la visita
     const visitDoc = await db.collection('visitas').doc(visitId).get()
     if (!visitDoc.exists) {
       throw new HttpsError('not-found', 'La visita no existe.')
@@ -1475,10 +1475,22 @@ exports.getVisitHistory = onCall({ cors: true }, async (request) => {
       .orderBy('timestamp', 'desc')
       .get()
 
-    const history = historySnapshot.docs.map((doc) => ({
-      id: doc.id,
-      ...doc.data(),
-    }))
+    const history = historySnapshot.docs.map((doc) => {
+      const data = doc.data()
+
+      // ✅ FIX: Convertir cualquier Timestamp nativo a formato ISO
+      // para evitar que la serialización JSON rompa y lance el error 'internal' + CORS
+      for (const key in data) {
+        if (data[key] && typeof data[key].toDate === 'function') {
+          data[key] = data[key].toDate().toISOString()
+        }
+      }
+
+      return {
+        id: doc.id,
+        ...data,
+      }
+    })
 
     return { history }
   } catch (error) {
