@@ -1834,13 +1834,19 @@ exports.getPendingPriceRequestsCount = onCall({ cors: true }, async (request) =>
   }
 
   try {
-    const servicesSnapshot = await db.collection('servicios').get()
-    let pendingCount = 0
+    // ✅ MEJORA: En lugar de traer toda la colección y filtrar en memoria,
+    // filtramos los documentos que tienen al menos un servicio con needsPriceApproval.
+    // Firestore no permite filtrar dentro de arrays anidados directamente,
+    // pero sí podemos filtrar por el campo del array usando array-contains.
+    const servicesSnapshot = await db.collection('servicios').where('services', '!=', null).get()
 
+    let pendingCount = 0
     servicesSnapshot.forEach((doc) => {
       const sheet = doc.data()
-      if (sheet.services && Array.isArray(sheet.services)) {
-        pendingCount += sheet.services.filter((s) => s.valor === 0).length
+      if (Array.isArray(sheet.services)) {
+        pendingCount += sheet.services.filter(
+          (s) => s.needsPriceApproval === true && Number(s.valor) === 0,
+        ).length
       }
     })
 
@@ -3576,14 +3582,17 @@ exports.getConsolidatedDashboardStats = onCall(
         .where('estado_visita', '==', 'Realizada')
         .get()
 
-      // Ajuste para evitar requirimiento estricto de índice compuesto si no existe
-      let pendingVisitsQuery = db.collection('visitas').where('createdBy', '==', 'SYSTEM')
+      // ✅ FIX: Buscar visitas sin técnicos asignados, no solo las creadas por SYSTEM
+      let pendingVisitsQuery = db
+        .collection('visitas')
+        .where('estado_visita', '==', 'Programada')
+        .where('fumigadores_asignados', '==', [])
 
       if (zoneToFilter) {
         pendingVisitsQuery = pendingVisitsQuery.where('zona', '==', zoneToFilter)
       }
 
-      const pendingVisitsPromise = pendingVisitsQuery.limit(20).get()
+      const pendingVisitsPromise = pendingVisitsQuery.orderBy('fecha_visita', 'asc').limit(20).get()
       const fumigadoresPromise = fumigadoresQuery.get()
 
       const [
@@ -3936,25 +3945,45 @@ exports.getTechnicianProfileData = onCall({ cors: true }, async (request) => {
     const endOfMonth = new Date(year, month + 1, 0, 23, 59, 59)
     const today = new Date()
 
-    const visitsRef = db
+    const baseVisitsRef = db
       .collection('visitas')
       .where('fumigadores_asignados', 'array-contains', technicianName)
       .where('zona', '==', zone)
 
-    const allVisitsSnapshot = await visitsRef.get()
+    // ✅ MEJORA: Hacer las 3 consultas en paralelo con filtros de fecha en Firestore
+    const [monthSnap, upcomingSnap, historySnap] = await Promise.all([
+      baseVisitsRef
+        .where('fecha_visita', '>=', startOfMonth)
+        .where('fecha_visita', '<=', endOfMonth)
+        .get(),
+      baseVisitsRef
+        .where('fecha_visita', '>=', today)
+        .orderBy('fecha_visita', 'asc')
+        .limit(10)
+        .get(),
+      baseVisitsRef
+        .where('fecha_visita', '<', today)
+        .orderBy('fecha_visita', 'desc')
+        .limit(10)
+        .get(),
+    ])
 
-    const allVisits = allVisitsSnapshot.docs.map((doc) => {
-      const data = doc.data()
-      const date = data.fecha_visita
-      return {
-        ...data,
-        fecha_visita: date && typeof date.toDate === 'function' ? date.toDate() : new Date(date),
-      }
-    })
+    const toDate = (val) => (val && typeof val.toDate === 'function' ? val.toDate() : new Date(val))
 
-    const visitsInMonth = allVisits.filter(
-      (v) => v.fecha_visita >= startOfMonth && v.fecha_visita <= endOfMonth,
-    )
+    const visitsInMonth = monthSnap.docs.map((doc) => ({
+      ...doc.data(),
+      fecha_visita: toDate(doc.data().fecha_visita),
+    }))
+
+    const upcomingVisits = upcomingSnap.docs.map((doc) => ({
+      ...doc.data(),
+      fecha_visita: toDate(doc.data().fecha_visita).toISOString(),
+    }))
+
+    const recentHistory = historySnap.docs.map((doc) => ({
+      ...doc.data(),
+      fecha_visita: toDate(doc.data().fecha_visita).toISOString(),
+    }))
 
     const assigned = visitsInMonth.length
     const completed = visitsInMonth.filter((v) => v.estado_visita === 'Realizada').length
@@ -3971,29 +4000,11 @@ exports.getTechnicianProfileData = onCall({ cors: true }, async (request) => {
       }
     })
 
-    const upcomingVisits = allVisits
-      .filter((v) => v.fecha_visita >= today)
-      .sort((a, b) => a.fecha_visita - b.fecha_visita)
-      .slice(0, 10)
-    const recentHistory = allVisits
-      .filter((v) => v.fecha_visita < today)
-      .sort((a, b) => b.fecha_visita - a.fecha_visita)
-      .slice(0, 10)
-
-    const formatVisits = (visits) =>
-      visits.map((v) => ({
-        ...v,
-        fecha_visita:
-          v.fecha_visita instanceof Date
-            ? v.fecha_visita.toISOString()
-            : new Date(v.fecha_visita).toISOString(),
-      }))
-
     return {
       kpis: { assigned, completed, rate },
       workload: weeklyWorkload,
-      upcomingVisits: formatVisits(upcomingVisits),
-      recentHistory: formatVisits(recentHistory),
+      upcomingVisits,
+      recentHistory,
       technician: { id: techDoc.id, ...technicianData },
     }
   } catch (error) {
@@ -4239,17 +4250,15 @@ exports.backfillInvoiceTechnicians = onCall(
 
         const batch = db.batch()
 
-        for (const invoiceDoc of snapshot.docs) {
-          const invoiceData = invoiceDoc.data()
-          let needsUpdate = false
+        // ✅ MEJORA: Agrupar todas las queries de visitas del batch en Promise.all
+        const invoicesToProcess = snapshot.docs
+          .map((doc) => ({ doc, data: doc.data() }))
+          .filter(({ data }) => Array.isArray(data.services) && data.services.length > 0)
 
-          if (invoiceData.services && Array.isArray(invoiceData.services)) {
-            const updatedServices = [...invoiceData.services] // Copia para modificar
-
-            const servicePromises = updatedServices.map(async (service) => {
-              if (Array.isArray(service.fumigadores_asignados)) {
-                return service
-              }
+        await Promise.all(
+          invoicesToProcess.map(async ({ doc: invoiceDoc, data: invoiceData }) => {
+            const servicePromises = invoiceData.services.map(async (service) => {
+              if (Array.isArray(service.fumigadores_asignados)) return service
 
               let serviceDate
               if (service.date && typeof service.date.toDate === 'function') {
@@ -4265,24 +4274,21 @@ exports.backfillInvoiceTechnicians = onCall(
               const endOfDay = new Date(serviceDate)
               endOfDay.setUTCHours(23, 59, 59, 999)
 
-              const visitQuery = db
+              const visitSnapshot = await db
                 .collection('visitas')
                 .where('id_cliente', '==', invoiceData.clientId)
                 .where('tipo_visita', '==', service.tipo_visita)
                 .where('fecha_visita', '>=', startOfDay)
                 .where('fecha_visita', '<=', endOfDay)
                 .limit(1)
-
-              const visitSnapshot = await visitQuery.get()
+                .get()
 
               if (!visitSnapshot.empty) {
-                const originalVisitData = visitSnapshot.docs[0].data()
                 return {
                   ...service,
-                  fumigadores_asignados: originalVisitData.fumigadores_asignados || [],
+                  fumigadores_asignados: visitSnapshot.docs[0].data().fumigadores_asignados || [],
                 }
               }
-
               return service
             })
 
@@ -4292,8 +4298,8 @@ exports.backfillInvoiceTechnicians = onCall(
               batch.update(invoiceDoc.ref, { services: rebuiltServices })
               updatedInvoicesCount++
             }
-          }
-        }
+          })
+        )
 
         await batch.commit()
         lastDoc = snapshot.docs[snapshot.docs.length - 1]
@@ -4843,7 +4849,7 @@ exports.scheduleRecurringVisits = onSchedule(
         .orderBy('fecha_visita', 'desc')
         .limit(1)
         .get()
-        .then((snap) => ({ service, lastSnap: snap }))
+        .then((snap) => ({ service, lastSnap: snap })),
     )
 
     const results = await Promise.all(lastVisitPromises)
@@ -4867,7 +4873,7 @@ exports.scheduleRecurringVisits = onSchedule(
           .where('tipo_visita', '==', service.tipoServicio)
           .where('fecha_visita', '==', admin.firestore.Timestamp.fromDate(nextDate))
           .get()
-          .then((checkSnap) => ({ service, nextDate, exists: !checkSnap.empty }))
+          .then((checkSnap) => ({ service, nextDate, exists: !checkSnap.empty })),
       )
     }
 
@@ -4902,7 +4908,6 @@ exports.scheduleRecurringVisits = onSchedule(
     logger.info(`🤖 [BOT] Finalizado. Visitas recurrentes creadas: ${createdCount}`)
   },
 )
-
 
 /**
  * Tarea programada para realizar backup de Firestore.
@@ -5116,7 +5121,6 @@ exports.getAuditLogs = onCall({ cors: true }, async (request) => {
   const { auth, data } = request
   // 1. Verificar permisos: Solo Jefes y Administradores pueden ver los logs.
   if (!auth || !APPROVER_ROLES.includes(auth.token.role)) {
-
     throw new HttpsError(
       'permission-denied',
       'No tienes permiso para ver los registros de auditoría.',
