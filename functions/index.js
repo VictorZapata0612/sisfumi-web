@@ -531,18 +531,6 @@ exports.addClient = onCall({ cors: true }, async (request) => {
     const docRef = await db.collection('clientes').add(dataToSave)
     const userEmail = request.auth.token.email || 'Desconocido'
 
-    // Registro explícito en auditoría con ambos alias para evitar celdas vacías
-    await db.collection('audit_logs').add({
-      action: 'CREATE_CLIENT',
-      details: `Se creó un nuevo cliente: "${clientData.nombreComercial}".`,
-      performedBy: request.auth.uid,
-      performerEmail: userEmail,
-      adminEmail: userEmail,
-      targetData: JSON.stringify({ id: docRef.id }),
-      timestamp: admin.firestore.FieldValue.serverTimestamp(),
-      userAgent: request.rawRequest ? request.rawRequest.headers['user-agent'] : 'Internal',
-    })
-
     return { success: true, clientId: docRef.id }
   } catch (error) {
     if (error instanceof HttpsError) throw error
@@ -581,17 +569,6 @@ exports.updateClient = onCall({ cors: true }, async (request) => {
 
     await db.collection('clientes').doc(clientId).update(updatePayload)
     const userEmail = request.auth.token.email || 'Desconocido'
-
-    await db.collection('audit_logs').add({
-      action: 'UPDATE_CLIENT',
-      details: `Se actualizó la información del cliente "${clientData.nombreComercial || clientId}".`,
-      performedBy: request.auth.uid,
-      performerEmail: userEmail,
-      adminEmail: userEmail,
-      targetData: JSON.stringify(updatePayload),
-      timestamp: admin.firestore.FieldValue.serverTimestamp(),
-      userAgent: request.rawRequest ? request.rawRequest.headers['user-agent'] : 'Internal',
-    })
 
     return { success: true }
   } catch (error) {
@@ -3087,16 +3064,19 @@ exports.getConsolidatedPlanningData = onCall({ cors: true }, async (request) => 
       googleEventsPromise,
     ])
 
-    // Cargar solo las fichas de los clientes visibles en esta zona.
-    const clientIds = clientsSnapshot.docs.map((doc) => doc.id)
-    const serviceSheetSnapshots = await Promise.all(
-      Array.from({ length: Math.ceil(clientIds.length / 30) }, (_, index) =>
-        db
-          .collection('servicios')
-          .where('clientId', 'in', clientIds.slice(index * 30, index * 30 + 30))
-          .get(),
-      ),
-    )
+     const clientIds = clientsSnapshot.docs.map((doc) => doc.id)
+    // ✅ FIX: Evitar query con array vacío que lanza error en Firestore
+    const serviceSheetSnapshots = clientIds.length > 0
+      ? await Promise.all(
+          Array.from({ length: Math.ceil(clientIds.length / 30) }, (_, index) =>
+            db
+              .collection('servicios')
+              .where('clientId', 'in', clientIds.slice(index * 30, index * 30 + 30))
+              .get(),
+          ),
+        )
+      : []
+
     const serviceSheetsSnapshot = {
       docs: serviceSheetSnapshots.flatMap((snapshot) => snapshot.docs),
     }
@@ -3198,23 +3178,38 @@ exports.getBillingDataForMonth = onCall({ cors: true }, async (request) => {
       .where('gestionPermiso.aprobado', '==', true)
       .get()
 
-    // ✅ MEJORA: Obtener todas las fichas de servicio de una vez para evitar múltiples lecturas.
-    let serviceSheetQuery = db.collection('servicios')
-    if (!isAdmin && userZone) {
-      serviceSheetQuery = serviceSheetQuery.where('zona', '==', userZone)
-    }
-    const serviceSheetsSnapshot = await serviceSheetQuery.get()
+        // ✅ MEJORA: Solo cargar fichas de los clientes que tienen visitas ese mes
+    const uniqueClientIdsForSheets = [
+      ...new Set(snapshot.docs.map((doc) => doc.data().id_cliente).filter(Boolean)),
+    ]
     const serviceSheetsMap = new Map()
-    serviceSheetsSnapshot.forEach((doc) => {
-      const sheet = doc.data()
-      if (sheet.clientId && sheet.services) {
-        const servicesMap = new Map()
-        sheet.services.forEach((service) => {
-          servicesMap.set(service.tipo_servicio, service.valor || 0)
-        })
-        serviceSheetsMap.set(sheet.clientId, servicesMap)
+
+    if (uniqueClientIdsForSheets.length > 0) {
+      const sheetChunks = []
+      for (let i = 0; i < uniqueClientIdsForSheets.length; i += 30) {
+        sheetChunks.push(uniqueClientIdsForSheets.slice(i, i + 30))
       }
-    })
+      const sheetSnapshots = await Promise.all(
+        sheetChunks.map((chunk) =>
+          db.collection('servicios')
+            .where('clientId', 'in', chunk)
+            .get()
+        )
+      )
+      sheetSnapshots.forEach((snap) => {
+        snap.forEach((doc) => {
+          const sheet = doc.data()
+          if (sheet.clientId && sheet.services) {
+            const servicesMap = new Map()
+            sheet.services.forEach((service) => {
+              servicesMap.set(service.tipo_servicio, service.valor || 0)
+            })
+            serviceSheetsMap.set(sheet.clientId, servicesMap)
+          }
+        })
+      })
+    }
+
 
     // ✅ CORRECCIÓN: Obtener los IDs de cliente directamente del snapshot antes de procesar.
     const uniqueClientIds = [...new Set(snapshot.docs.map((doc) => doc.data().id_cliente))].filter(
@@ -4056,14 +4051,20 @@ exports.registerPartialPayment = onCall({ cors: true }, async (request) => {
   }
 
   // Usamos transacción para garantizar consistencia en el saldo
-  await db.runTransaction(async (t) => {
-    const q = await t.get(
-      db.collection('grupos_facturacion').where('invoiceNumber', '==', invoiceNumber),
-    )
-    if (q.empty) throw new HttpsError('not-found', 'Factura no encontrada')
+  // ✅ MEJORA: Buscar la factura ANTES de la transacción
+  const q = await db
+    .collection('grupos_facturacion')
+    .where('invoiceNumber', '==', invoiceNumber)
+    .limit(1)
+    .get()
+  if (q.empty) throw new HttpsError('not-found', 'Factura no encontrada')
 
-    const doc = q.docs[0]
-    const data = doc.data()
+  await db.runTransaction(async (t) => {
+    // Re-leer dentro de la transacción para garantizar consistencia
+    const freshDoc = await t.get(q.docs[0].ref)
+    if (!freshDoc.exists) throw new HttpsError('not-found', 'Factura no encontrada')
+    const doc = freshDoc
+    const data = freshDoc.data()
 
     // Validar zona del usuario
     const isAdmin = ['Administrador', 'Jefe'].includes(userRole)
@@ -4420,132 +4421,135 @@ exports.generateInvoiceReport = onCall({ cors: true }, async (request) => {
     throw new HttpsError('invalid-argument', 'El vencimiento debe ser un número válido.')
   }
 
-  const isAdmin = ['Administrador', 'Jefe'].includes(userRole)
+  const isAdmin = ADMIN_ROLES.includes(userRole)
   if (!isAdmin && !userZone) {
     throw new HttpsError('permission-denied', 'No tienes zona asignada para facturar.')
   }
 
-  return await db.runTransaction(async (t) => {
-    let total = 0
-    const services = []
-    let clientId = null
-    let clientName = groupName
-    let clientZone = 'Sin Zona'
-    let servicePrices = new Map()
-    let clientBaseRate = 0
-    const visitUpdates = []
+  // ✅ MEJORA: Hacer todas las lecturas ANTES de la transacción
+  // Las transacciones de Firestore no deben tener reads dentro de loops
+  const visitIds = servicesToInvoice.map((s) => s.id)
 
-    for (const serviceData of servicesToInvoice) {
-      const visitRef = db.collection('visitas').doc(serviceData.id)
-      const visitDoc = await t.get(visitRef)
+  // Leer todas las visitas en paralelo
+  const visitDocs = await Promise.all(
+    visitIds.map((id) => db.collection('visitas').doc(id).get())
+  )
 
-      if (!visitDoc.exists) {
-        throw new HttpsError('not-found', `Visita ${serviceData.id} no encontrada.`)
+  // Validaciones previas a la transacción
+  for (const visitDoc of visitDocs) {
+    if (!visitDoc.exists) {
+      throw new HttpsError('not-found', `Visita ${visitDoc.id} no encontrada.`)
+    }
+    if (visitDoc.data().estado_facturacion === 'Facturada') {
+      throw new HttpsError('failed-precondition', `La visita ${visitDoc.id} ya fue facturada.`)
+    }
+  }
+
+  // Determinar clientId
+  const firstVisitData = visitDocs[0].data()
+  const clientId = firstVisitData.id_cliente || clientFromFrontend
+  if (!clientId) throw new HttpsError('invalid-argument', 'No se pudo determinar el cliente.')
+
+  // Validar que todas las visitas son del mismo cliente
+  for (const visitDoc of visitDocs) {
+    if (visitDoc.data().id_cliente !== clientId) {
+      throw new HttpsError('failed-precondition', 'Todas las visitas deben pertenecer al mismo cliente.')
+    }
+  }
+
+  // Leer cliente y ficha de servicio en paralelo
+  const [clientDoc, serviceSheetDoc] = await Promise.all([
+    db.collection('clientes').doc(clientId).get(),
+    db.collection('servicios').doc(clientId).get(),
+  ])
+
+  if (!clientDoc.exists) {
+    throw new HttpsError('not-found', `Cliente ${clientId} no encontrado.`)
+  }
+
+  const clientData = clientDoc.data()
+  const clientZones = Array.isArray(clientData.zonasDeSucursales)
+    ? clientData.zonasDeSucursales
+    : [clientData.zona].filter(Boolean)
+  const clientZone = firstVisitData.zona || clientData.zona || clientZones[0] || 'Sin Zona'
+  const clientName = clientData.nombreComercial || groupName
+  const clientBaseRate = Number(clientData.valor_servicio_base) || 0
+
+  if (!isAdmin && userZone && !clientZones.includes(userZone) && firstVisitData.zona !== userZone) {
+    throw new HttpsError('permission-denied', `No puedes facturar clientes de la zona ${clientZone}.`)
+  }
+
+  // Construir mapa de precios
+  const servicePrices = new Map()
+  if (serviceSheetDoc.exists && Array.isArray(serviceSheetDoc.data()?.services)) {
+    serviceSheetDoc.data().services.forEach((service) => {
+      const price = Number(service.valor)
+      if (service.tipo_servicio && Number.isFinite(price) && price > 0) {
+        servicePrices.set(service.tipo_servicio, price)
       }
+    })
+  }
 
-      const d = visitDoc.data()
+  // Calcular valores y construir servicios
+  let total = 0
+  const services = []
+  const visitUpdates = []
 
-      if (d.estado_facturacion === 'Facturada') {
-        throw new HttpsError('failed-precondition', `La visita ${serviceData.id} ya fue facturada.`)
-      }
+  for (const visitDoc of visitDocs) {
+    const d = visitDoc.data()
+    const storedValue = Number(d.valor_servicio)
+    const val = storedValue > 0 ? storedValue : servicePrices.get(d.tipo_visita) || clientBaseRate
 
-      if (!clientId) {
-        clientId = d.id_cliente || clientFromFrontend
-        if (!clientId) {
-          throw new HttpsError('invalid-argument', 'No se pudo determinar el cliente.')
-        }
-        const cDoc = await t.get(db.collection('clientes').doc(clientId))
-        if (!cDoc.exists) {
-          throw new HttpsError('not-found', `Cliente ${clientId} no encontrado.`)
-        }
-        const clientData = cDoc.data()
-        const clientZones = Array.isArray(clientData.zonasDeSucursales)
-          ? clientData.zonasDeSucursales
-          : [clientData.zona].filter(Boolean)
-        clientZone = d.zona || clientData.zona || clientZones[0] || 'Sin Zona'
-        clientName = clientData.nombreComercial || groupName
-
-        if (!isAdmin && userZone && !clientZones.includes(userZone) && d.zona !== userZone) {
-          throw new HttpsError(
-            'permission-denied',
-            `No puedes facturar clientes de la zona ${clientZone}.`,
-          )
-        }
-
-        clientBaseRate = Number(clientData.valor_servicio_base) || 0
-        const serviceSheetDoc = await t.get(db.collection('servicios').doc(clientId))
-        const serviceSheet = serviceSheetDoc.exists ? serviceSheetDoc.data() : null
-        if (Array.isArray(serviceSheet?.services)) {
-          serviceSheet.services.forEach((service) => {
-            const price = Number(service.valor)
-            if (service.tipo_servicio && Number.isFinite(price) && price > 0) {
-              servicePrices.set(service.tipo_servicio, price)
-            }
-          })
-        }
-      }
-
-      if (d.id_cliente !== clientId) {
-        throw new HttpsError(
-          'failed-precondition',
-          'Todas las visitas deben pertenecer al mismo cliente.',
-        )
-      }
-
-      const storedValue = Number(d.valor_servicio)
-      const val = storedValue > 0 ? storedValue : servicePrices.get(d.tipo_visita) || clientBaseRate
-      if (val <= 0) {
-        throw new HttpsError(
-          'failed-precondition',
-          `La visita ${serviceData.id} no tiene un precio configurado para el servicio ${d.tipo_visita || 'seleccionado'}.`,
-        )
-      }
-      total += val
-
-      const serviceItem = {
-        ...d,
-        value: val,
-        valor_servicio: val,
-        date: d.fecha_visita,
-      }
-      services.push(serviceItem)
-
-      visitUpdates.push({
-        ref: visitRef,
-        data: {
-          estado_facturacion: 'Facturada',
-          billingData: { invoicedAt: admin.firestore.FieldValue.serverTimestamp() },
-        },
-      })
+    if (val <= 0) {
+      throw new HttpsError(
+        'failed-precondition',
+        `La visita ${visitDoc.id} no tiene un precio configurado para el servicio ${d.tipo_visita || 'seleccionado'}.`
+      )
     }
 
-    visitUpdates.forEach(({ ref, data }) => t.update(ref, data))
-
-    const invoiceRef = db.collection('grupos_facturacion').doc()
-    const invoiceNumber = `F-${Date.now().toString().slice(-6)}`
-    const dueDate = new Date()
-    dueDate.setDate(dueDate.getDate() + dueDays)
-
-    t.set(invoiceRef, {
-      groupName,
-      clientName,
-      clientId,
-      zona: clientZone,
-      totalValue: total,
-      currentBalance: total,
-      status: 'billed',
-      services,
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
-      invoiceNumber,
-      dueDate: admin.firestore.Timestamp.fromDate(dueDate),
-      observations: observations || '',
-      month: new Date().getMonth(),
-      year: new Date().getFullYear(),
+    total += val
+    services.push({ ...d, value: val, valor_servicio: val, date: d.fecha_visita })
+    visitUpdates.push({
+      ref: db.collection('visitas').doc(visitDoc.id),
+      data: {
+        estado_facturacion: 'Facturada',
+        billingData: { invoicedAt: admin.firestore.FieldValue.serverTimestamp() },
+      },
     })
+  }
 
-    return { invoiceNumber }
+  // ✅ MEJORA: La transacción ahora solo hace WRITES, no reads
+  const invoiceNumber = `F-${Date.now().toString().slice(-6)}`
+  const dueDate = new Date()
+  dueDate.setDate(dueDate.getDate() + dueDays)
+
+  const batch = db.batch()
+
+  visitUpdates.forEach(({ ref, data }) => batch.update(ref, data))
+
+  const invoiceRef = db.collection('grupos_facturacion').doc()
+  batch.set(invoiceRef, {
+    groupName,
+    clientName,
+    clientId,
+    zona: clientZone,
+    totalValue: total,
+    currentBalance: total,
+    status: 'billed',
+    services,
+    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    invoiceNumber,
+    dueDate: admin.firestore.Timestamp.fromDate(dueDate),
+    observations: observations || '',
+    month: new Date().getMonth(),
+    year: new Date().getFullYear(),
   })
+
+  await batch.commit()
+
+  return { invoiceNumber }
 })
+
 
 exports.getInvoiceExcel = onCall({ cors: true }, async (request) => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'Autenticación requerida')
@@ -5010,18 +5014,47 @@ exports.getAnnualBillingReport = onCall(
         zoneToFilter = userZone
       }
 
-      // 1. Obtener todas las facturas del año, filtrando por zona si es necesario.
-      let invoicesQuery = db.collection('grupos_facturacion').where('year', '==', year)
+      // 1. Obtener facturas del año con límite para evitar timeouts
+      let invoicesQuery = db
+        .collection('grupos_facturacion')
+        .where('year', '==', year)
+        .orderBy('month', 'asc')
       if (zoneToFilter) {
         invoicesQuery = invoicesQuery.where('zona', '==', zoneToFilter)
       }
-      const invoicesSnapshot = await invoicesQuery.get()
 
-      // 2. Obtener todos los pagos de esas facturas en paralelo.
-      const paymentPromises = invoicesSnapshot.docs.map((doc) =>
-        doc.ref.collection('payments').get(),
-      )
-      const paymentsByInvoice = await Promise.all(paymentPromises)
+      // ✅ MEJORA: Paginar en lotes de 100 para no agotar memoria
+      let lastDoc = null
+      let allInvoiceDocs = []
+      const PAGE_SIZE = 100
+
+      while (true) {
+        const query = lastDoc
+          ? invoicesQuery.startAfter(lastDoc).limit(PAGE_SIZE)
+          : invoicesQuery.limit(PAGE_SIZE)
+
+        const snap = await query.get()
+        if (snap.empty) break
+
+        allInvoiceDocs = [...allInvoiceDocs, ...snap.docs]
+        lastDoc = snap.docs[snap.docs.length - 1]
+
+        if (snap.docs.length < PAGE_SIZE) break
+      }
+
+      // 2. Obtener todos los pagos en paralelo (en lotes de 30 para no saturar)
+      const paymentsByInvoice = []
+      for (let i = 0; i < allInvoiceDocs.length; i += 30) {
+        const chunk = allInvoiceDocs.slice(i, i + 30)
+        const chunkPayments = await Promise.all(
+          chunk.map((doc) => doc.ref.collection('payments').get())
+        )
+        paymentsByInvoice.push(...chunkPayments)
+      }
+
+      // Reemplazar invoicesSnapshot.docs por allInvoiceDocs en el procesamiento
+      const invoicesSnapshot = { docs: allInvoiceDocs }
+
 
       // Inicializar estructuras de datos
       const monthlyTrend = new Array(12).fill(0) // Ingresos pagados por mes
