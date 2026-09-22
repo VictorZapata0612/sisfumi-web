@@ -423,9 +423,21 @@ exports.sendVisitReminders = onSchedule(
         if (!organizerUid) organizerUid = visit.createdBy
 
         if (organizerUid && organizerUid !== 'SYSTEM') {
-          await sendVisitNotificationViaGmailAPI(visit, doc.id, organizerUid)
-          logger.info(`[REMINDER] Recordatorio enviado para visita ${doc.id}`)
+          // ✅ FIX: Marcar la visita como recordatorio enviado para evitar duplicados
+          const alreadySent = visit.reminderSentAt &&
+            new Date(visit.reminderSentAt.toDate()).toDateString() === new Date().toDateString()
+
+          if (!alreadySent) {
+            await sendVisitNotificationViaGmailAPI(visit, doc.id, organizerUid)
+            await db.collection('visitas').doc(doc.id).update({
+              reminderSentAt: admin.firestore.FieldValue.serverTimestamp(),
+            })
+            logger.info(`[REMINDER] Recordatorio enviado para visita ${doc.id}`)
+          } else {
+            logger.info(`[REMINDER] Recordatorio ya enviado hoy para visita ${doc.id}, omitiendo.`)
+          }
         }
+
       })
 
       await Promise.all(batchPromises)
@@ -1320,19 +1332,25 @@ exports.deleteClientAndRelatedData = onCall({ cors: true }, async (request) => {
   try {
     await getAuthorizedClient(request, clientId)
 
-    const visitsSnap = await db.collection('visitas').where('id_cliente', '==', clientId).get()
-    const documentsToDelete = [...visitsSnap.docs]
+    const [visitsSnap, servicesSnap] = await Promise.all([
+      db.collection('visitas').where('id_cliente', '==', clientId).get(),
+      db.collection('servicios').where('clientId', '==', clientId).get(),
+    ])
 
-    const servicesSnap = await db.collection('servicios').where('clientId', '==', clientId).get()
-    documentsToDelete.push(...servicesSnap.docs)
+    // ✅ MEJORA: Incluir el documento del cliente al final
+    const documentsToDelete = [
+      ...visitsSnap.docs.map((d) => d.ref),
+      ...servicesSnap.docs.map((d) => d.ref),
+      db.collection('clientes').doc(clientId),
+    ]
 
-    documentsToDelete.push(db.collection('clientes').doc(clientId))
-
+    // ✅ FIX: Usar lotes de 450 (límite seguro de Firestore es 500)
     for (let index = 0; index < documentsToDelete.length; index += 450) {
       const batch = db.batch()
-      documentsToDelete.slice(index, index + 450).forEach((docRef) => batch.delete(docRef))
+      documentsToDelete.slice(index, index + 450).forEach((ref) => batch.delete(ref))
       await batch.commit()
     }
+
 
     const userEmail = request.auth.token.email || 'Desconocido'
     await db.collection('audit_logs').add({
@@ -1356,7 +1374,7 @@ exports.deleteClientAndRelatedData = onCall({ cors: true }, async (request) => {
 })
 
 exports.listAllUsers = onCall({ cors: true }, async (request) => {
-  assertAuth(request)
+  assertRole(request, ADMIN_ROLES)
   try {
     const listUsersResult = await admin.auth().listUsers(1000)
 
@@ -1429,13 +1447,7 @@ exports.listCalendarIntegrations = onCall({ cors: true }, async (request) => {
  * =================================================================================
  */
 exports.getVisitHistory = onCall({ cors: true }, async (request) => {
-  // 1. Validar que el usuario está autenticado.
-  if (!request.auth) {
-    throw new HttpsError(
-      'unauthenticated',
-      'La función debe ser llamada por un usuario autenticado.',
-    )
-  }
+  assertAuth(request)
 
   const { visitId } = request.data
   if (!visitId) {
@@ -1443,27 +1455,39 @@ exports.getVisitHistory = onCall({ cors: true }, async (request) => {
   }
 
   try {
-    // 2. Consultar la subcolección 'history' de la visita.
+    // ✅ MEJORA: Verificar que el usuario tiene acceso a la visita
+    const visitDoc = await db.collection('visitas').doc(visitId).get()
+    if (!visitDoc.exists) {
+      throw new HttpsError('not-found', 'La visita no existe.')
+    }
+
+    const { zona: userZone, role: userRole } = request.auth.token
+    const isGlobal = GLOBAL_CLIENT_ROLES.includes(userRole)
+
+    if (!isGlobal && userZone && visitDoc.data().zona !== userZone) {
+      throw new HttpsError('permission-denied', 'No tienes permiso para ver esta visita.')
+    }
+
     const historySnapshot = await db
-      .collection('visitas') // <-- CORRECCIÓN: La colección es 'visitas', no 'sisfumi-visits'
+      .collection('visitas')
       .doc(visitId)
       .collection('history')
-      .orderBy('timestamp', 'desc') // Ordenar del más reciente al más antiguo
+      .orderBy('timestamp', 'desc')
       .get()
 
-    // 3. Mapear los documentos a un formato JSON limpio.
     const history = historySnapshot.docs.map((doc) => ({
       id: doc.id,
       ...doc.data(),
     }))
 
-    // 4. Devolver el historial.
     return { history }
   } catch (error) {
+    if (error instanceof HttpsError) throw error
     logger.error(`Error al obtener el historial para la visita ${visitId}:`, error)
     throw new HttpsError('internal', 'No se pudo recuperar el historial de la visita.')
   }
 })
+
 
 /**
  * =================================================================================
@@ -1922,10 +1946,21 @@ exports.createVisit = onCall({ cors: true }, async (request) => {
  * Actualiza una visita existente en Firestore.
  */
 exports.updateVisit = onCall({ cors: true }, async (request) => {
-  assertAuth(request)
+  assertRole(request, CLIENT_MANAGER_ROLES)
   const { visitId, visitData } = request.data
+  if (!visitId) throw new HttpsError('invalid-argument', 'Se requiere el ID de la visita.')
 
   try {
+    const visitDoc = await db.collection('visitas').doc(visitId).get()
+    if (!visitDoc.exists) throw new HttpsError('not-found', 'La visita no existe.')
+
+    const { zona: userZone, role: userRole } = request.auth.token
+    const isGlobal = GLOBAL_CLIENT_ROLES.includes(userRole)
+
+    if (!isGlobal && userZone && visitDoc.data().zona !== userZone) {
+      throw new HttpsError('permission-denied', 'No tienes permiso para actualizar esta visita.')
+    }
+
     const updatePayload = { ...visitData }
     if (visitData.fecha_visita) {
       updatePayload.fecha_visita = admin.firestore.Timestamp.fromDate(
@@ -1938,9 +1973,11 @@ exports.updateVisit = onCall({ cors: true }, async (request) => {
     await db.collection('visitas').doc(visitId).update(updatePayload)
     return { success: true }
   } catch (e) {
+    if (e instanceof HttpsError) throw e
     throw new HttpsError('internal', e.message)
   }
 })
+
 
 /**
  * Obtiene todas las visitas que están pendientes de aprobación de permiso.
@@ -2323,9 +2360,23 @@ exports.deleteVisit = onCall({ cors: true }, async (request) => {
 })
 
 exports.quickCompleteVisit = onCall({ cors: true }, async (request) => {
-  assertAuth(request)
+  assertRole(request, CLIENT_MANAGER_ROLES)
+  const { visitId } = request.data
+  if (!visitId) throw new HttpsError('invalid-argument', 'Se requiere el ID de la visita.')
+
   try {
-    await db.collection('visitas').doc(request.data.visitId).update({
+    const visitDoc = await db.collection('visitas').doc(visitId).get()
+    if (!visitDoc.exists) throw new HttpsError('not-found', 'La visita no existe.')
+
+    const visitData = visitDoc.data()
+    const { zona: userZone, role: userRole } = request.auth.token
+    const isGlobal = GLOBAL_CLIENT_ROLES.includes(userRole)
+
+    if (!isGlobal && userZone && visitData.zona !== userZone) {
+      throw new HttpsError('permission-denied', 'No tienes permiso para completar esta visita.')
+    }
+
+    await db.collection('visitas').doc(visitId).update({
       estado_visita: 'Realizada',
       estado_facturacion: 'Pendiente',
       completedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -2333,9 +2384,11 @@ exports.quickCompleteVisit = onCall({ cors: true }, async (request) => {
     })
     return { success: true }
   } catch (e) {
+    if (e instanceof HttpsError) throw e
     throw new HttpsError('internal', e.message)
   }
 })
+
 
 /**
  * Verifica si hay conflictos de horario para un grupo de técnicos en un momento dado.
@@ -2432,7 +2485,8 @@ exports.globalSearch = onCall({ cors: true }, async (request) => {
   try {
     const db = admin.firestore()
     const userZone = auth.token.zona
-    const isAdminOrJefe = auth.token.role === 'Administrador' || auth.token.role === 'Jefe'
+    // ✅ FIX: Usar GLOBAL_CLIENT_ROLES en lugar de solo Administrador/Jefe
+    const isAdminOrJefe = GLOBAL_CLIENT_ROLES.includes(auth.token.role)
 
     let clientQuery = db.collection('clientes')
     let fumigadorQuery = db.collection('fumigadores')
@@ -3434,35 +3488,54 @@ exports.getCoordinatorForZone = onCall({ cors: true }, async (request) => {
 })
 
 exports.batchAssignVisits = onCall({ cors: true }, async (request) => {
-  assertAuth(request)
+  assertRole(request, CLIENT_MANAGER_ROLES)
   const { visitIds, technicians } = request.data
 
   if (!visitIds || !visitIds.length)
     throw new HttpsError('invalid-argument', 'No hay visitas seleccionadas')
+  if (visitIds.length > 450)
+    throw new HttpsError('invalid-argument', 'Máximo 450 visitas por lote.')
 
-  const batch = db.batch()
+  const { zona: userZone, role: userRole } = request.auth.token
+  const isGlobal = GLOBAL_CLIENT_ROLES.includes(userRole)
 
-  // Obtener zona del primer cliente para consistencia (opcional)
-  const firstVisit = await db.collection('visitas').doc(visitIds[0]).get()
-  let zoneToSet = 'Sin Zona'
-  if (firstVisit.exists) {
-    const client = await db.collection('clientes').doc(firstVisit.data().id_cliente).get()
-    if (client.exists) zoneToSet = client.data().zona || 'Sin Zona'
+  // ✅ MEJORA: Verificar que todas las visitas existen en paralelo
+  const visitDocs = await Promise.all(
+    visitIds.map((id) => db.collection('visitas').doc(id).get())
+  )
+
+  for (const visitDoc of visitDocs) {
+    if (!visitDoc.exists) {
+      throw new HttpsError('not-found', `La visita ${visitDoc.id} no existe.`)
+    }
+    if (!isGlobal && userZone && visitDoc.data().zona !== userZone) {
+      throw new HttpsError('permission-denied', 'No puedes asignar visitas fuera de tu zona.')
+    }
   }
 
+  // Obtener zona del primer cliente
+  const firstVisitData = visitDocs[0].data()
+  let zoneToSet = firstVisitData.zona || 'Sin Zona'
+
+  if (!zoneToSet || zoneToSet === 'Sin Zona') {
+    const clientDoc = await db.collection('clientes').doc(firstVisitData.id_cliente).get()
+    if (clientDoc.exists) zoneToSet = clientDoc.data().zona || 'Sin Zona'
+  }
+
+  const batch = db.batch()
   visitIds.forEach((id) => {
-    const ref = db.collection('visitas').doc(id)
-    batch.update(ref, {
+    batch.update(db.collection('visitas').doc(id), {
       fumigadores_asignados: technicians,
       zona: zoneToSet,
       updatedBy: request.auth.uid,
-      estado_visita: 'Programada', // Cambiar estado automáticamente
+      estado_visita: 'Programada',
     })
   })
 
   await batch.commit()
   return { message: `${visitIds.length} visitas asignadas correctamente.` }
 })
+
 
 exports.getConsolidatedDashboardStats = onCall(
   {
@@ -4009,7 +4082,8 @@ exports.getTechnicianProfileData = onCall({ cors: true }, async (request) => {
 })
 
 exports.markVisitsAsBilled = onCall({ cors: true }, async (request) => {
-  if (!request.auth) throw new HttpsError('unauthenticated', 'Autenticación requerida')
+  assertRole(request, ADMIN_ROLES)
+
   const { visitIds } = request.data
   const db = admin.firestore()
   const batch = db.batch()
@@ -5229,14 +5303,15 @@ exports.completeVisit = onCall(async (request) => {
 
     const existingData = visitDoc.data()
 
+    // ✅ FIX: No sobrescribir gestionPermiso completo, solo actualizar campos específicos
     const dataToUpdate = {
       estado_visita: 'Realizada',
       notas_realizacion: completionNotes || 'Sin notas de realización.',
       completedBy: auth.uid,
       estado_facturacion: 'Pendiente',
       completedAt: admin.firestore.FieldValue.serverTimestamp(),
-      gestionPermiso: existingData.gestionPermiso || {},
     }
+
 
     await visitRef.update(dataToUpdate)
 
