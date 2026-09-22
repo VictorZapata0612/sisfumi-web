@@ -171,6 +171,14 @@ const CLIENT_MANAGER_ROLES = [
   'Coordinador Norte de Santander',
 ]
 
+// ✅ Roles con acceso administrativo básico
+const ADMIN_ROLES = ['Administrador', 'Jefe']
+
+// ✅ Roles que pueden aprobar precios, ver auditoría, etc.
+const APPROVER_ROLES = [
+  ...GLOBAL_CLIENT_ROLES, // Administrador, Jefe, Coordinador Nacionales, Coordinador Nacional, Gerente
+]
+
 function assertClientManager(request) {
   assertRole(request, CLIENT_MANAGER_ROLES)
 }
@@ -246,6 +254,14 @@ async function getUidsByRoles(targetRoles) {
   return usersResult.users
     .filter((u) => u.customClaims && targetRoles.includes(u.customClaims.role))
     .map((u) => u.uid)
+}
+
+/**
+ * Helper para obtener el bucket de Storage de forma consistente.
+ * Reemplaza las 4 ocurrencias de admin.instanceId().app.options.storageBucket
+ */
+function getStorageBucket() {
+  return admin.storage().bucket(storageBucketName)
 }
 
 /**
@@ -1396,14 +1412,8 @@ exports.listCalendarIntegrations = onCall({ cors: true }, async (request) => {
     throw new HttpsError('unauthenticated', 'No estás autenticado.')
   }
   const requestingUserRole = auth.token.role
-  const allowedRoles = [
-    'Administrador',
-    'Jefe',
-    'Coordinador Nacionales',
-    'Coordinador Nacional',
-    'Gerente',
-  ]
-  if (!allowedRoles.includes(requestingUserRole)) {
+
+  if (!APPROVER_ROLES.includes(requestingUserRole)) {
     throw new HttpsError('permission-denied', 'No tienes permiso para realizar esta acción.')
   }
 
@@ -1717,8 +1727,7 @@ exports.getSignedUploadUrl = onCall({ cors: true }, async (request) => {
   }
 
   try {
-    const bucketName = admin.instanceId().app.options.storageBucket
-    const bucket = admin.storage().bucket(bucketName)
+    const bucket = getStorageBucket()
     const file = bucket.file(filePath)
 
     const [signedUrl] = await file.getSignedUrl({
@@ -1748,8 +1757,7 @@ exports.makeSupportFilePublic = onCall({ cors: true }, async (request) => {
   }
 
   try {
-    const bucketName = admin.instanceId().app.options.storageBucket
-    const bucket = admin.storage().bucket(bucketName)
+    const bucket = getStorageBucket()
     const file = bucket.file(filePath)
 
     await file.makePublic()
@@ -1789,8 +1797,9 @@ exports.deleteProfilePicture = onCall({ cors: true }, async (request) => {
     const filePath = decodeURIComponent(url.pathname.split('/').slice(2).join('/'))
 
     // 3. Eliminar el archivo de Firebase Storage
-    const bucket = admin.storage().bucket(admin.instanceId().app.options.storageBucket)
+    const bucket = getStorageBucket()
     await bucket.file(filePath).delete()
+
     logger.log(`[deleteProfilePicture] Archivo eliminado de Storage: ${filePath}`)
 
     // 4. Actualizar el perfil del usuario en Auth para quitar la URL
@@ -1817,13 +1826,7 @@ exports.getPendingPriceRequestsCount = onCall({ cors: true }, async (request) =>
   // getPendingPriceRequests (la lista completa) sí incluye a Coordinador
   // Nacionales/Gerente. Esto causaba que el badge mostrara 0 para el
   // Nacional aunque sí hubiera solicitudes pendientes en su bandeja.
-  const canApprovePrices = [
-    'Administrador',
-    'Jefe',
-    'Coordinador Nacionales',
-    'Coordinador Nacional',
-    'Gerente',
-  ].includes(userRole)
+  const canApprovePrices = APPROVER_ROLES.includes(userRole)
 
   if (!canApprovePrices) {
     // Para otros roles, simplemente devolvemos 0 sin lanzar un error.
@@ -1853,15 +1856,7 @@ exports.getPendingPriceRequestsCount = onCall({ cors: true }, async (request) =>
  * Al ser una función "onCall", Firebase maneja CORS automáticamente.
  */
 exports.getPendingPriceRequests = onCall({ cors: true }, async (request) => {
-  // 1. Verificación de Autenticación y Permisos
-  const allowedRoles = [
-    'Administrador',
-    'Jefe',
-    'Coordinador Nacionales',
-    'Coordinador Nacional',
-    'Gerente',
-  ]
-  if (!request.auth || !allowedRoles.includes(request.auth.token.role)) {
+  if (!request.auth || !APPROVER_ROLES.includes(request.auth.token.role)) {
     // Si el usuario no tiene permiso, lanzamos un error específico.
     throw new HttpsError('permission-denied', 'No tienes permiso para realizar esta acción.')
   }
@@ -1969,13 +1964,7 @@ exports.updateVisit = onCall({ cors: true }, async (request) => {
  * Solo para Administradores y Jefes.
  */
 exports.getPendingPermissionVisits = onCall({ cors: true }, async (request) => {
-  assertRole(request, [
-    'Administrador',
-    'Jefe',
-    'Coordinador Nacionales',
-    'Coordinador Nacional',
-    'Gerente',
-  ])
+  assertRole(request, APPROVER_ROLES)
 
   try {
     // Buscar visitas pendientes y aprobadas para mostrar en tablero
@@ -2007,13 +1996,8 @@ exports.getPendingPermissionVisits = onCall({ cors: true }, async (request) => {
  * Solo para Administradores y Jefes.
  */
 exports.approveVisitPermission = onCall({ cors: true }, async (request) => {
-  assertRole(request, [
-    'Administrador',
-    'Jefe',
-    'Coordinador Nacionales',
-    'Coordinador Nacional',
-    'Gerente',
-  ])
+  assertRole(request, APPROVER_ROLES)
+
   const { visitId, notes } = request.data
 
   try {
@@ -2064,13 +2048,8 @@ exports.approveVisitPermission = onCall({ cors: true }, async (request) => {
  * En lugar de borrarla, la marca como 'rechazada' para mantener un historial.
  */
 exports.rejectVisitPermission = onCall({ cors: true }, async (request) => {
-  assertRole(request, [
-    'Administrador',
-    'Jefe',
-    'Coordinador Nacionales',
-    'Coordinador Nacional',
-    'Gerente',
-  ])
+  assertRole(request, APPROVER_ROLES)
+
   const { visitId, reason } = request.data
 
   try {
@@ -2201,14 +2180,13 @@ exports.getPublicFileUrl = onCall({ cors: true }, async (request) => {
   }
 
   try {
-    const bucketName = admin.instanceId().app.options.storageBucket
-    if (!bucketName) {
+    if (!storageBucketName) {
       throw new HttpsError(
         'failed-precondition',
         'El bucket de almacenamiento no está configurado en el servidor.',
       )
     }
-    const publicUrl = `https://storage.googleapis.com/${bucketName}/${filePath}`
+    const publicUrl = `https://storage.googleapis.com/${storageBucketName}/${filePath}`
     return { publicUrl }
   } catch (error) {
     logger.error(`Error al obtener la URL pública para ${filePath}:`, error)
@@ -2222,7 +2200,7 @@ exports.getPublicFileUrl = onCall({ cors: true }, async (request) => {
  */
 exports.updateBusinessData = onCall({ cors: true }, async (request) => {
   const { auth, data } = request
-  if (!auth || (auth.token.role !== 'Administrador' && auth.token.role !== 'Jefe')) {
+  if (!auth || !ADMIN_ROLES.includes(auth.token.role)) {
     throw new HttpsError(
       'permission-denied',
       'No tienes permiso para actualizar los datos de negocio.',
@@ -2290,9 +2268,9 @@ exports.deleteSupportFile = onCall({ cors: true }, async (request) => {
 
   try {
     // 1. Eliminar el archivo de Firebase Storage
-    const bucketName = admin.instanceId().app.options.storageBucket
-    const bucket = admin.storage().bucket(bucketName)
+    const bucket = getStorageBucket()
     await bucket.file(filePath).delete()
+
     logger.log(`[deleteSupportFile] Archivo eliminado de Storage: ${filePath}`)
 
     // 2. Obtener el documento de la visita para encontrar el objeto de soporte completo
@@ -2563,7 +2541,7 @@ exports.setUserStatus = onCall({ cors: true }, async (request) => {
   const { auth, data } = request
 
   // 1. Verificar permisos
-  if (!auth || (auth.token.role !== 'Administrador' && auth.token.role !== 'Jefe')) {
+  if (!auth || !ADMIN_ROLES.includes(auth.token.role)) {
     throw new HttpsError(
       'permission-denied',
       'Solo los administradores o jefes pueden cambiar el estado de un usuario.',
@@ -3364,7 +3342,7 @@ exports.listAllCoordinatorsForAdmin = onCall({ cors: true }, async (request) => 
     throw new HttpsError('unauthenticated', 'El usuario no está autenticado.')
   }
   const userRole = auth.token.role
-  if (userRole !== 'Administrador' && userRole !== 'Jefe') {
+  if (!ADMIN_ROLES.includes(userRole)) {
     throw new HttpsError('permission-denied', 'No tienes permiso para listar usuarios.')
   }
 
@@ -3415,9 +3393,8 @@ exports.getCoordinatorForZone = onCall({ cors: true }, async (request) => {
     throw new HttpsError('invalid-argument', 'Se requiere una zona.')
   }
 
-    // ✅ FIX: Usa el mapa global ZONES_TO_ROLES_MAP en lugar de duplicarlo
+  // ✅ FIX: Usa el mapa global ZONES_TO_ROLES_MAP en lugar de duplicarlo
   const expectedRole = ZONES_TO_ROLES_MAP[zone]
-
 
   if (!expectedRole) {
     return { name: 'No hay coordinador para esta zona' }
@@ -4139,7 +4116,7 @@ exports.getPaymentDataForMonth = onCall({ cors: true }, async (request) => {
   }
 
   // Validar que usuario tenga zona si no es admin/jefe
-  const isAdmin = ['Administrador', 'Jefe'].includes(userRole)
+  const isAdmin = ADMIN_ROLES.includes(userRole)
   if (!isAdmin && !userZone) {
     throw new HttpsError('permission-denied', 'No tienes zona asignada para ver pagos.')
   }
@@ -4822,7 +4799,7 @@ exports.onFumigadorWrite = onDocumentWritten('fumigadores/{fumigadorId}', (event
 // --- Función Programada (Cron) ---
 exports.scheduleRecurringVisits = onSchedule(
   {
-    schedule: 'every day 03:00', // 3 AM Hora Colombia
+    schedule: 'every day 03:00',
     timeZone: 'America/Bogota',
   },
   async (event) => {
@@ -4833,60 +4810,99 @@ exports.scheduleRecurringVisits = onSchedule(
     today.setHours(0, 0, 0, 0)
     let createdCount = 0
 
+    // ✅ MEJORA: Recopilar todos los pares (clientId, tipo_servicio) activos primero
+    const activeServices = []
     for (const doc of servicesSnapshot.docs) {
       const sheet = doc.data()
-      if (!sheet.services) continue
+      if (!sheet.services || !sheet.clientId) continue
 
       for (const s of sheet.services) {
-        // Ignorar servicios inactivos o únicos
         if (s.estado_servicio !== 'Activo' || !s.frecuencia || s.frecuencia === 'UNICA') continue
-
-        // Buscar última visita de este tipo
-        const lastSnap = await db
-          .collection('visitas')
-          .where('id_cliente', '==', sheet.clientId)
-          .where('tipo_visita', '==', s.tipo_servicio)
-          .orderBy('fecha_visita', 'desc')
-          .limit(1)
-          .get()
-
-        if (lastSnap.empty) {
-          continue
-        }
-
-        const lastDate = lastSnap.docs[0].data().fecha_visita.toDate()
-        const nextDate = calculateNextVisitDate(lastDate, s.frecuencia)
-
-        if (nextDate <= today || nextDate - today < 7 * 86400000) {
-          const checkExists = await db
-            .collection('visitas')
-            .where('id_cliente', '==', sheet.clientId)
-            .where('tipo_visita', '==', s.tipo_servicio)
-            .where('fecha_visita', '==', admin.firestore.Timestamp.fromDate(nextDate))
-            .get()
-
-          if (checkExists.empty) {
-            await db.collection('visitas').add({
-              id_cliente: sheet.clientId,
-              nombre_cliente: sheet.clientName || 'Cliente Sistema',
-              fecha_visita: admin.firestore.Timestamp.fromDate(nextDate),
-              tipo_visita: s.tipo_servicio,
-              estado_visita: 'Programada',
-              estado_facturacion: 'Pendiente',
-              createdBy: 'SYSTEM',
-              createdAt: admin.firestore.FieldValue.serverTimestamp(),
-              fumigadores_asignados: [],
-              zona: sheet.zona || 'Sin Zona',
-              ubicacion: sheet.direccion || 'Sede Principal',
-            })
-            createdCount++
-          }
-        }
+        activeServices.push({
+          clientId: sheet.clientId,
+          clientName: sheet.clientName || 'Cliente Sistema',
+          tipoServicio: s.tipo_servicio,
+          frecuencia: s.frecuencia,
+          zona: sheet.zona || 'Sin Zona',
+          ubicacion: sheet.direccion || 'Sede Principal',
+        })
       }
     }
+
+    if (activeServices.length === 0) {
+      logger.info('🤖 [BOT] No hay servicios activos recurrentes.')
+      return
+    }
+
+    // ✅ MEJORA: Obtener la última visita de cada par (clientId, tipo_servicio) en paralelo
+    const lastVisitPromises = activeServices.map((service) =>
+      db
+        .collection('visitas')
+        .where('id_cliente', '==', service.clientId)
+        .where('tipo_visita', '==', service.tipoServicio)
+        .orderBy('fecha_visita', 'desc')
+        .limit(1)
+        .get()
+        .then((snap) => ({ service, lastSnap: snap }))
+    )
+
+    const results = await Promise.all(lastVisitPromises)
+
+    // ✅ MEJORA: Filtrar los que necesitan nueva visita y verificar duplicados en paralelo
+    const visitsToCreate = []
+    const duplicateCheckPromises = []
+
+    for (const { service, lastSnap } of results) {
+      if (lastSnap.empty) continue
+
+      const lastDate = lastSnap.docs[0].data().fecha_visita.toDate()
+      const nextDate = calculateNextVisitDate(lastDate, service.frecuencia)
+
+      if (nextDate > today && nextDate - today >= 7 * 86400000) continue
+
+      duplicateCheckPromises.push(
+        db
+          .collection('visitas')
+          .where('id_cliente', '==', service.clientId)
+          .where('tipo_visita', '==', service.tipoServicio)
+          .where('fecha_visita', '==', admin.firestore.Timestamp.fromDate(nextDate))
+          .get()
+          .then((checkSnap) => ({ service, nextDate, exists: !checkSnap.empty }))
+      )
+    }
+
+    const duplicateResults = await Promise.all(duplicateCheckPromises)
+
+    // ✅ MEJORA: Crear todas las visitas nuevas en un batch
+    const BATCH_LIMIT = 450
+    const toCreate = duplicateResults.filter((r) => !r.exists)
+
+    for (let i = 0; i < toCreate.length; i += BATCH_LIMIT) {
+      const batch = db.batch()
+      toCreate.slice(i, i + BATCH_LIMIT).forEach(({ service, nextDate }) => {
+        const ref = db.collection('visitas').doc()
+        batch.set(ref, {
+          id_cliente: service.clientId,
+          nombre_cliente: service.clientName,
+          fecha_visita: admin.firestore.Timestamp.fromDate(nextDate),
+          tipo_visita: service.tipoServicio,
+          estado_visita: 'Programada',
+          estado_facturacion: 'Pendiente',
+          createdBy: 'SYSTEM',
+          createdAt: admin.firestore.FieldValue.serverTimestamp(),
+          fumigadores_asignados: [],
+          zona: service.zona,
+          ubicacion: service.ubicacion,
+        })
+        createdCount++
+      })
+      await batch.commit()
+    }
+
     logger.info(`🤖 [BOT] Finalizado. Visitas recurrentes creadas: ${createdCount}`)
   },
 )
+
 
 /**
  * Tarea programada para realizar backup de Firestore.
@@ -5099,14 +5115,8 @@ exports.getAnnualBillingReport = onCall(
 exports.getAuditLogs = onCall({ cors: true }, async (request) => {
   const { auth, data } = request
   // 1. Verificar permisos: Solo Jefes y Administradores pueden ver los logs.
-  const allowedRoles = [
-    'Administrador',
-    'Jefe',
-    'Coordinador Nacionales',
-    'Coordinador Nacional',
-    'Gerente',
-  ]
-  if (!auth || !allowedRoles.includes(auth.token.role)) {
+  if (!auth || !APPROVER_ROLES.includes(auth.token.role)) {
+
     throw new HttpsError(
       'permission-denied',
       'No tienes permiso para ver los registros de auditoría.',
