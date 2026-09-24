@@ -1671,18 +1671,9 @@ exports.deleteVisitTemplate = onCall({ cors: true }, async (request) => {
 
 exports.deleteVisitAndCalendarEvent = onCall(
   {
-    // Permite los orígenes específicos o pasa true para aceptar cualquier origen autenticado
-    cors: [
-      'http://localhost:5173',
-      'https://sisfumictph.com',
-      'https://www.sisfumictph.com',
-      'https://controltotalyph.com',
-      'https://www.controltotalyph.com',
-    ],
-    // ✅ minInstances retirado temporalmente: cuota de CPU regional agotada
-    // (ver conversación de deploy). El frontend (planning.ts) ya reintenta
-    // automáticamente ante fallos de cold-start, así que esto es tolerable
-    // hasta que se pida el aumento de cuota.
+    // ✅ FIX: Usar cors: true para estandarizar con el resto del backend
+    // y evitar bloqueos preflight en Firebase v2.
+    cors: true,
   },
   async (request) => {
     // 1. Validar autenticación con HttpsError
