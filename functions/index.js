@@ -6238,3 +6238,51 @@ exports.onServiceSheetUpdateForPriceRequest = onDocumentWritten(
     return null
   },
 )
+
+/**
+ * Trigger: Cuando una visita pasa a "Realizada", verificamos si el servicio
+ * asociado era de frecuencia "UNICA" y lo marcamos como "Completado"
+ * automáticamente para que desaparezca de la lista de pendientes.
+ */
+exports.onVisitCompletedCheckService = onDocumentUpdated('visitas/{visitId}', async (event) => {
+  const beforeData = event.data.before.data()
+  const afterData = event.data.after.data()
+
+  // Si el estado acaba de cambiar a Realizada
+  if (beforeData.estado_visita !== 'Realizada' && afterData.estado_visita === 'Realizada') {
+    const clientId = afterData.id_cliente
+    const tipoVisita = afterData.tipo_visita
+
+    if (clientId && tipoVisita) {
+      const serviceSheetRef = db.collection('servicios').doc(clientId)
+
+      await db.runTransaction(async (t) => {
+        const doc = await t.get(serviceSheetRef)
+        if (!doc.exists) return
+        const data = doc.data()
+
+        let modified = false
+        const updatedServices = (data.services || []).map(service => {
+          // Buscamos el servicio exacto y comprobamos si su frecuencia es UNICA
+          if (
+            service.tipo_servicio === tipoVisita &&
+            service.frecuencia &&
+            service.frecuencia.toUpperCase() === 'UNICA' &&
+            service.estado_servicio !== 'Completado'
+          ) {
+            modified = true
+            return { ...service, estado_servicio: 'Completado' }
+          }
+          return service
+        })
+
+        if (modified) {
+          t.update(serviceSheetRef, {
+            services: updatedServices,
+            updatedAt: admin.firestore.FieldValue.serverTimestamp()
+          })
+        }
+      })
+    }
+  }
+})

@@ -29,7 +29,8 @@ const form = ref<Service>({
 })
 
 const serviceTypesList = computed(() => settingsStore.businessData?.serviceTypes || [])
-const frequencyOptions = computed(() => (settingsStore.businessData as any)?.frequencyOptions || ['Mensual', 'Bimestral', 'Trimestral', 'Semestral', 'Anual', 'Ocasional'])
+// Reemplaza los valores de este array con la lista EXACTA (mayúsculas/minúsculas) de tu bot
+const frequencyOptions = computed(() => ['UNICA', 'SEMANAL', 'QUINCENAL', 'MENSUAL', 'BIMESTRAL', 'TRIMESTRAL', 'SEMESTRAL', 'ANUAL'])
 const formattedValor = computed({
   get() {
     return form.value.valor.toLocaleString('es-CO')

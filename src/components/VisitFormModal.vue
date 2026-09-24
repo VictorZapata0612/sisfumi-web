@@ -82,10 +82,18 @@ const normalizeSearchText = (value: string) =>
     .replace(/\s+/g, ' ')
 
 const filteredClients = computed(() => {
-  const normalizedSearch = normalizeSearchText(clientSearchTerm.value)
-  if (!normalizedSearch) return planningStore.clients.slice(0, 10)
+  // 1. Filtrar primero los clientes que tengan al menos un servicio en estado 'Activo'
+  const clientsWithActiveServices = planningStore.clients.filter(client => {
+    return client.serviceSheet?.services?.some((s: Service) => s.estado_servicio === 'Activo')
+  })
 
-  return planningStore.clients.filter((client) =>
+  const normalizedSearch = normalizeSearchText(clientSearchTerm.value)
+
+  // Si no hay búsqueda, devolvemos los primeros 10 clientes con servicios pendientes
+  if (!normalizedSearch) return clientsWithActiveServices.slice(0, 10)
+
+  // Si hay búsqueda, cruzamos el término con los clientes filtrados
+  return clientsWithActiveServices.filter((client) =>
     [client.nombreComercial, client.ciudad, client.zona]
       .filter(Boolean)
       .some((value) => normalizeSearchText(String(value)).includes(normalizedSearch)),
@@ -147,25 +155,29 @@ watch(
 
     if (newVal) {
       if (props.visit) {
-        const client = planningStore.clients.find((c: Client) => c.id === props.visit?.id_cliente)
+        // ✅ SOLUCIÓN: FullCalendar encapsula los datos en 'extendedProps'
+        const actualVisitData = (props.visit as any).extendedProps || props.visit
+
+        const client = planningStore.clients.find((c: Client) => c.id === actualVisitData.id_cliente)
         if (client) {
           localVisit.value.id_cliente = client.id
           clientSearchTerm.value = client.nombreComercial
         }
-        const visitDate = props.visit.start || props.visit.fecha_visita
+
+        const visitDate = props.visit.start || actualVisitData.fecha_visita
         const dateObj = new Date(visitDate)
         const colombiaDateTime = !isNaN(dateObj.getTime()) ? formatColombiaDateTime(dateObj) : null
+
         localVisit.value = {
-          // @ts-ignore
-          ...(props.visit.extendedProps || props.visit),
+          ...actualVisitData,
           fecha_visita_date: colombiaDateTime?.date || '',
           fecha_visita_time: !isNaN(dateObj.getTime())
             ? colombiaDateTime?.time || '08:00'
             : '08:00',
         }
         nextTick(() => {
-          localVisit.value.tipo_visita = (props.visit?.extendedProps as Visit)?.tipo_visita || props.visit?.tipo_visita
-          localVisit.value.ubicacion = (props.visit?.extendedProps as Visit)?.ubicacion || props.visit?.ubicacion
+          localVisit.value.tipo_visita = actualVisitData.tipo_visita
+          localVisit.value.ubicacion = actualVisitData.ubicacion
         })
       } else {
         clientSearchTerm.value = ''
@@ -223,6 +235,37 @@ watch(
 
     updateOrganizerName(sucursal?.zona || client?.zona)
   },
+)
+
+watch(
+  () => localVisit.value.tipo_visita,
+  (newTipo) => {
+    // Si no hay tipo, o si estamos en modo edición y ya hay una ubicación guardada, no hacemos nada
+    if (!newTipo || (isEditMode.value && localVisit.value.ubicacion)) return
+
+    const client = planningStore.clients.find((c: Client) => c.id === localVisit.value.id_cliente)
+    if (client?.serviceSheet?.services) {
+      const service = client.serviceSheet.services.find((s: Service) => s.tipo_servicio === newTipo)
+
+      // Si el servicio tiene sucursales asignadas, tomamos la primera
+      if (service && service.sucursales_asignadas && service.sucursales_asignadas.length > 0) {
+        const branchIdOrName = service.sucursales_asignadas[0]
+        let addressToSelect = ''
+
+        if (branchIdOrName === 'Principal') {
+          addressToSelect = client.direccion
+        } else {
+          // Buscamos la sucursal por ID o por nombre para obtener su dirección exacta
+          const branch = client.sucursales?.find((b: any) => b.id === branchIdOrName || b.nombre === branchIdOrName)
+          if (branch) addressToSelect = branch.direccion
+        }
+
+        if (addressToSelect) {
+          localVisit.value.ubicacion = addressToSelect
+        }
+      }
+    }
+  }
 )
 
 const applyTemplate = (templateId: string) => {
@@ -442,10 +485,10 @@ const addChatNote = () => {
                   class="text-[#d60000]">*</span></label>
               <div ref="clientSearchContainer" class="relative">
                 <input v-model="clientSearchTerm" type="search" class="input-field-dark w-full"
-                  placeholder="Buscar cliente..." autocomplete="off"
-                  @focus="showClientResults = true"
+                  placeholder="Buscar cliente..." autocomplete="off" @focus="showClientResults = true"
                   @input="handleClientSearchInput" />
-                <i class="fas fa-search absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none"></i>
+                <i
+                  class="fas fa-search absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none"></i>
 
                 <div v-if="showClientResults"
                   class="absolute left-0 right-0 top-full mt-2 z-30 max-h-56 overflow-y-auto custom-scrollbar bg-[#151515] border border-white/10 rounded-lg shadow-2xl">
@@ -453,7 +496,8 @@ const addChatNote = () => {
                     class="block w-full px-4 py-3 text-left hover:bg-white/5 border-b border-white/5 last:border-0"
                     @click="selectClient(client)">
                     <span class="block text-sm font-semibold text-white">{{ client.nombreComercial }}</span>
-                    <span class="block text-xs text-gray-400">{{ client.ciudad || client.zona || 'Sin ubicación' }}</span>
+                    <span class="block text-xs text-gray-400">{{ client.ciudad || client.zona || 'Sin ubicación'
+                      }}</span>
                   </button>
                   <div v-if="filteredClients.length === 0" class="px-4 py-5 text-center text-sm text-gray-500">
                     No se encontraron clientes.
@@ -585,7 +629,7 @@ const addChatNote = () => {
                 <div class="flex justify-between items-start mb-2">
                   <span class="text-xs font-bold text-[#d60000] uppercase tracking-wider">{{ log.action }}</span>
                   <span class="text-[10px] text-gray-500 font-mono">{{ new Date(log.timestamp.toDate()).toLocaleString()
-                  }}</span>
+                    }}</span>
                 </div>
                 <p class="text-sm text-gray-200 leading-relaxed">{{ log.details }}</p>
                 <div class="mt-2 flex items-center gap-2 text-xs text-gray-500">
