@@ -5284,7 +5284,7 @@ exports.getAuditLogs = onCall({ cors: true }, async (request) => {
  * notas/auditoría). Como la segunda declaración pisa silenciosamente a la
  * primera, la versión simple nunca se ejecutaba — se deja solo esta.
  */
-exports.completeVisit = onCall(async (request) => {
+exports.completeVisit = onCall({ cors: true }, async (request) => {
   const { auth, data } = request
   if (!auth) {
     throw new HttpsError('unauthenticated', 'El usuario no está autenticado.')
@@ -5306,7 +5306,6 @@ exports.completeVisit = onCall(async (request) => {
 
     const existingData = visitDoc.data()
 
-    // ✅ FIX: No sobrescribir gestionPermiso completo, solo actualizar campos específicos
     const dataToUpdate = {
       estado_visita: 'Realizada',
       notas_realizacion: completionNotes || 'Sin notas de realización.',
@@ -5314,7 +5313,6 @@ exports.completeVisit = onCall(async (request) => {
       estado_facturacion: 'Pendiente',
       completedAt: admin.firestore.FieldValue.serverTimestamp(),
     }
-
 
     await visitRef.update(dataToUpdate)
 
@@ -5334,7 +5332,7 @@ exports.completeVisit = onCall(async (request) => {
 
     return { message: 'Visita completada exitosamente.' }
   } catch (error) {
-    console.error(`Error al completar la visita ${visitId}:`, error)
+    logger.error(`Error al completar la visita ${visitId}:`, error)
     throw new HttpsError('internal', 'Ocurrió un error al completar la visita.')
   }
 })
@@ -6245,10 +6243,9 @@ exports.onServiceSheetUpdateForPriceRequest = onDocumentWritten(
  * automáticamente para que desaparezca de la lista de pendientes.
  */
 exports.onVisitCompletedCheckService = onDocumentUpdated('visitas/{visitId}', async (event) => {
-  const beforeData = event.data.before.data()
-  const afterData = event.data.after.data()
+  const beforeData = event.data.before.data() || {}
+  const afterData = event.data.after.data() || {}
 
-  // Si el estado acaba de cambiar a Realizada
   if (beforeData.estado_visita !== 'Realizada' && afterData.estado_visita === 'Realizada') {
     const clientId = afterData.id_cliente
     const tipoVisita = afterData.tipo_visita
@@ -6263,7 +6260,6 @@ exports.onVisitCompletedCheckService = onDocumentUpdated('visitas/{visitId}', as
 
         let modified = false
         const updatedServices = (data.services || []).map(service => {
-          // Buscamos el servicio exacto y comprobamos si su frecuencia es UNICA
           if (
             service.tipo_servicio === tipoVisita &&
             service.frecuencia &&
@@ -6284,5 +6280,54 @@ exports.onVisitCompletedCheckService = onDocumentUpdated('visitas/{visitId}', as
         }
       })
     }
+  }
+})
+
+/**
+ * Trigger: Cuando un servicio pasa a Inactivo, cancela automáticamente
+ * las visitas futuras programadas para ese servicio.
+ */
+exports.onServiceInactiveCancelVisits = onDocumentUpdated('servicios/{sheetId}', async (event) => {
+  const beforeData = event.data.before.data()
+  const afterData = event.data.after.data()
+
+  const servicesBefore = beforeData.services || []
+  const servicesAfter = afterData.services || []
+
+  // Encontrar servicios que acaban de pasar a "Inactivo"
+  const deactivatedServices = servicesAfter.filter(afterSvc => {
+    const beforeSvc = servicesBefore.find(s => s.tipo_servicio === afterSvc.tipo_servicio)
+    return beforeSvc && beforeSvc.estado_servicio === 'Activo' && afterSvc.estado_servicio === 'Inactivo'
+  }).map(s => s.tipo_servicio)
+
+  if (deactivatedServices.length === 0) return null
+
+  const clientId = afterData.clientId
+  const now = new Date()
+
+  try {
+    // Buscar visitas futuras programadas para esos servicios
+    const visitsSnapshot = await admin.firestore().collection('visitas')
+      .where('id_cliente', '==', clientId)
+      .where('estado_visita', '==', 'Programada')
+      .where('tipo_visita', 'in', deactivatedServices)
+      .where('fecha_visita', '>=', now)
+      .get()
+
+    if (visitsSnapshot.empty) return null
+
+    const batch = admin.firestore().batch()
+    visitsSnapshot.forEach(doc => {
+      batch.update(doc.ref, {
+        estado_visita: 'Cancelada',
+        notas_realizacion: 'Cancelada automáticamente: El servicio fue suspendido/inactivado.',
+        updatedAt: admin.firestore.FieldValue.serverTimestamp()
+      })
+    })
+
+    await batch.commit()
+    logger.info(`Se cancelaron ${visitsSnapshot.size} visitas futuras para el cliente ${clientId} por servicios inactivos.`)
+  } catch (error) {
+    logger.error('Error al cancelar visitas por inactivación de servicio:', error)
   }
 })

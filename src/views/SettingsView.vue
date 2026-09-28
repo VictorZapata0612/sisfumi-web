@@ -1,3 +1,5 @@
+<!-- eslint-disable @typescript-eslint/no-unused-vars -->
+<!-- eslint-disable @typescript-eslint/no-explicit-any -->
 <script setup lang="ts">
 import { onMounted, ref, nextTick, computed, watch } from 'vue'
 import {
