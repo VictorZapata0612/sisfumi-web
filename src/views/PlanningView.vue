@@ -1107,7 +1107,7 @@ const handleQuickComplete = (visit: Visit) => {
             No hay visitas programadas.
             <button
               @click="
-                openCreateModal()
+                openCreateModal(),
                 showDayDetailsModal = false
               "
               class="block mx-auto mt-2 text-[#d60000] underline"

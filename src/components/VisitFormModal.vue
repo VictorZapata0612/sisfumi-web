@@ -288,21 +288,26 @@ const handleSubmit = async () => {
 
   const client = planningStore.clients.find((c: Client) => c.id === localVisit.value.id_cliente)
   let visitZone = client?.zona || 'Sin Zona'
+  let sucursalNombre = '' // <-- NUEVO
 
   if (client && client.sucursales) {
     const sucursalMatch = client.sucursales.find((s: any) => s.direccion === localVisit.value.ubicacion)
-    if (sucursalMatch && sucursalMatch.zona) {
-      visitZone = sucursalMatch.zona
+    if (sucursalMatch) {
+      if (sucursalMatch.zona) visitZone = sucursalMatch.zona
+      sucursalNombre = sucursalMatch.nombre // <-- AQUí CAPTURAMOS EL NOMBRE (Ej: "Qbano")
     }
   }
 
   localVisit.value.zona = visitZone
 
-  const visitToSave = { ...localVisit.value }
-  const combinedDateTime = new Date(
-    `${visitToSave.fecha_visita_date}T${visitToSave.fecha_visita_time || '00:00'}:00-05:00`,
-  )
+  const visitToSave: typeof localVisit.value & { duracion_minutos?: number; sucursal: string } = {
+    ...localVisit.value,
+    sucursal: sucursalNombre // <-- LO INCLUIDOS EN EL OBJETO QUE VIAJA A FIREBASE
+  }
   visitToSave.duracion_minutos = visitToSave.duracion_minutos || 60
+  const combinedDateTime = new Date(
+    `${localVisit.value.fecha_visita_date}T${localVisit.value.fecha_visita_time || '00:00'}:00`,
+  )
   visitToSave.fecha_visita = combinedDateTime.toISOString()
   delete visitToSave.fecha_visita_date
   delete visitToSave.fecha_visita_time
@@ -497,7 +502,7 @@ const addChatNote = () => {
                     @click="selectClient(client)">
                     <span class="block text-sm font-semibold text-white">{{ client.nombreComercial }}</span>
                     <span class="block text-xs text-gray-400">{{ client.ciudad || client.zona || 'Sin ubicación'
-                      }}</span>
+                    }}</span>
                   </button>
                   <div v-if="filteredClients.length === 0" class="px-4 py-5 text-center text-sm text-gray-500">
                     No se encontraron clientes.
@@ -629,7 +634,7 @@ const addChatNote = () => {
                 <div class="flex justify-between items-start mb-2">
                   <span class="text-xs font-bold text-[#d60000] uppercase tracking-wider">{{ log.action }}</span>
                   <span class="text-[10px] text-gray-500 font-mono">{{ new Date(log.timestamp.toDate()).toLocaleString()
-                    }}</span>
+                  }}</span>
                 </div>
                 <p class="text-sm text-gray-200 leading-relaxed">{{ log.details }}</p>
                 <div class="mt-2 flex items-center gap-2 text-xs text-gray-500">
