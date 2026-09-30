@@ -469,6 +469,7 @@ exports.getAllClients = onCall({ cors: true }, async (request) => {
       return {
         id: doc.id,
         ...data,
+        guest_emails: data.guest_emails || [],
         createdAt: data.createdAt?.toDate ? data.createdAt.toDate().toISOString() : null,
       }
     })
@@ -913,6 +914,14 @@ async function sendVisitNotificationViaGmailAPI(visitData, visitId, organizerUid
       }
     })
 
+    if (Array.isArray(visitData.client_emails)) {
+      visitData.client_emails.forEach((email) => {
+        if (email && !emailsToSend.includes(email)) {
+          emailsToSend.push(email)
+        }
+      })
+    }
+
     if (emailsToSend.length === 0) {
       logger.warn(`[ESPÍA/sendMail] ADVERTENCIA: No se encontraron correos para los técnicos.`)
       return
@@ -1076,7 +1085,12 @@ function buildEventResource(visitData, attendeeEmails = [], colorId = '8') {
   const visitDate = visitData.fecha_visita.toDate()
   const endTime = new Date(visitDate.getTime() + 60 * 60 * 1000)
 
-  const attendees = attendeeEmails.map((email) => ({ email }))
+const allAttendeeEmails = [
+    ...attendeeEmails,
+    ...(Array.isArray(visitData.client_emails) ? visitData.client_emails : [])
+  ];
+
+  const attendees = allAttendeeEmails.map((email) => ({ email }))
 
   const encodedAddress = encodeURIComponent(visitData.ubicacion)
   const mapsLink = `https://www.google.com/maps/search/?api=1&query=${encodedAddress}`
@@ -1220,7 +1234,7 @@ async function createOrUpdateCalendarEvent(
       const created = await calendar.events.insert({
         calendarId: 'primary',
         resource: eventResource,
-        sendUpdates: 'none',
+        sendUpdates: 'all',
       })
 
       await visitRef.update({
@@ -1905,19 +1919,13 @@ exports.getPendingPriceRequests = onCall({ cors: true }, async (request) => {
   }
 })
 
-/**
- * Crea una nueva visita en Firestore.
- */
 exports.createVisit = onCall({ cors: true }, async (request) => {
   assertAuth(request)
   const { visitData } = request.data
 
-  // Validaciones
   if (!visitData.id_cliente) throw new HttpsError('invalid-argument', 'Cliente es requerido')
   if (!visitData.fecha_visita) throw new HttpsError('invalid-argument', 'Fecha es requerida')
 
-  // ✅ CORRECCIÓN: Obtener el nombre del cliente desde la base de datos para asegurar consistencia.
-  // Esto soluciona el problema del nombre 'null' en correos y en la UI.
   const clientDoc = await db.collection('clientes').doc(visitData.id_cliente).get()
   if (!clientDoc.exists) {
     throw new HttpsError(
@@ -1933,8 +1941,8 @@ exports.createVisit = onCall({ cors: true }, async (request) => {
       fecha_visita: admin.firestore.Timestamp.fromDate(new Date(visitData.fecha_visita)),
       estado_visita: visitData.estado_visita || 'Programada',
       estado_facturacion: 'Pendiente',
-      nombre_cliente: clientName, // <-- Asegurar que el nombre del cliente se guarde correctamente.
-      gestionPermiso: { aprobado: false, estado: 'pendiente' }, // Inicializar permisos
+      nombre_cliente: clientName,
+      gestionPermiso: { aprobado: false, estado: 'pendiente' },
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       createdBy: request.auth.uid,
@@ -1942,7 +1950,12 @@ exports.createVisit = onCall({ cors: true }, async (request) => {
 
     const docRef = await db.collection('visitas').add(dataToSave)
 
-    // Integración opcional: Notificar técnicos (podría ir aquí)
+    // ✅ CORRECCIÓN: Guardar los correos invitados dentro del bloque try
+    if (visitData.id_cliente && Array.isArray(visitData.client_emails) && visitData.client_emails.length > 0) {
+      await db.collection('clientes').doc(visitData.id_cliente).set({
+        guest_emails: admin.firestore.FieldValue.arrayUnion(...visitData.client_emails)
+      }, { merge: true });
+    }
 
     return { success: true, visitId: docRef.id }
   } catch (e) {
@@ -3200,6 +3213,7 @@ exports.getConsolidatedPlanningData = onCall({ cors: true }, async (request) => 
     const clients = clientsSnapshot.docs.map((doc) => ({
       id: doc.id,
       ...doc.data(),
+      guest_emails: doc.data().guest_emails || [],
     }))
 
     // ✅ CORRECCIÓN: Adjuntar la ficha de servicio a cada cliente.
