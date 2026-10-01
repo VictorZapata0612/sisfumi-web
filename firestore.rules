@@ -1,0 +1,95 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isAdminOrJefe() {
+      return signedIn() && (
+        request.auth.token.role == 'Administrador' ||
+        request.auth.token.role == 'Jefe'
+      );
+    }
+
+    function isCoordinadorNacional() {
+      return signedIn() && (
+        request.auth.token.role == 'Coordinador Nacionales' ||
+        request.auth.token.role == 'Coordinador Nacional'
+      );
+    }
+
+    function hasGlobalAccess() {
+      return isAdminOrJefe() || isCoordinadorNacional();
+    }
+
+    function canReadAuditLogs() {
+      return signedIn() && (
+        isAdminOrJefe() ||
+        isCoordinadorNacional() ||
+        request.auth.token.role == 'Gerente'
+      );
+    }
+
+    function isCoordinadorForZone() {
+      return signedIn() &&
+        request.auth.token.role.matches('Coordinador.*') &&
+        request.auth.token.zona != null;
+    }
+
+    function isOwnZoneResource() {
+      return isCoordinadorForZone() &&
+        resource.data.zona == request.auth.token.zona;
+    }
+
+    function isOwnZoneWrite() {
+      return isCoordinadorForZone() &&
+        request.resource.data.zona == request.auth.token.zona;
+    }
+
+    match /notifications/{notificationId} {
+      allow read: if signedIn() &&
+        request.auth.token.role in resource.data.targetRoles;
+      allow write: if false;
+    }
+
+    match /clientes/{documentId} {
+      allow read: if hasGlobalAccess() || isOwnZoneResource();
+      allow write: if hasGlobalAccess() ||
+        (isOwnZoneResource() && isOwnZoneWrite());
+    }
+
+    match /servicios/{serviceId} {
+      allow read: if hasGlobalAccess() || isOwnZoneResource();
+      allow write: if hasGlobalAccess();
+    }
+
+    match /fumigadores/{documentId} {
+      allow read, write: if hasGlobalAccess() || isOwnZoneResource();
+    }
+
+    match /visitas/{documentId} {
+      allow read, update, delete: if hasGlobalAccess() || isOwnZoneResource();
+      allow create: if hasGlobalAccess() || isOwnZoneWrite();
+    }
+
+    match /settings/{documentId} {
+      allow read: if signedIn();
+      allow write: if isAdminOrJefe();
+    }
+
+    match /calendar_integrations/{userId} {
+      allow read, write: if signedIn() &&
+        (isAdminOrJefe() || request.auth.uid == userId);
+    }
+
+    match /users/{userId}/{documents=**} {
+      allow read, write: if signedIn() && request.auth.uid == userId;
+    }
+
+    match /audit_logs/{logId} {
+      allow read: if canReadAuditLogs();
+      allow write: if false;
+    }
+  }
+}

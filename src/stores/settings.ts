@@ -1,7 +1,19 @@
 import { ref } from 'vue'
 import { defineStore } from 'pinia'
 import { httpsCallable } from 'firebase/functions'
-import { functions } from '@/firebase/config'
+import {
+  collection,
+  doc,
+  getDoc,
+  getDocs,
+  limit as firestoreLimit,
+  orderBy,
+  query,
+  Timestamp,
+  where,
+  type QueryConstraint,
+} from 'firebase/firestore'
+import { db, functions } from '@/firebase/config'
 
 export interface CalendarIntegration {
   uid: string
@@ -93,14 +105,14 @@ export const useSettingsStore = defineStore('settings', () => {
   async function fetchBusinessData() {
     loadingBusinessData.value = true
     try {
-      const getBusinessDataFn = httpsCallable(functions, 'getBusinessData')
-      const result = (await getBusinessDataFn()) as { data: BusinessData }
+      const businessDataSnapshot = await getDoc(doc(db, 'settings', 'businessData'))
+      const result = (businessDataSnapshot.data() || {}) as BusinessData
       // Asegurarse de que los arrays existan para evitar errores en la UI
       businessData.value = {
-        businessZones: result.data.businessZones || [],
-        alliesList: result.data.alliesList || [],
-        serviceTypes: result.data.serviceTypes || [],
-        colombiaData: result.data.colombiaData || {},
+        businessZones: result.businessZones || [],
+        alliesList: result.alliesList || [],
+        serviceTypes: result.serviceTypes || [],
+        colombiaData: result.colombiaData || {},
       }
     } catch (err: any) {
       console.error('Error fetching business data:', err)
@@ -126,9 +138,37 @@ export const useSettingsStore = defineStore('settings', () => {
   }) {
     loadingLogs.value = true
     try {
-      const getLogsFn = httpsCallable(functions, 'getAuditLogs')
-      const result = (await getLogsFn(filters)) as { data: { logs: AuditLog[] } }
-      auditLogs.value = result.data.logs
+      const constraints: QueryConstraint[] = [orderBy('timestamp', 'desc')]
+      if (filters.adminEmail && filters.adminEmail !== 'Todos') {
+        constraints.push(where('adminEmail', '==', filters.adminEmail))
+      }
+      if (filters.startDate) {
+        constraints.push(where('timestamp', '>=', Timestamp.fromDate(new Date(filters.startDate))))
+      }
+      if (filters.endDate) {
+        const endOfDay = new Date(filters.endDate)
+        endOfDay.setUTCHours(23, 59, 59, 999)
+        constraints.push(where('timestamp', '<=', Timestamp.fromDate(endOfDay)))
+      }
+
+      const logsSnapshot = await getDocs(
+        query(collection(db, 'audit_logs'), ...constraints, firestoreLimit(filters.limit || 25)),
+      )
+      let logs = logsSnapshot.docs.map((logDoc) => ({
+        id: logDoc.id,
+        ...logDoc.data(),
+      })) as AuditLog[]
+
+      if (filters.keyword?.trim()) {
+        const keyword = filters.keyword.toLowerCase().trim()
+        logs = logs.filter(
+          (log) =>
+            log.details?.toLowerCase().includes(keyword) ||
+            log.action?.toLowerCase().includes(keyword),
+        )
+      }
+
+      auditLogs.value = logs
     } catch (err: any) {
       console.error('Error fetching audit logs:', err)
       error.value = `No se pudieron cargar los registros de auditoría: ${err.message}`

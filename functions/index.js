@@ -26,6 +26,14 @@ const {
 const { onObjectDeleted } = require('firebase-functions/v2/storage')
 const { onSchedule } = require('firebase-functions/v2/scheduler')
 const { logger } = require('firebase-functions')
+const { setGlobalOptions } = require('firebase-functions/options')
+
+setGlobalOptions({
+  region: 'us-central1',
+  minInstances: 0,
+  maxInstances: 2,
+  cpu: 0.1666,
+})
 
 // Importaciones de librerías externas
 const admin = require('firebase-admin')
@@ -835,15 +843,6 @@ exports.deleteFumigador = onCall({ cors: true }, async (request) => {
   } catch (e) {
     throw new HttpsError('internal', e.message)
   }
-})
-
-/**
- * Obtiene los datos de negocio (listas de aliados, zonas, etc.)
- */
-exports.getBusinessData = onCall({ cors: true }, async (request) => {
-  if (!request.auth) throw new HttpsError('unauthenticated', 'Auth requerida.')
-  const doc = await db.collection('settings').doc('businessData').get()
-  return doc.exists ? doc.data() : {}
 })
 
 async function resolveOrganizerUid(visitData) {
@@ -2960,20 +2959,6 @@ exports.exchangeAuthCodeForTokens = onCall(async (request) => {
     throw new HttpsError('internal', error.message || 'Error desconocido durante la vinculación.')
   }
 })
-exports.listCoordinators = onCall({ cors: true }, async (request) => {
-  const { auth } = request
-  if (!auth) {
-    throw new HttpsError('unauthenticated', 'El usuario no está autenticado.')
-  }
-  const uid = auth.uid
-  const docRef = admin.firestore().collection('calendar_integrations').doc(uid)
-  const docSnap = await docRef.get()
-  // ✅ MEJORA: Devolver también el email para mostrarlo en el perfil.
-  const isConnected = docSnap.exists
-  const googleEmail = isConnected ? docSnap.data().googleEmail : null
-  return { isConnected, googleEmail }
-})
-
 exports.getGoogleCalendarEvents = onCall({ cors: true }, async (request) => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'Auth requerida')
   const { targetUid, startDate, endDate } = request.data
@@ -4319,194 +4304,6 @@ exports.getPaymentDataForMonth = onCall({ cors: true }, async (request) => {
   }
 })
 
-/**
- * Script de ejecución única para rellenar el campo 'fumigadores_asignados'
- * en los servicios anidados dentro de las facturas antiguas.
- */
-exports.backfillInvoiceTechnicians = onCall(
-  {
-    cors: true,
-    timeoutSeconds: 540,
-    memory: '1GiB',
-  },
-  async (request) => {
-    // 1. Verificación de seguridad: solo para administradores.
-    if (!request.auth || request.auth.token.role !== 'Administrador') {
-      throw new HttpsError(
-        'permission-denied',
-        'Solo los administradores pueden ejecutar este script.',
-      )
-    }
-
-    const db = admin.firestore()
-    const invoicesRef = db.collection('grupos_facturacion')
-    let updatedInvoicesCount = 0
-    const batchSize = 50 // Procesar en lotes más pequeños por la complejidad
-    let lastDoc = null
-
-    logger.log('Iniciando script de backfill para técnicos en facturas...')
-
-    try {
-      while (true) {
-        const query = lastDoc
-          ? invoicesRef
-              .orderBy(admin.firestore.FieldPath.documentId())
-              .startAfter(lastDoc)
-              .limit(batchSize)
-          : invoicesRef.orderBy(admin.firestore.FieldPath.documentId()).limit(batchSize)
-
-        const snapshot = await query.get()
-        if (snapshot.empty) break
-
-        const batch = db.batch()
-
-        // ✅ MEJORA: Agrupar todas las queries de visitas del batch en Promise.all
-        const invoicesToProcess = snapshot.docs
-          .map((doc) => ({ doc, data: doc.data() }))
-          .filter(({ data }) => Array.isArray(data.services) && data.services.length > 0)
-
-        await Promise.all(
-          invoicesToProcess.map(async ({ doc: invoiceDoc, data: invoiceData }) => {
-            const servicePromises = invoiceData.services.map(async (service) => {
-              if (Array.isArray(service.fumigadores_asignados)) return service
-
-              let serviceDate
-              if (service.date && typeof service.date.toDate === 'function') {
-                serviceDate = service.date.toDate()
-              } else if (typeof service.date === 'string') {
-                serviceDate = new Date(service.date)
-              } else {
-                return service
-              }
-
-              const startOfDay = new Date(serviceDate)
-              startOfDay.setUTCHours(0, 0, 0, 0)
-              const endOfDay = new Date(serviceDate)
-              endOfDay.setUTCHours(23, 59, 59, 999)
-
-              const visitSnapshot = await db
-                .collection('visitas')
-                .where('id_cliente', '==', invoiceData.clientId)
-                .where('tipo_visita', '==', service.tipo_visita)
-                .where('fecha_visita', '>=', startOfDay)
-                .where('fecha_visita', '<=', endOfDay)
-                .limit(1)
-                .get()
-
-              if (!visitSnapshot.empty) {
-                return {
-                  ...service,
-                  fumigadores_asignados: visitSnapshot.docs[0].data().fumigadores_asignados || [],
-                }
-              }
-              return service
-            })
-
-            const rebuiltServices = await Promise.all(servicePromises)
-
-            if (JSON.stringify(invoiceData.services) !== JSON.stringify(rebuiltServices)) {
-              batch.update(invoiceDoc.ref, { services: rebuiltServices })
-              updatedInvoicesCount++
-            }
-          }),
-        )
-
-        await batch.commit()
-        lastDoc = snapshot.docs[snapshot.docs.length - 1]
-      }
-
-      const message = `¡Éxito! Se actualizaron los datos de técnicos en ${updatedInvoicesCount} facturas.`
-      logger.log(message)
-      return { success: true, message }
-    } catch (error) {
-      logger.error('Error durante el backfill de técnicos en facturas:', error)
-      throw new HttpsError('internal', 'Ocurrió un error al actualizar las facturas.')
-    }
-  },
-)
-
-/**
- * Script de ejecución única para rellenar el campo 'zona' en facturas antiguas.
- */
-exports.backfillInvoiceZones = onCall(
-  {
-    cors: true,
-    timeoutSeconds: 540,
-    memory: '1GiB',
-  },
-  async (request) => {
-    if (!request.auth || request.auth.token.role !== 'Administrador') {
-      throw new HttpsError(
-        'permission-denied',
-        'Solo los administradores pueden ejecutar este script.',
-      )
-    }
-
-    const db = admin.firestore()
-    const invoicesRef = db.collection('grupos_facturacion')
-    const clientsRef = db.collection('clientes')
-    let updatedCount = 0
-    const batchSize = 100
-    let lastDoc = null
-
-    logger.log('Iniciando script de backfill para zonas de facturas...')
-
-    try {
-      while (true) {
-        const query = lastDoc
-          ? invoicesRef
-              .orderBy(admin.firestore.FieldPath.documentId())
-              .startAfter(lastDoc)
-              .limit(batchSize)
-          : invoicesRef.orderBy(admin.firestore.FieldPath.documentId()).limit(batchSize)
-
-        const snapshot = await query.get()
-        if (snapshot.empty) {
-          break
-        }
-
-        const batch = db.batch()
-        const invoicesToUpdate = []
-
-        snapshot.forEach((doc) => {
-          const data = doc.data()
-          if (!data.zona && data.clientId) {
-            invoicesToUpdate.push({ id: doc.id, clientId: data.clientId })
-          }
-        })
-
-        if (invoicesToUpdate.length > 0) {
-          const clientIds = [...new Set(invoicesToUpdate.map((inv) => inv.clientId))]
-          const clientDocs = await clientsRef
-            .where(admin.firestore.FieldPath.documentId(), 'in', clientIds)
-            .get()
-          const clientZoneMap = new Map()
-          clientDocs.forEach((doc) => clientZoneMap.set(doc.id, doc.data().zona || 'Sin Zona'))
-
-          invoicesToUpdate.forEach((invoice) => {
-            const zone = clientZoneMap.get(invoice.clientId)
-            if (zone) {
-              const invoiceRef = invoicesRef.doc(invoice.id)
-              batch.update(invoiceRef, { zona: zone })
-              updatedCount++
-            }
-          })
-          await batch.commit()
-        }
-
-        lastDoc = snapshot.docs[snapshot.docs.length - 1]
-      }
-
-      const message = `¡Éxito! Se actualizaron ${updatedCount} facturas con su zona correspondiente.`
-      logger.log(message)
-      return { success: true, message }
-    } catch (error) {
-      logger.error('Error durante el backfill de zonas de facturas:', error)
-      throw new HttpsError('internal', 'Ocurrió un error al actualizar las facturas.')
-    }
-  },
-)
-
 exports.generateInvoiceReport = onCall({ cors: true }, async (request) => {
   assertRole(request, [
     'Administrador',
@@ -4663,7 +4460,7 @@ exports.generateInvoiceReport = onCall({ cors: true }, async (request) => {
   return { invoiceNumber }
 })
 
-exports.getInvoiceExcel = onCall({ cors: true }, async (request) => {
+exports.getInvoiceExcel = onCall({ cors: true, maxInstances: 1 }, async (request) => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'Autenticación requerida')
   const { invoiceNumber } = request.data
   const XLSX = require('xlsx')
@@ -4720,7 +4517,7 @@ exports.getInvoiceExcel = onCall({ cors: true }, async (request) => {
  * ambos objetos de opciones en uno solo.
  */
 exports.exportPaymentDataToExcel = onCall(
-  { cors: true, timeoutSeconds: 60, memory: '512MiB' },
+  { cors: true, timeoutSeconds: 60, memory: '512MiB', maxInstances: 1 },
   async (request) => {
     const XLSX = require('xlsx')
 
@@ -5101,6 +4898,7 @@ exports.getAnnualBillingReport = onCall(
     ],
     timeoutSeconds: 180,
     memory: '512MB',
+    maxInstances: 1,
   },
   async (request) => {
     const { auth, data } = request
@@ -5271,57 +5069,6 @@ exports.getAnnualBillingReport = onCall(
     }
   },
 )
-
-exports.getAuditLogs = onCall({ cors: true }, async (request) => {
-  const { auth, data } = request
-  // 1. Verificar permisos: Solo Jefes y Administradores pueden ver los logs.
-  if (!auth || !APPROVER_ROLES.includes(auth.token.role)) {
-    throw new HttpsError(
-      'permission-denied',
-      'No tienes permiso para ver los registros de auditoría.',
-    )
-  }
-
-  const { limit = 25, adminEmail, startDate, endDate, keyword } = data
-
-  try {
-    const db = admin.firestore()
-    let query = db.collection('audit_logs').orderBy('timestamp', 'desc')
-
-    if (adminEmail && adminEmail !== 'Todos') {
-      query = query.where('adminEmail', '==', adminEmail)
-    }
-    if (startDate) {
-      query = query.where('timestamp', '>=', new Date(startDate))
-    }
-    if (endDate) {
-      const endOfDay = new Date(endDate)
-      endOfDay.setUTCHours(23, 59, 59, 999)
-      query = query.where('timestamp', '<=', endOfDay)
-    }
-
-    let logsSnapshot = await query.limit(limit).get()
-
-    let logs = logsSnapshot.docs.map((doc) => ({
-      id: doc.id,
-      ...doc.data(),
-    }))
-
-    if (keyword && typeof keyword === 'string' && keyword.trim() !== '') {
-      const lowerKeyword = keyword.toLowerCase().trim()
-      logs = logs.filter(
-        (log) =>
-          (log.details && log.details.toLowerCase().includes(lowerKeyword)) ||
-          (log.action && log.action.toLowerCase().includes(lowerKeyword)),
-      )
-    }
-
-    return { logs }
-  } catch (error) {
-    console.error('Error en getAuditLogs:', error)
-    throw new HttpsError('internal', 'Ocurrió un error al obtener los registros de auditoría.')
-  }
-})
 
 /**
  * ✅ FIX: `exports.completeVisit` estaba definido DOS VECES en el archivo

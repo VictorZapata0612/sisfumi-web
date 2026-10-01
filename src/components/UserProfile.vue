@@ -2,10 +2,10 @@
 import { ref, onMounted } from 'vue'
 import { useAuthStore } from '@/stores/auth'
 import { updatePassword } from 'firebase/auth'
+import { doc, getDoc } from 'firebase/firestore'
 import { useToast } from '@/composables/useToast'
 import { useDialog } from '@/composables/useDialog'
-import { httpsCallable } from 'firebase/functions'
-import { functions } from '@/firebase/config'
+import { db } from '@/firebase/config'
 
 defineOptions({ name: 'UserProfileView' })
 
@@ -27,11 +27,13 @@ const isChangingPassword = ref(false)
 const checkConnection = async () => {
   loadingConnectionStatus.value = true
   try {
-    // Usamos la función para verificar el estado de la conexión del coordinador actual
-    const checkFn = httpsCallable(functions, 'listCoordinators')
-    const result = (await checkFn()) as { data: { isConnected: boolean; googleEmail: string } }
-    isConnected.value = result.data.isConnected
-    googleEmail.value = result.data.googleEmail
+    const uid = authStore.user?.uid
+    if (!uid) return
+
+    const integrationSnapshot = await getDoc(doc(db, 'calendar_integrations', uid))
+    const integrationData = integrationSnapshot.data()
+    isConnected.value = integrationSnapshot.exists()
+    googleEmail.value = integrationData?.googleEmail || null
   } catch (error: any) {
     showToast({
       title: 'Error de Sincronización',
