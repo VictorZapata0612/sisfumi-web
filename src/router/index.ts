@@ -66,6 +66,12 @@ const router = createRouter({
           name: 'public-privacy-policy',
           component: () => import('../views/public/PrivacyPolicyPage.vue'),
         },
+        {
+          path: '/terminos-y-condiciones',
+          name: 'terminos',
+          component: () => import('../views/public/TermsOfServicePage.vue'),
+          meta: { requiresAuth: false } // IMPORTANTE
+        }
       ],
     },
 

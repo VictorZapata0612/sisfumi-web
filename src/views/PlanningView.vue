@@ -1105,9 +1105,10 @@ const handleQuickComplete = (visit: Visit) => {
         <div class="flex-grow overflow-y-auto p-4 space-y-3 pb-8">
           <div v-if="!filteredSelectedDateEvents.length" class="text-center py-8 text-gray-500">
             No hay visitas programadas.
+
             <button
               @click="
-                openCreateModal()
+                openCreateModal(),
                 showDayDetailsModal = false
               "
               class="block mx-auto mt-2 text-[#d60000] underline"
