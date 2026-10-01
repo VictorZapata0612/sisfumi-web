@@ -424,7 +424,8 @@ exports.sendVisitReminders = onSchedule(
 
         if (organizerUid && organizerUid !== 'SYSTEM') {
           // ✅ FIX: Marcar la visita como recordatorio enviado para evitar duplicados
-          const alreadySent = visit.reminderSentAt &&
+          const alreadySent =
+            visit.reminderSentAt &&
             new Date(visit.reminderSentAt.toDate()).toDateString() === new Date().toDateString()
 
           if (!alreadySent) {
@@ -437,7 +438,6 @@ exports.sendVisitReminders = onSchedule(
             logger.info(`[REMINDER] Recordatorio ya enviado hoy para visita ${doc.id}, omitiendo.`)
           }
         }
-
       })
 
       await Promise.all(batchPromises)
@@ -469,6 +469,7 @@ exports.getAllClients = onCall({ cors: true }, async (request) => {
       return {
         id: doc.id,
         ...data,
+        guest_emails: data.guest_emails || [],
         createdAt: data.createdAt?.toDate ? data.createdAt.toDate().toISOString() : null,
       }
     })
@@ -885,6 +886,7 @@ async function resolveDeletionOwnerUid(visitData) {
 }
 
 async function sendVisitNotificationViaGmailAPI(visitData, visitId, organizerUid) {
+  logger.info(`[DEBUGSUCURSAL] Objeto completo de la visita ${visitId}:`, JSON.stringify(visitData))
   logger.info(`[ESPÍA/sendMail] Iniciando para visita ${visitId} con organizador ${organizerUid}.`)
 
   const fumigadoresAsignados = visitData.fumigadores_asignados || []
@@ -911,6 +913,14 @@ async function sendVisitNotificationViaGmailAPI(visitData, visitId, organizerUid
         )
       }
     })
+
+    if (Array.isArray(visitData.client_emails)) {
+      visitData.client_emails.forEach((email) => {
+        if (email && !emailsToSend.includes(email)) {
+          emailsToSend.push(email)
+        }
+      })
+    }
 
     if (emailsToSend.length === 0) {
       logger.warn(`[ESPÍA/sendMail] ADVERTENCIA: No se encontraron correos para los técnicos.`)
@@ -1027,8 +1037,12 @@ async function sendVisitNotificationViaGmailAPI(visitData, visitId, organizerUid
     </body>
     </html>
     `
+    // Si la sucursal viene guardada, la usamos; si no, dejamos solo el cliente
+    const nombreSucursal = visitData.sucursal ? String(visitData.sucursal).trim() : ''
 
-    const subject = `Visita Asignada: ${visitData.nombre_cliente}`
+    const subject = nombreSucursal
+      ? `Visita Asignada: ${visitData.nombre_cliente} - ${nombreSucursal}`
+      : `Visita Asignada: ${visitData.nombre_cliente}`
 
     // NOTA: Ya no se adjunta un .ics manual. El técnico recibe la invitación
     // nativa de Google Calendar (creada vía calendar.events.insert/update con
@@ -1071,7 +1085,12 @@ function buildEventResource(visitData, attendeeEmails = [], colorId = '8') {
   const visitDate = visitData.fecha_visita.toDate()
   const endTime = new Date(visitDate.getTime() + 60 * 60 * 1000)
 
-  const attendees = attendeeEmails.map((email) => ({ email }))
+const allAttendeeEmails = [
+    ...attendeeEmails,
+    ...(Array.isArray(visitData.client_emails) ? visitData.client_emails : [])
+  ];
+
+  const attendees = allAttendeeEmails.map((email) => ({ email }))
 
   const encodedAddress = encodeURIComponent(visitData.ubicacion)
   const mapsLink = `https://www.google.com/maps/search/?api=1&query=${encodedAddress}`
@@ -1215,7 +1234,7 @@ async function createOrUpdateCalendarEvent(
       const created = await calendar.events.insert({
         calendarId: 'primary',
         resource: eventResource,
-        sendUpdates: 'none',
+        sendUpdates: 'all',
       })
 
       await visitRef.update({
@@ -1228,10 +1247,12 @@ async function createOrUpdateCalendarEvent(
       return created.data.id
     }
 
+    logger.info(`[calendar] Ejecutando calendar.events.update para evento: ${targetEventId}`)
+
     await calendar.events.update({
       calendarId: 'primary',
       eventId: targetEventId,
-      sendUpdates: 'none',
+      sendUpdates: 'all', // <-- CLAVE: Fuerza a Google a notificar y actualizar a los técnicos
       resource: { ...eventResource, id: targetEventId },
     })
 
@@ -1350,7 +1371,6 @@ exports.deleteClientAndRelatedData = onCall({ cors: true }, async (request) => {
       documentsToDelete.slice(index, index + 450).forEach((ref) => batch.delete(ref))
       await batch.commit()
     }
-
 
     const userEmail = request.auth.token.email || 'Desconocido'
     await db.collection('audit_logs').add({
@@ -1499,7 +1519,6 @@ exports.getVisitHistory = onCall({ cors: true }, async (request) => {
     throw new HttpsError('internal', 'No se pudo recuperar el historial de la visita.')
   }
 })
-
 
 /**
  * =================================================================================
@@ -1900,19 +1919,13 @@ exports.getPendingPriceRequests = onCall({ cors: true }, async (request) => {
   }
 })
 
-/**
- * Crea una nueva visita en Firestore.
- */
 exports.createVisit = onCall({ cors: true }, async (request) => {
   assertAuth(request)
   const { visitData } = request.data
 
-  // Validaciones
   if (!visitData.id_cliente) throw new HttpsError('invalid-argument', 'Cliente es requerido')
   if (!visitData.fecha_visita) throw new HttpsError('invalid-argument', 'Fecha es requerida')
 
-  // ✅ CORRECCIÓN: Obtener el nombre del cliente desde la base de datos para asegurar consistencia.
-  // Esto soluciona el problema del nombre 'null' en correos y en la UI.
   const clientDoc = await db.collection('clientes').doc(visitData.id_cliente).get()
   if (!clientDoc.exists) {
     throw new HttpsError(
@@ -1928,8 +1941,8 @@ exports.createVisit = onCall({ cors: true }, async (request) => {
       fecha_visita: admin.firestore.Timestamp.fromDate(new Date(visitData.fecha_visita)),
       estado_visita: visitData.estado_visita || 'Programada',
       estado_facturacion: 'Pendiente',
-      nombre_cliente: clientName, // <-- Asegurar que el nombre del cliente se guarde correctamente.
-      gestionPermiso: { aprobado: false, estado: 'pendiente' }, // Inicializar permisos
+      nombre_cliente: clientName,
+      gestionPermiso: { aprobado: false, estado: 'pendiente' },
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       createdBy: request.auth.uid,
@@ -1937,7 +1950,12 @@ exports.createVisit = onCall({ cors: true }, async (request) => {
 
     const docRef = await db.collection('visitas').add(dataToSave)
 
-    // Integración opcional: Notificar técnicos (podría ir aquí)
+    // ✅ CORRECCIÓN: Guardar los correos invitados dentro del bloque try
+    if (visitData.id_cliente && Array.isArray(visitData.client_emails) && visitData.client_emails.length > 0) {
+      await db.collection('clientes').doc(visitData.id_cliente).set({
+        guest_emails: admin.firestore.FieldValue.arrayUnion(...visitData.client_emails)
+      }, { merge: true });
+    }
 
     return { success: true, visitId: docRef.id }
   } catch (e) {
@@ -1953,6 +1971,10 @@ exports.updateVisit = onCall({ cors: true }, async (request) => {
   const { visitId, visitData } = request.data
   if (!visitId) throw new HttpsError('invalid-argument', 'Se requiere el ID de la visita.')
 
+  // --- LOG INICIAL ---
+  logger.info(`[updateVisit] Iniciando actualización. Visita ID: ${visitId}`)
+  logger.info(`[updateVisit] Datos crudos recibidos del frontend:`, visitData)
+
   try {
     const visitDoc = await db.collection('visitas').doc(visitId).get()
     if (!visitDoc.exists) throw new HttpsError('not-found', 'La visita no existe.')
@@ -1965,22 +1987,39 @@ exports.updateVisit = onCall({ cors: true }, async (request) => {
     }
 
     const updatePayload = { ...visitData }
+
+    // --- LIMPIEZA DE METADATOS ---
+    // Vital para evitar que el trigger handleVisitWrite se engañe y aborte
+    delete updatePayload.assignmentNotificationKey
+    delete updatePayload.assignmentNotificationClaimedAt
+    delete updatePayload.googleEventId
+    delete updatePayload.activeOrganizerUid
+    delete updatePayload.calendarEventMissing
+
     if (visitData.fecha_visita) {
       updatePayload.fecha_visita = admin.firestore.Timestamp.fromDate(
         new Date(visitData.fecha_visita),
       )
     }
+
     updatePayload.updatedAt = admin.firestore.FieldValue.serverTimestamp()
     updatePayload.updatedBy = request.auth.uid
 
+    // --- LOG ANTES DE GUARDAR ---
+    logger.info(`[updateVisit] Payload final limpio para Firestore:`, updatePayload)
+
     await db.collection('visitas').doc(visitId).update(updatePayload)
+
+    // --- LOG ÉXITO ---
+    logger.info(`[updateVisit] ÉXITO: Visita ${visitId} actualizada en Firestore.`)
+
     return { success: true }
   } catch (e) {
+    logger.error(`[updateVisit] ERROR durante la actualización de ${visitId}:`, e)
     if (e instanceof HttpsError) throw e
     throw new HttpsError('internal', e.message)
   }
 })
-
 
 /**
  * Obtiene todas las visitas que están pendientes de aprobación de permiso.
@@ -2391,7 +2430,6 @@ exports.quickCompleteVisit = onCall({ cors: true }, async (request) => {
     throw new HttpsError('internal', e.message)
   }
 })
-
 
 /**
  * Verifica si hay conflictos de horario para un grupo de técnicos en un momento dado.
@@ -3121,18 +3159,19 @@ exports.getConsolidatedPlanningData = onCall({ cors: true }, async (request) => 
       googleEventsPromise,
     ])
 
-     const clientIds = clientsSnapshot.docs.map((doc) => doc.id)
+    const clientIds = clientsSnapshot.docs.map((doc) => doc.id)
     // ✅ FIX: Evitar query con array vacío que lanza error en Firestore
-    const serviceSheetSnapshots = clientIds.length > 0
-      ? await Promise.all(
-          Array.from({ length: Math.ceil(clientIds.length / 30) }, (_, index) =>
-            db
-              .collection('servicios')
-              .where('clientId', 'in', clientIds.slice(index * 30, index * 30 + 30))
-              .get(),
-          ),
-        )
-      : []
+    const serviceSheetSnapshots =
+      clientIds.length > 0
+        ? await Promise.all(
+            Array.from({ length: Math.ceil(clientIds.length / 30) }, (_, index) =>
+              db
+                .collection('servicios')
+                .where('clientId', 'in', clientIds.slice(index * 30, index * 30 + 30))
+                .get(),
+            ),
+          )
+        : []
 
     const serviceSheetsSnapshot = {
       docs: serviceSheetSnapshots.flatMap((snapshot) => snapshot.docs),
@@ -3174,6 +3213,7 @@ exports.getConsolidatedPlanningData = onCall({ cors: true }, async (request) => 
     const clients = clientsSnapshot.docs.map((doc) => ({
       id: doc.id,
       ...doc.data(),
+      guest_emails: doc.data().guest_emails || [],
     }))
 
     // ✅ CORRECCIÓN: Adjuntar la ficha de servicio a cada cliente.
@@ -3235,7 +3275,7 @@ exports.getBillingDataForMonth = onCall({ cors: true }, async (request) => {
       .where('gestionPermiso.aprobado', '==', true)
       .get()
 
-        // ✅ MEJORA: Solo cargar fichas de los clientes que tienen visitas ese mes
+    // ✅ MEJORA: Solo cargar fichas de los clientes que tienen visitas ese mes
     const uniqueClientIdsForSheets = [
       ...new Set(snapshot.docs.map((doc) => doc.data().id_cliente).filter(Boolean)),
     ]
@@ -3247,11 +3287,7 @@ exports.getBillingDataForMonth = onCall({ cors: true }, async (request) => {
         sheetChunks.push(uniqueClientIdsForSheets.slice(i, i + 30))
       }
       const sheetSnapshots = await Promise.all(
-        sheetChunks.map((chunk) =>
-          db.collection('servicios')
-            .where('clientId', 'in', chunk)
-            .get()
-        )
+        sheetChunks.map((chunk) => db.collection('servicios').where('clientId', 'in', chunk).get()),
       )
       sheetSnapshots.forEach((snap) => {
         snap.forEach((doc) => {
@@ -3266,7 +3302,6 @@ exports.getBillingDataForMonth = onCall({ cors: true }, async (request) => {
         })
       })
     }
-
 
     // ✅ CORRECCIÓN: Obtener los IDs de cliente directamente del snapshot antes de procesar.
     const uniqueClientIds = [...new Set(snapshot.docs.map((doc) => doc.data().id_cliente))].filter(
@@ -3503,9 +3538,7 @@ exports.batchAssignVisits = onCall({ cors: true }, async (request) => {
   const isGlobal = GLOBAL_CLIENT_ROLES.includes(userRole)
 
   // ✅ MEJORA: Verificar que todas las visitas existen en paralelo
-  const visitDocs = await Promise.all(
-    visitIds.map((id) => db.collection('visitas').doc(id).get())
-  )
+  const visitDocs = await Promise.all(visitIds.map((id) => db.collection('visitas').doc(id).get()))
 
   for (const visitDoc of visitDocs) {
     if (!visitDoc.exists) {
@@ -3538,7 +3571,6 @@ exports.batchAssignVisits = onCall({ cors: true }, async (request) => {
   await batch.commit()
   return { message: `${visitIds.length} visitas asignadas correctamente.` }
 })
-
 
 exports.getConsolidatedDashboardStats = onCall(
   {
@@ -4376,7 +4408,7 @@ exports.backfillInvoiceTechnicians = onCall(
               batch.update(invoiceDoc.ref, { services: rebuiltServices })
               updatedInvoicesCount++
             }
-          })
+          }),
         )
 
         await batch.commit()
@@ -4508,9 +4540,7 @@ exports.generateInvoiceReport = onCall({ cors: true }, async (request) => {
   const visitIds = servicesToInvoice.map((s) => s.id)
 
   // Leer todas las visitas en paralelo
-  const visitDocs = await Promise.all(
-    visitIds.map((id) => db.collection('visitas').doc(id).get())
-  )
+  const visitDocs = await Promise.all(visitIds.map((id) => db.collection('visitas').doc(id).get()))
 
   // Validaciones previas a la transacción
   for (const visitDoc of visitDocs) {
@@ -4530,7 +4560,10 @@ exports.generateInvoiceReport = onCall({ cors: true }, async (request) => {
   // Validar que todas las visitas son del mismo cliente
   for (const visitDoc of visitDocs) {
     if (visitDoc.data().id_cliente !== clientId) {
-      throw new HttpsError('failed-precondition', 'Todas las visitas deben pertenecer al mismo cliente.')
+      throw new HttpsError(
+        'failed-precondition',
+        'Todas las visitas deben pertenecer al mismo cliente.',
+      )
     }
   }
 
@@ -4553,7 +4586,10 @@ exports.generateInvoiceReport = onCall({ cors: true }, async (request) => {
   const clientBaseRate = Number(clientData.valor_servicio_base) || 0
 
   if (!isAdmin && userZone && !clientZones.includes(userZone) && firstVisitData.zona !== userZone) {
-    throw new HttpsError('permission-denied', `No puedes facturar clientes de la zona ${clientZone}.`)
+    throw new HttpsError(
+      'permission-denied',
+      `No puedes facturar clientes de la zona ${clientZone}.`,
+    )
   }
 
   // Construir mapa de precios
@@ -4580,7 +4616,7 @@ exports.generateInvoiceReport = onCall({ cors: true }, async (request) => {
     if (val <= 0) {
       throw new HttpsError(
         'failed-precondition',
-        `La visita ${visitDoc.id} no tiene un precio configurado para el servicio ${d.tipo_visita || 'seleccionado'}.`
+        `La visita ${visitDoc.id} no tiene un precio configurado para el servicio ${d.tipo_visita || 'seleccionado'}.`,
       )
     }
 
@@ -4626,7 +4662,6 @@ exports.generateInvoiceReport = onCall({ cors: true }, async (request) => {
 
   return { invoiceNumber }
 })
-
 
 exports.getInvoiceExcel = onCall({ cors: true }, async (request) => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'Autenticación requerida')
@@ -4762,22 +4797,18 @@ exports.handleVisitWrite = onDocumentWritten({ document: 'visitas/{visitId}' }, 
   const visitId = event.params.visitId
   if (!visitId) return
 
+  logger.info(`[handleVisitWrite] TRIGGER DISPARADO para visita: ${visitId}`)
+
   const after = event.data.after.exists ? event.data.after.data() : null
   const before = event.data.before.exists ? event.data.before.data() : null
-  if (!after) return
 
-  if (before) {
-    const isCalendarUpdateOnly =
-      before.googleEventId !== after.googleEventId ||
-      before.assignmentNotificationKey !== after.assignmentNotificationKey ||
-      before.assignmentNotificationClaimedAt !== after.assignmentNotificationClaimedAt ||
-      before.activeOrganizerUid !== after.activeOrganizerUid ||
-      before.calendarEventMissing !== after.calendarEventMissing
-
-    if (isCalendarUpdateOnly && before.estado_visita === after.estado_visita) {
-      return
-    }
+  if (!after) {
+    logger.info(`[handleVisitWrite] Abortado: No hay datos 'after' (Visita eliminada).`)
+    return
   }
+
+  // ELIMINAMOS todo el bloque "isCalendarUpdateOnly".
+  // La transacción de abajo se encargará de frenar los bucles infinitos.
 
   let isNewOrUpdatedVisit = false
   if (after.estado_visita === 'Programada' && after.fecha_visita) {
@@ -4787,12 +4818,20 @@ exports.handleVisitWrite = onDocumentWritten({ document: 'visitas/{visitId}' }, 
     now.setHours(0, 0, 0, 0)
     isNewOrUpdatedVisit = visitDate >= now
   }
-  if (!isNewOrUpdatedVisit) return
+
+  if (!isNewOrUpdatedVisit) {
+    logger.info(`[handleVisitWrite] Abortado: Visita no Programada o pasada.`)
+    return
+  }
 
   const assignedTechnicians = Array.isArray(after.fumigadores_asignados)
     ? [...after.fumigadores_asignados].sort()
     : []
-  if (assignedTechnicians.length === 0) return
+
+  if (assignedTechnicians.length === 0) {
+    logger.info(`[handleVisitWrite] Abortado: No hay técnicos.`)
+    return
+  }
 
   const visitDateKey = after.fecha_visita?.toMillis
     ? after.fecha_visita.toMillis()
@@ -4802,6 +4841,10 @@ exports.handleVisitWrite = onDocumentWritten({ document: 'visitas/{visitId}' }, 
     technicians: assignedTechnicians,
     date: visitDateKey,
     zone: after.zona || '',
+    ubicacion: after.ubicacion || '',
+    notas: after.notas_visita || '',
+    tipo: after.tipo_visita || '',
+    cliente: after.nombre_cliente || '',
   })
 
   const currentRef = db.collection('visitas').doc(visitId)
@@ -4814,6 +4857,7 @@ exports.handleVisitWrite = onDocumentWritten({ document: 'visitas/{visitId}' }, 
       const currentData = currentDoc.data()
 
       if (currentData.assignmentNotificationKey === notificationKey) {
+        logger.info(`[handleVisitWrite] Abortado en Transacción: Sin cambios reales.`)
         proceedWithExecution = false
         return
       }
@@ -4825,11 +4869,13 @@ exports.handleVisitWrite = onDocumentWritten({ document: 'visitas/{visitId}' }, 
       proceedWithExecution = true
     })
   } catch (error) {
-    logger.error(`Error en transacción de bloqueo para ${visitId}:`, error)
+    logger.error(`[handleVisitWrite] Error en transacción:`, error)
     return
   }
 
   if (!proceedWithExecution) return
+
+  logger.info(`[handleVisitWrite] Procesando evento para Google Calendar...`)
 
   const organizerUid = await resolveOrganizerUid(after)
   if (!organizerUid) {
@@ -5124,14 +5170,13 @@ exports.getAnnualBillingReport = onCall(
       for (let i = 0; i < allInvoiceDocs.length; i += 30) {
         const chunk = allInvoiceDocs.slice(i, i + 30)
         const chunkPayments = await Promise.all(
-          chunk.map((doc) => doc.ref.collection('payments').get())
+          chunk.map((doc) => doc.ref.collection('payments').get()),
         )
         paymentsByInvoice.push(...chunkPayments)
       }
 
       // Reemplazar invoicesSnapshot.docs por allInvoiceDocs en el procesamiento
       const invoicesSnapshot = { docs: allInvoiceDocs }
-
 
       // Inicializar estructuras de datos
       const monthlyTrend = new Array(12).fill(0) // Ingresos pagados por mes
@@ -6259,7 +6304,7 @@ exports.onVisitCompletedCheckService = onDocumentUpdated('visitas/{visitId}', as
         const data = doc.data()
 
         let modified = false
-        const updatedServices = (data.services || []).map(service => {
+        const updatedServices = (data.services || []).map((service) => {
           if (
             service.tipo_servicio === tipoVisita &&
             service.frecuencia &&
@@ -6275,7 +6320,7 @@ exports.onVisitCompletedCheckService = onDocumentUpdated('visitas/{visitId}', as
         if (modified) {
           t.update(serviceSheetRef, {
             services: updatedServices,
-            updatedAt: admin.firestore.FieldValue.serverTimestamp()
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
           })
         }
       })
@@ -6295,10 +6340,16 @@ exports.onServiceInactiveCancelVisits = onDocumentUpdated('servicios/{sheetId}',
   const servicesAfter = afterData.services || []
 
   // Encontrar servicios que acaban de pasar a "Inactivo"
-  const deactivatedServices = servicesAfter.filter(afterSvc => {
-    const beforeSvc = servicesBefore.find(s => s.tipo_servicio === afterSvc.tipo_servicio)
-    return beforeSvc && beforeSvc.estado_servicio === 'Activo' && afterSvc.estado_servicio === 'Inactivo'
-  }).map(s => s.tipo_servicio)
+  const deactivatedServices = servicesAfter
+    .filter((afterSvc) => {
+      const beforeSvc = servicesBefore.find((s) => s.tipo_servicio === afterSvc.tipo_servicio)
+      return (
+        beforeSvc &&
+        beforeSvc.estado_servicio === 'Activo' &&
+        afterSvc.estado_servicio === 'Inactivo'
+      )
+    })
+    .map((s) => s.tipo_servicio)
 
   if (deactivatedServices.length === 0) return null
 
@@ -6307,7 +6358,9 @@ exports.onServiceInactiveCancelVisits = onDocumentUpdated('servicios/{sheetId}',
 
   try {
     // Buscar visitas futuras programadas para esos servicios
-    const visitsSnapshot = await admin.firestore().collection('visitas')
+    const visitsSnapshot = await admin
+      .firestore()
+      .collection('visitas')
       .where('id_cliente', '==', clientId)
       .where('estado_visita', '==', 'Programada')
       .where('tipo_visita', 'in', deactivatedServices)
@@ -6317,16 +6370,18 @@ exports.onServiceInactiveCancelVisits = onDocumentUpdated('servicios/{sheetId}',
     if (visitsSnapshot.empty) return null
 
     const batch = admin.firestore().batch()
-    visitsSnapshot.forEach(doc => {
+    visitsSnapshot.forEach((doc) => {
       batch.update(doc.ref, {
         estado_visita: 'Cancelada',
         notas_realizacion: 'Cancelada automáticamente: El servicio fue suspendido/inactivado.',
-        updatedAt: admin.firestore.FieldValue.serverTimestamp()
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       })
     })
 
     await batch.commit()
-    logger.info(`Se cancelaron ${visitsSnapshot.size} visitas futuras para el cliente ${clientId} por servicios inactivos.`)
+    logger.info(
+      `Se cancelaron ${visitsSnapshot.size} visitas futuras para el cliente ${clientId} por servicios inactivos.`,
+    )
   } catch (error) {
     logger.error('Error al cancelar visitas por inactivación de servicio:', error)
   }

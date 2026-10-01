@@ -44,10 +44,61 @@ const localVisit = ref<
 const activeTab = ref('details')
 const organizerName = ref<string | null>(null)
 const newChatNote = ref('')
+const newClientEmailInput = ref('')
 const clientSearchTerm = ref('')
 const showClientResults = ref(false)
 const clientSearchContainer = ref<HTMLElement | null>(null)
 const isSubmitting = ref(false)
+
+// Nombre del cliente actual para mostrar en la etiqueta
+const currentClientName = computed(() => {
+  const client = planningStore.clients.find((c: Client) => c.id === localVisit.value.id_cliente)
+  return client?.nombreComercial || 'Selecciona un cliente'
+})
+
+// Lista de correos guardados del cliente seleccionado (asumiendo que vienen en client.guest_emails)
+// Lista de correos guardados del cliente seleccionado (buscando directamente en el store global)
+const clientSavedEmails = computed(() => {
+  if (!localVisit.value.id_cliente) return []
+
+  // Buscamos el cliente actualizado en el store global de planificación
+  const client = planningStore.clients.find((c: Client) => c.id === localVisit.value.id_cliente)
+
+  // Devolvemos los correos guardados si existen, asegurando un array limpio
+  return (client as any)?.guest_emails || []
+})
+
+// Marcar o desmarcar un correo existente para la visita actual
+const toggleClientEmail = (email: string) => {
+  if (!localVisit.value.client_emails) {
+    localVisit.value.client_emails = []
+  }
+  const index = localVisit.value.client_emails.indexOf(email)
+  if (index > -1) {
+    localVisit.value.client_emails.splice(index, 1)
+  } else {
+    localVisit.value.client_emails.push(email)
+  }
+}
+
+// Añadir un correo nuevo (se incluirá en la visita y se enviará a guardar en el perfil del cliente)
+const addNewClientEmail = () => {
+  const email = newClientEmailInput.value.trim()
+  if (!email || !email.includes('@')) {
+    showToast({ title: 'Aviso', message: 'Ingresa un correo electrónico válido.', type: 'error' })
+    return
+  }
+
+  if (!localVisit.value.client_emails) {
+    localVisit.value.client_emails = []
+  }
+
+  if (!localVisit.value.client_emails.includes(email)) {
+    localVisit.value.client_emails.push(email)
+  }
+
+  newClientEmailInput.value = ''
+}
 
 const formatDateInput = (date: Date) => {
   const year = date.getFullYear()
@@ -288,21 +339,26 @@ const handleSubmit = async () => {
 
   const client = planningStore.clients.find((c: Client) => c.id === localVisit.value.id_cliente)
   let visitZone = client?.zona || 'Sin Zona'
+  let sucursalNombre = '' // <-- NUEVO
 
   if (client && client.sucursales) {
     const sucursalMatch = client.sucursales.find((s: any) => s.direccion === localVisit.value.ubicacion)
-    if (sucursalMatch && sucursalMatch.zona) {
-      visitZone = sucursalMatch.zona
+    if (sucursalMatch) {
+      if (sucursalMatch.zona) visitZone = sucursalMatch.zona
+      sucursalNombre = sucursalMatch.nombre // <-- AQUí CAPTURAMOS EL NOMBRE (Ej: "Qbano")
     }
   }
 
   localVisit.value.zona = visitZone
 
-  const visitToSave = { ...localVisit.value }
-  const combinedDateTime = new Date(
-    `${visitToSave.fecha_visita_date}T${visitToSave.fecha_visita_time || '00:00'}:00-05:00`,
-  )
+  const visitToSave: typeof localVisit.value & { duracion_minutos?: number; sucursal: string } = {
+    ...localVisit.value,
+    sucursal: sucursalNombre // <-- LO INCLUIDOS EN EL OBJETO QUE VIAJA A FIREBASE
+  }
   visitToSave.duracion_minutos = visitToSave.duracion_minutos || 60
+  const combinedDateTime = new Date(
+    `${localVisit.value.fecha_visita_date}T${localVisit.value.fecha_visita_time || '00:00'}:00`,
+  )
   visitToSave.fecha_visita = combinedDateTime.toISOString()
   delete visitToSave.fecha_visita_date
   delete visitToSave.fecha_visita_time
@@ -612,6 +668,70 @@ const addChatNote = () => {
             </div>
           </div>
         </div>
+
+<!-- Sección: Correos de Clientes Invitados (Dinámico por Cliente) -->
+          <div class="p-4 bg-white/5 rounded-xl border border-white/10 space-y-3">
+            <label class="text-xs font-bold text-gray-400 uppercase tracking-wider flex items-center gap-2">
+              <i class="fas fa-envelope text-[#d60000]"></i> Correos del Cliente a Invitar ({{ currentClientName }})
+            </label>
+            <p class="text-[11px] text-gray-500">
+              Añade un nuevo correo o selecciona de la lista de contactos frecuentes de este cliente.
+            </p>
+
+            <!-- 1. Correos ACTIVOS para esta visita -->
+            <div v-if="localVisit.client_emails && localVisit.client_emails.length > 0" class="space-y-1">
+              <span class="text-[10px] text-red-400 font-bold uppercase">Incluidos en esta invitación:</span>
+              <div class="flex flex-wrap gap-2">
+                <span
+                  v-for="email in localVisit.client_emails"
+                  :key="email"
+                  class="text-xs px-3 py-1.5 rounded-lg border bg-red-900/40 border-red-500 text-white flex items-center gap-2"
+                >
+                  <i class="fas fa-check text-red-300"></i>
+                  {{ email }}
+                  <button type="button" @click="toggleClientEmail(email)" class="text-red-300 hover:text-white ml-1">
+                    <i class="fas fa-times"></i>
+                  </button>
+                </span>
+              </div>
+            </div>
+
+            <!-- 2. Correos frecuentes guardados del cliente (Historial) -->
+            <div v-if="clientSavedEmails.length > 0" class="space-y-1 pt-2 border-t border-white/5">
+              <span class="text-[10px] text-gray-400 font-bold uppercase">Contactos guardados del cliente:</span>
+              <div class="flex flex-wrap gap-2">
+                <button
+                  v-for="email in clientSavedEmails"
+                  :key="email"
+                  type="button"
+                  @click="toggleClientEmail(email)"
+                  class="text-xs px-3 py-1.5 rounded-lg border transition-all flex items-center gap-2"
+                  :class="localVisit.client_emails?.includes(email) ? 'bg-red-900/40 border-red-500 text-white' : 'bg-white/5 border-white/10 text-gray-400 hover:text-white'"
+                >
+                  <i class="fas" :class="localVisit.client_emails?.includes(email) ? 'fa-check-square text-red-400' : 'fa-square'"></i>
+                  {{ email }}
+                </button>
+              </div>
+            </div>
+
+            <!-- Input para añadir un nuevo correo al vuelo -->
+            <div class="flex gap-2 pt-2">
+              <input
+                type="email"
+                v-model="newClientEmailInput"
+                class="input-field-dark w-full text-xs"
+                placeholder="Escribe un correo nuevo y presiona añadir..."
+                @keyup.enter="addNewClientEmail"
+              />
+              <button
+                type="button"
+                @click="addNewClientEmail"
+                class="btn btn-secondary bg-white/10 text-xs px-4"
+              >
+                <i class="fas fa-plus"></i> Añadir
+              </button>
+            </div>
+          </div>
 
         <!-- Pestaña: HISTORIAL -->
         <div v-show="activeTab === 'history'" class="space-y-4 animate-fade-in">
