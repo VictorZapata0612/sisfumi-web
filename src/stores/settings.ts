@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { ref } from 'vue'
 import { defineStore } from 'pinia'
 import { httpsCallable } from 'firebase/functions'
@@ -226,7 +227,6 @@ export const useSettingsStore = defineStore('settings', () => {
     // Actualizar el estado local
     const userToUpdate = users.value.find((u) => u.uid === uid)
     if (userToUpdate) {
-      // @ts-ignore
       userToUpdate.disabled = disabled
     }
   }

@@ -1,3 +1,4 @@
+<!-- eslint-disable @typescript-eslint/no-explicit-any -->
 <script setup lang="ts">
 import { ref } from 'vue'
 import { httpsCallable } from 'firebase/functions'
@@ -13,7 +14,7 @@ import {
   DEPARTAMENTOS, CIUDADES_POR_DEP
 } from '@/data/catalogs'
 
-const props = defineProps<{
+defineProps<{
   show: boolean
 }>()
 

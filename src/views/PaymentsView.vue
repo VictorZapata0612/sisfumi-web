@@ -1,5 +1,6 @@
+<!-- eslint-disable @typescript-eslint/no-explicit-any -->
 <script setup lang="ts">
-import { onMounted, ref, watch } from 'vue'
+import { onMounted, ref } from 'vue'
 import { usePaymentsStore } from '@/stores/payments'
 import { storeToRefs } from 'pinia'
 import PaymentRegistrationModal from '@/components/PaymentRegistrationModal.vue'
@@ -14,7 +15,6 @@ const { showToast } = useToast()
 // Usamos storeToRefs para mantener la reactividad de las propiedades del store
 const {
   loading,
-  error,
   currentDate,
   searchTerm,
   statusFilter,

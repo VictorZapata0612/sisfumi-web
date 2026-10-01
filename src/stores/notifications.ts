@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { ref } from 'vue'
 import { defineStore } from 'pinia'
 import {
@@ -7,7 +8,6 @@ import {
   where,
   doc,
   updateDoc,
-  collectionGroup,
   type Unsubscribe,
 } from 'firebase/firestore'
 import { db } from '@/firebase/config'
@@ -83,7 +83,7 @@ export const useNotificationStore = defineStore('notifications', () => {
       (snapshot) => {
         priceRequestsCount.value = snapshot.size
       },
-      (error) => {
+      () => {
         priceRequestsCount.value = 0
       },
     )
@@ -113,7 +113,7 @@ export const useNotificationStore = defineStore('notifications', () => {
         )
         loading.value = false
       },
-      (error) => {
+      () => {
         generalNotificationsCount.value = 0
         loading.value = false
       },

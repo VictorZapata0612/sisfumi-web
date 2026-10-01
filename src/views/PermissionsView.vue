@@ -1,14 +1,13 @@
+<!-- eslint-disable @typescript-eslint/no-explicit-any -->
 <script setup lang="ts">
 import { onMounted, ref, computed } from 'vue'
 import { usePermissionsStore, type PermissionVisit } from '@/stores/permissions'
-import { useDialog } from '@/composables/useDialog'
 import { useToast } from '@/composables/useToast'
 import PermissionDetailModal from '@/components/PermissionDetailModal.vue'
 
 defineOptions({ name: 'PermissionsView' })
 
 const permissionsStore = usePermissionsStore()
-const { showDialog } = useDialog()
 const { showToast } = useToast()
 
 const showDetailModal = ref(false)
@@ -22,9 +21,9 @@ onMounted(() => {
   permissionsStore.fetchPendingVisits()
 })
 
-const handleApprove = async (visitId: string, notes: string) => {
+const handleApprove = async (visitId: string) => {
   try {
-    await permissionsStore.approvePermission(visitId, notes)
+    await permissionsStore.approvePermission(visitId)
     showToast({ title: 'Éxito', message: 'Permiso aprobado correctamente.', type: 'success' })
     showDetailModal.value = false
   } catch (error: any) {

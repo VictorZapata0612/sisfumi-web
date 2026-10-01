@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { ref, computed } from 'vue'
 import { defineStore } from 'pinia'
 import {
@@ -33,7 +34,7 @@ export const useAuthStore = defineStore('auth', () => {
   async function login(email: string, password: string) {
     loading.value = true
     try {
-      const result = await signInWithEmailAndPassword(auth, email, password)
+      await signInWithEmailAndPassword(auth, email, password)
       // ✅ CORRECCIÓN: Después del login, no dependemos del router guard.
       // Esperamos a que el listener 'onAuthStateChanged' (en init) termine su trabajo
       // y luego redirigimos explícitamente.

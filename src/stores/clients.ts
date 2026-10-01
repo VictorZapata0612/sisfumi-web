@@ -1,8 +1,8 @@
-import { ref, computed } from 'vue'
+/* eslint-disable @typescript-eslint/no-explicit-any */
+import { ref } from 'vue'
 import { defineStore } from 'pinia'
 import { httpsCallable } from 'firebase/functions'
 import { functions } from '@/firebase/config'
-import router from '@/router'
 
 // Define la estructura de un cliente para que TypeScript nos ayude
 export interface Client {

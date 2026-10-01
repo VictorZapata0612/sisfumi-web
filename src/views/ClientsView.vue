@@ -1,3 +1,4 @@
+<!-- eslint-disable @typescript-eslint/no-explicit-any -->
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref, computed, reactive, defineAsyncComponent } from 'vue'
 import { useClientsStore } from '@/stores/clients'

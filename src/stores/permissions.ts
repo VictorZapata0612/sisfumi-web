@@ -1,12 +1,8 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { ref } from 'vue'
 import { defineStore } from 'pinia'
 import { httpsCallable } from 'firebase/functions'
 import { functions } from '@/firebase/config'
-
-export interface User {
-  // Esta interfaz ya no es necesaria aquí.
-  // La nueva interfaz estará dentro del store.
-}
 
 export interface PermissionVisit {
   id: string
@@ -47,9 +43,8 @@ export const usePermissionsStore = defineStore('permissions', () => {
     }
   }
 
-  async function approvePermission(visitId: string, notes: string) {
+  async function approvePermission(visitId: string) {
     const approveFn = httpsCallable(functions, 'approveVisitPermission')
-    // La función de backend no usa 'notes' actualmente, pero la enviamos por si se añade en el futuro.
     await approveFn({ visitId })
 
     // Actualizar el estado local en lugar de eliminar

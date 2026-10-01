@@ -1,9 +1,8 @@
 <script setup lang="ts">
-import { computed } from 'vue'
 import { usePaymentsStore } from '@/stores/payments'
 import { storeToRefs } from 'pinia'
 
-const props = defineProps<{
+defineProps<{
   show: boolean
 }>()
 

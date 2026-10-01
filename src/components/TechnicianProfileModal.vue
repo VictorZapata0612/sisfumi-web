@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, computed, nextTick } from 'vue'
+import { ref, watch, nextTick } from 'vue'
 import { useTechniciansStore, type Technician } from '@/stores/technicians'
 import Chart from 'chart.js/auto'
 

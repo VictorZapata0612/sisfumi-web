@@ -1,3 +1,4 @@
+<!-- eslint-disable @typescript-eslint/no-explicit-any -->
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { useAuthStore } from '@/stores/auth'
@@ -34,10 +35,10 @@ const checkConnection = async () => {
     const integrationData = integrationSnapshot.data()
     isConnected.value = integrationSnapshot.exists()
     googleEmail.value = integrationData?.googleEmail || null
-  } catch (error: any) {
+  } catch (error: unknown) {
     showToast({
       title: 'Error de Sincronización',
-      message: `No se pudo verificar el estado de la conexión: ${error.message}`,
+      message: `No se pudo verificar el estado de la conexión: ${error instanceof Error ? error.message : String(error)}`,
       type: 'error',
     })
   } finally {

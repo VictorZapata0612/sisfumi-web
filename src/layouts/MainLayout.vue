@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, watch, defineAsyncComponent } from 'vue'
+import { ref, onMounted, onUnmounted, defineAsyncComponent } from 'vue'
 import { RouterView, RouterLink, useRoute } from 'vue-router'
 
 import AppHeader from '@/components/Header.vue'
