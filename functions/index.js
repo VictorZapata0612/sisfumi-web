@@ -1126,7 +1126,7 @@ const allAttendeeEmails = [
   )
 
   return {
-    summary: `Visita: ${visitData.nombre_cliente}`,
+    summary: `Visita: ${visitData.nombre_cliente}${visitData.sucursal ? ` - ${visitData.sucursal}` : ''}`,
     description: descriptionParts.join('\n'),
     start: { dateTime: visitDate.toISOString(), timeZone: 'America/Bogota' },
     end: { dateTime: endTime.toISOString(), timeZone: 'America/Bogota' },
