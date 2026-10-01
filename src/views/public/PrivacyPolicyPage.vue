@@ -2,7 +2,7 @@
 import { ref, onMounted } from 'vue'
 import { RouterLink } from 'vue-router'
 
-const lastUpdated = '8 de Septiembre de 2026'
+const lastUpdated = '1 de Octubre de 2026'
 
 const companyInfo = {
   name: 'Control Total & P. H.',
@@ -163,7 +163,33 @@ onMounted(() => {
         </div>
       </section>
 
-      <!-- 5. DERECHOS ARCO -->
+      <!-- 5. DATOS DE GOOGLE Y DESTINATARIOS -->
+      <section class="space-y-4">
+        <h2 class="text-2xl font-bold text-white flex items-center gap-3">
+          <i class="fab fa-google text-brand-red"></i>
+          5. Datos de Google, Uso de APIs y Compartición
+        </h2>
+        <p class="text-gray-300 text-sm md:text-base leading-relaxed">
+          SISFUMI permite que los usuarios autorizados conecten voluntariamente su cuenta de Google para sincronizar visitas técnicas. En ese proceso podemos tratar el nombre, correo electrónico y foto de perfil básicos, así como la información necesaria de Google Calendar (eventos, fechas, horarios, asistentes, títulos, ubicación y notas de las visitas) y Gmail para enviar notificaciones relacionadas con los servicios programados.
+        </p>
+        <p class="text-gray-300 text-sm md:text-base leading-relaxed">
+          Los datos de Google se comparten, transfieren o divulgan únicamente con los siguientes destinatarios y para las finalidades descritas:
+        </p>
+        <ul class="list-disc list-inside space-y-2 text-sm text-gray-300 leading-relaxed">
+          <li><strong>Google:</strong> Google procesa estos datos para proporcionar Google Calendar, Gmail, Google Identity Services, Firebase y Google Cloud Platform, que son los servicios tecnológicos utilizados para autenticar la cuenta, sincronizar calendarios, enviar correos y alojar de forma segura la aplicación y sus datos.</li>
+          <li><strong>Personal autorizado de {{ companyInfo.name }}:</strong> administradores, jefes y coordinadores que necesitan gestionar clientes, visitas y agenda dentro de SISFUMI.</li>
+          <li><strong>Destinatarios de las visitas:</strong> técnicos fumigadores y clientes cuyos correos sean incluidos en una visita, únicamente para enviar la invitación de calendario o la notificación con los datos necesarios del servicio.</li>
+          <li><strong>Autoridades competentes:</strong> cuando exista una obligación legal, una orden judicial o sea necesario proteger los derechos y la seguridad de la empresa, los usuarios o terceros.</li>
+        </ul>
+        <p class="text-gray-300 text-sm md:text-base leading-relaxed">
+          No vendemos los datos de Google ni los utilizamos para publicidad personalizada. No compartimos datos de Google con terceros distintos de los destinatarios anteriores. El acceso se limita a lo necesario para prestar las funciones solicitadas por el usuario y los tokens de acceso se almacenan en Firebase con controles de seguridad y acceso restringido. El usuario puede desconectar su cuenta desde SISFUMI; al hacerlo, dejamos de sincronizarla y eliminamos las credenciales almacenadas, sin perjuicio de los datos que debamos conservar por obligación legal o de los eventos y correos que ya hayan sido enviados a sus destinatarios.
+        </p>
+        <p class="text-gray-300 text-sm md:text-base leading-relaxed">
+          El tratamiento de los datos de Google cumple las restricciones de uso limitado de Google API Services: no utilizamos los datos para transferirlos a terceros para publicidad, venderlos, determinar la solvencia, ni para crear bases de datos de contactos independientes de las funciones autorizadas por el usuario.
+        </p>
+      </section>
+
+      <!-- 6. DERECHOS ARCO -->
       <section class="bg-[#151515] border border-white/10 rounded-2xl p-6 md:p-8 space-y-4">
         <h2 class="text-2xl font-bold text-white flex items-center gap-3">
           <i class="fas fa-user-shield text-brand-red"></i>
@@ -177,7 +203,7 @@ onMounted(() => {
         </ul>
       </section>
 
-      <!-- 6. PQR / CANAL HÁBEAS DATA -->
+      <!-- 7. PQR / CANAL HÁBEAS DATA -->
       <section class="space-y-4">
         <h2 class="text-2xl font-bold text-white flex items-center gap-3">
           <i class="fas fa-paper-plane text-brand-red"></i>
