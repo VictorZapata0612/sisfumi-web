@@ -229,9 +229,9 @@ const formatCurrency = (value: number) => {
         <div class="absolute right-0 top-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
           <i class="fas fa-check-circle text-6xl text-green-500"></i>
         </div>
-        <h3 class="text-xs font-bold text-gray-400 uppercase tracking-wider">Recaudado</h3>
+        <h3 class="text-xs font-bold text-gray-400 uppercase tracking-wider">Facturas emitidas</h3>
         <p class="mt-1 text-2xl font-bold text-green-400">
-          {{ formatCurrency(billingStore.kpis.paid) }}
+          {{ billingStore.kpis.invoicesIssued }}
         </p>
       </div>
     </section>
@@ -320,11 +320,11 @@ const formatCurrency = (value: number) => {
                     <span class="text-[10px] text-gray-500 uppercase tracking-wider font-bold">#{{ group.invoiceNumber
                       }}</span>
                   </div>
-                  <span class="text-[10px] px-2 py-0.5 rounded-full font-bold shrink-0 ml-2" :class="group.status === 'paid'
+                  <span class="text-[10px] px-2 py-0.5 rounded-full font-bold shrink-0 ml-2" :class="                      group.status === 'billed'
                       ? 'bg-green-900/30 text-green-400'
                       : 'bg-yellow-900/30 text-yellow-400'
                     ">
-                    {{ group.status === 'paid' ? 'PAGADO' : 'PENDIENTE' }}
+                    {{ group.status === 'billed' ? 'FACTURADA' : group.status === 'cancelled' ? 'ANULADA' : 'PENDIENTE' }}
                   </span>
                 </div>
               </div>

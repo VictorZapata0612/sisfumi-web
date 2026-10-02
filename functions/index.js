@@ -3379,6 +3379,39 @@ exports.getBillingDataForMonth = onCall({ cors: true }, async (request) => {
     }
 
     const pendingGroups = Object.values(groupedPending)
+    pendingGroups.forEach((group) => {
+      const servicePeriods = new Map()
+      group.services.forEach((service) => {
+        const key = `${service.serviceId || service.tipo_visita}_${service.periodoServicio || `${year}-${month + 1}`}`
+        if (!servicePeriods.has(key)) servicePeriods.set(key, [])
+        servicePeriods.get(key).push(service)
+      })
+
+      group.totalValue = 0
+      servicePeriods.forEach((services) => {
+        const first = services[0]
+        const model = first.billingModel || 'PER_VISIT'
+        if (model === 'PER_VISIT') {
+          services.forEach((service) => {
+            group.totalValue += Number(service.valor_servicio) || 0
+          })
+          return
+        }
+
+        const periodValue = Number(first.periodValue) || 0
+        const includedVisits = Math.max(1, Number(first.includedVisits) || 1)
+        const additionalValue = Number(first.additionalVisitValue) || 0
+        services.forEach((service, index) => {
+          service.valor_servicio =
+            index === 0
+              ? periodValue
+              : model === 'INCLUDED_PLUS_ADDITIONAL' && index >= includedVisits
+                ? additionalValue
+                : 0
+          group.totalValue += service.valor_servicio
+        })
+      })
+    })
 
     let invoicedQuery = db
       .collection('grupos_facturacion')
@@ -3394,6 +3427,7 @@ exports.getBillingDataForMonth = onCall({ cors: true }, async (request) => {
       return {
         id: doc.id,
         ...d,
+        status: d.status === 'cancelled' ? 'cancelled' : 'billed',
         createdAt:
           d.createdAt && typeof d.createdAt.toDate === 'function' ? d.createdAt.toDate() : null,
         dueDate: d.dueDate && typeof d.dueDate.toDate === 'function' ? d.dueDate.toDate() : null,
@@ -4400,25 +4434,43 @@ exports.generateInvoiceReport = onCall({ cors: true }, async (request) => {
     })
   }
 
-  // Calcular valores y construir servicios
-  let total = 0
+  // Calcular valores y construir líneas según el modelo comercial.
   const services = []
   const visitUpdates = []
+  const billingGroups = new Map()
 
   for (const visitDoc of visitDocs) {
     const d = visitDoc.data()
     const storedValue = Number(d.valor_servicio)
-    const val = storedValue > 0 ? storedValue : servicePrices.get(d.tipo_visita) || clientBaseRate
+    const fallbackValue = servicePrices.get(d.tipo_visita) || clientBaseRate
+    const val = storedValue > 0 ? storedValue : fallbackValue
+    const model = d.billingModel || 'PER_VISIT'
+    const groupKey = `${d.serviceId || d.tipo_visita}_${d.periodoServicio || `${new Date().getFullYear()}-${new Date().getMonth() + 1}`}`
+    if (!billingGroups.has(groupKey)) {
+      billingGroups.set(groupKey, {
+        model,
+        periodValue: Number(d.periodValue) || val,
+        includedVisits: Math.max(1, Number(d.includedVisits) || 1),
+        additionalVisitValue: Number(d.additionalVisitValue) || val,
+        visits: [],
+      })
+    }
+    billingGroups.get(groupKey).visits.push({ doc, data: d, value: val })
 
-    if (val <= 0) {
+    if (val <= 0 && model === 'PER_VISIT') {
       throw new HttpsError(
         'failed-precondition',
         `La visita ${visitDoc.id} no tiene un precio configurado para el servicio ${d.tipo_visita || 'seleccionado'}.`,
       )
     }
 
-    total += val
-    services.push({ ...d, value: val, valor_servicio: val, date: d.fecha_visita })
+    services.push({
+      ...d,
+      visitaId: visitDoc.id,
+      value: val,
+      valor_servicio: val,
+      date: d.fecha_visita,
+    })
     visitUpdates.push({
       ref: db.collection('visitas').doc(visitDoc.id),
       data: {
@@ -4426,6 +4478,45 @@ exports.generateInvoiceReport = onCall({ cors: true }, async (request) => {
         billingData: { invoicedAt: admin.firestore.FieldValue.serverTimestamp() },
       },
     })
+  }
+
+  let total = 0
+  const invoiceLines = []
+  for (const group of billingGroups.values()) {
+    if (group.model === 'PER_VISIT') {
+      group.visits.forEach(({ doc, value }) => {
+        total += value
+        invoiceLines.push({
+          type: 'VISIT',
+          visitId: doc.id,
+          quantity: 1,
+          unitValue: value,
+          total: value,
+        })
+      })
+      continue
+    }
+
+    const baseValue = group.periodValue
+    total += baseValue
+    invoiceLines.push({
+      type: 'CONTRACT_PERIOD',
+      quantity: 1,
+      unitValue: baseValue,
+      total: baseValue,
+    })
+
+    if (group.model === 'INCLUDED_PLUS_ADDITIONAL' && group.visits.length > group.includedVisits) {
+      const additionalCount = group.visits.length - group.includedVisits
+      const additionalTotal = additionalCount * group.additionalVisitValue
+      total += additionalTotal
+      invoiceLines.push({
+        type: 'ADDITIONAL_VISITS',
+        quantity: additionalCount,
+        unitValue: group.additionalVisitValue,
+        total: additionalTotal,
+      })
+    }
   }
 
   // ✅ MEJORA: La transacción ahora solo hace WRITES, no reads
@@ -4444,15 +4535,27 @@ exports.generateInvoiceReport = onCall({ cors: true }, async (request) => {
     clientId,
     zona: clientZone,
     totalValue: total,
-    currentBalance: total,
     status: 'billed',
     services,
+    invoiceLines,
+    periodoServicio: firstVisitData.periodoServicio || null,
+    modeloFacturacion: firstVisitData.billingModel || 'PER_VISIT',
+    valorBase: invoiceLines
+      .filter((line) => line.type === 'CONTRACT_PERIOD')
+      .reduce((sum, line) => sum + line.total, 0),
+    valorAdicionales: invoiceLines
+      .filter((line) => line.type === 'ADDITIONAL_VISITS')
+      .reduce((sum, line) => sum + line.total, 0),
     createdAt: admin.firestore.FieldValue.serverTimestamp(),
     invoiceNumber,
     dueDate: admin.firestore.Timestamp.fromDate(dueDate),
     observations: observations || '',
-    month: new Date().getMonth(),
-    year: new Date().getFullYear(),
+    month: firstVisitData.fecha_visita?.toDate
+      ? firstVisitData.fecha_visita.toDate().getMonth()
+      : new Date().getMonth(),
+    year: firstVisitData.fecha_visita?.toDate
+      ? firstVisitData.fecha_visita.toDate().getFullYear()
+      : new Date().getFullYear(),
   })
 
   await batch.commit()
@@ -4738,21 +4841,27 @@ exports.scheduleRecurringVisits = onSchedule(
     const servicesSnapshot = await db.collection('servicios').get()
     const today = new Date()
     today.setHours(0, 0, 0, 0)
+    const horizon = new Date(today)
+    horizon.setDate(horizon.getDate() + 90)
     let createdCount = 0
 
-    // ✅ MEJORA: Recopilar todos los pares (clientId, tipo_servicio) activos primero
     const activeServices = []
     for (const doc of servicesSnapshot.docs) {
       const sheet = doc.data()
       if (!sheet.services || !sheet.clientId) continue
 
-      for (const s of sheet.services) {
+      for (const [serviceIndex, s] of sheet.services.entries()) {
         if (s.estado_servicio !== 'Activo' || !s.frecuencia || s.frecuencia === 'UNICA') continue
+        const recurrence = normalizeRecurrence(s)
+        const billing = normalizeBilling(s)
         activeServices.push({
+          serviceId: s.id || `${sheet.clientId}-service-${serviceIndex + 1}`,
           clientId: sheet.clientId,
           clientName: sheet.clientName || 'Cliente Sistema',
           tipoServicio: s.tipo_servicio,
           frecuencia: s.frecuencia,
+          recurrence,
+          billing,
           zona: sheet.zona || 'Sin Zona',
           ubicacion: sheet.direccion || 'Sede Principal',
         })
@@ -4764,60 +4873,52 @@ exports.scheduleRecurringVisits = onSchedule(
       return
     }
 
-    // ✅ MEJORA: Obtener la última visita de cada par (clientId, tipo_servicio) en paralelo
-    const lastVisitPromises = activeServices.map((service) =>
-      db
-        .collection('visitas')
-        .where('id_cliente', '==', service.clientId)
-        .where('tipo_visita', '==', service.tipoServicio)
-        .orderBy('fecha_visita', 'desc')
-        .limit(1)
-        .get()
-        .then((snap) => ({ service, lastSnap: snap })),
-    )
+    const existingKeys = new Set()
+    const existingSnapshot = await db
+      .collection('visitas')
+      .where('createdBy', '==', 'SYSTEM')
+      .where('fecha_visita', '>=', admin.firestore.Timestamp.fromDate(today))
+      .where('fecha_visita', '<=', admin.firestore.Timestamp.fromDate(horizon))
+      .get()
+    existingSnapshot.forEach((doc) => {
+      const key = doc.data().recurrenceKey
+      if (key) existingKeys.add(key)
+    })
 
-    const results = await Promise.all(lastVisitPromises)
-
-    // ✅ MEJORA: Filtrar los que necesitan nueva visita y verificar duplicados en paralelo
     const visitsToCreate = []
-    const duplicateCheckPromises = []
-
-    for (const { service, lastSnap } of results) {
-      if (lastSnap.empty) continue
-
-      const lastDate = lastSnap.docs[0].data().fecha_visita.toDate()
-      const nextDate = calculateNextVisitDate(lastDate, service.frecuencia)
-
-      if (nextDate > today && nextDate - today >= 7 * 86400000) continue
-
-      duplicateCheckPromises.push(
-        db
-          .collection('visitas')
-          .where('id_cliente', '==', service.clientId)
-          .where('tipo_visita', '==', service.tipoServicio)
-          .where('fecha_visita', '==', admin.firestore.Timestamp.fromDate(nextDate))
-          .get()
-          .then((checkSnap) => ({ service, nextDate, exists: !checkSnap.empty })),
-      )
+    for (const service of activeServices) {
+      const occurrences = buildRecurringOccurrences(service, today, horizon)
+      occurrences.forEach((occurrence) => {
+        if (existingKeys.has(occurrence.recurrenceKey)) return
+        existingKeys.add(occurrence.recurrenceKey)
+        visitsToCreate.push({ service, ...occurrence })
+      })
     }
 
-    const duplicateResults = await Promise.all(duplicateCheckPromises)
-
-    // ✅ MEJORA: Crear todas las visitas nuevas en un batch
     const BATCH_LIMIT = 450
-    const toCreate = duplicateResults.filter((r) => !r.exists)
-
-    for (let i = 0; i < toCreate.length; i += BATCH_LIMIT) {
+    for (let i = 0; i < visitsToCreate.length; i += BATCH_LIMIT) {
       const batch = db.batch()
-      toCreate.slice(i, i + BATCH_LIMIT).forEach(({ service, nextDate }) => {
+      visitsToCreate.slice(i, i + BATCH_LIMIT).forEach(({ service, date, period, sequence, recurrenceKey }) => {
         const ref = db.collection('visitas').doc()
         batch.set(ref, {
+          serviceId: service.serviceId,
           id_cliente: service.clientId,
           nombre_cliente: service.clientName,
-          fecha_visita: admin.firestore.Timestamp.fromDate(nextDate),
+          fecha_visita: admin.firestore.Timestamp.fromDate(date),
           tipo_visita: service.tipoServicio,
           estado_visita: 'Programada',
           estado_facturacion: 'Pendiente',
+          periodoServicio: period,
+          secuenciaPeriodo: sequence,
+          recurrenceKey,
+          recurrenceVersion: 2,
+          billingModel: service.billing.model,
+          periodValue: service.billing.periodValue,
+          includedVisits: service.billing.includedVisits,
+          additionalVisitValue: service.billing.additionalVisitValue,
+          valor_servicio: service.billing.model === 'PER_VISIT'
+            ? Number(service.billing.additionalVisitValue || 0)
+            : 0,
           createdBy: 'SYSTEM',
           createdAt: admin.firestore.FieldValue.serverTimestamp(),
           fumigadores_asignados: [],
@@ -4832,6 +4933,118 @@ exports.scheduleRecurringVisits = onSchedule(
     logger.info(`🤖 [BOT] Finalizado. Visitas recurrentes creadas: ${createdCount}`)
   },
 )
+
+function normalizeRecurrence(service) {
+  const legacyUnit = ['SEMANAL', 'QUINCENAL'].includes(service.frecuencia) ? 'WEEK' : 'MONTH'
+  const legacyInterval = {
+    BIMENSUAL: 2,
+    TRIMESTRAL: 3,
+    SEMESTRAL: 6,
+    ANUAL: 12,
+  }[service.frecuencia] || (service.frecuencia === 'QUINCENAL' ? 2 : 1)
+  const configured = service.recurrence || {}
+  return {
+    unit: configured.unit || legacyUnit,
+    interval: Math.max(1, Number(configured.interval) || legacyInterval),
+    visitsPerPeriod: Math.max(1, Number(configured.visitsPerPeriod) || 1),
+    preferredDays: Array.isArray(configured.preferredDays) ? configured.preferredDays : [],
+    schedulingMode: configured.schedulingMode || 'FLEXIBLE',
+    toleranceDays: Math.max(0, Number(configured.toleranceDays) || 2),
+    allowWeekends: configured.allowWeekends === true,
+  }
+}
+
+function normalizeBilling(service) {
+  const configured = service.billing || {}
+  const value = Math.max(0, Number(service.valor) || 0)
+  const model = configured.model || 'PER_VISIT'
+  return {
+    model,
+    periodValue: Math.max(0, Number(configured.periodValue) || (model === 'PER_VISIT' ? 0 : value)),
+    includedVisits: Math.max(1, Number(configured.includedVisits) || 1),
+    additionalVisitValue: Math.max(0, Number(configured.additionalVisitValue) || value),
+  }
+}
+
+function buildRecurringOccurrences(service, startDate, horizon) {
+  const { recurrence } = service
+  const occurrences = []
+  const periodDates = new Map()
+  const cursor = new Date(startDate)
+  cursor.setHours(0, 0, 0, 0)
+  if (recurrence.unit === 'MONTH') cursor.setDate(1)
+  while (cursor <= horizon) {
+    const period = recurrence.unit === 'WEEK'
+      ? getIsoWeekPeriod(cursor)
+      : `${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, '0')}`
+    if (!periodDates.has(period)) periodDates.set(period, [])
+    if (recurrence.unit === 'WEEK') {
+      cursor.setDate(cursor.getDate() + 7 * recurrence.interval)
+    } else {
+      cursor.setMonth(cursor.getMonth() + recurrence.interval)
+    }
+  }
+
+  for (const period of periodDates.keys()) {
+    const [year, monthOrWeek] = period.split('-').map(Number)
+    const dates = []
+    if (recurrence.unit === 'WEEK') {
+      const weekStart = getDateFromIsoWeek(year, monthOrWeek)
+      for (let i = 0; i < recurrence.visitsPerPeriod; i++) {
+        const preferred = recurrence.preferredDays.length
+          ? recurrence.preferredDays[i % recurrence.preferredDays.length]
+          : undefined
+        const offset = Number.isFinite(preferred) ? preferred : Math.floor((i * 6) / recurrence.visitsPerPeriod)
+        const date = new Date(weekStart)
+        date.setDate(date.getDate() + offset)
+        dates.push(date)
+      }
+    } else {
+      const daysInMonth = new Date(year, monthOrWeek, 0).getDate()
+      for (let i = 0; i < recurrence.visitsPerPeriod; i++) {
+        const preferred = recurrence.preferredDays[i]
+        const day = Math.min(
+          daysInMonth,
+          Math.max(1, Number(preferred) || Math.round(((i + 1) * daysInMonth) / (recurrence.visitsPerPeriod + 1))),
+        )
+        const date = new Date(year, monthOrWeek - 1, day)
+        if (!recurrence.allowWeekends && (date.getDay() === 0 || date.getDay() === 6)) {
+          date.setDate(date.getDate() + (date.getDay() === 6 ? 2 : 1))
+        }
+        dates.push(date)
+      }
+    }
+    dates
+      .filter((date) => date >= startDate && date <= horizon)
+      .forEach((date, index) => {
+        const sequence = index + 1
+        occurrences.push({
+          date,
+          period,
+          sequence,
+          recurrenceKey: `${service.serviceId}_${period}_${sequence}`,
+        })
+      })
+  }
+  return occurrences
+}
+
+function getIsoWeekPeriod(date) {
+  const copy = new Date(date)
+  copy.setHours(0, 0, 0, 0)
+  copy.setDate(copy.getDate() + 3 - ((copy.getDay() + 6) % 7))
+  const weekYear = copy.getFullYear()
+  const firstThursday = new Date(weekYear, 0, 4)
+  const week = 1 + Math.round(((copy - firstThursday) / 86400000 - 3 + ((firstThursday.getDay() + 6) % 7)) / 7)
+  return `${weekYear}-${week}`
+}
+
+function getDateFromIsoWeek(year, week) {
+  const date = new Date(year, 0, 4)
+  date.setDate(date.getDate() + (week - 1) * 7 - ((date.getDay() + 6) % 7))
+  date.setHours(0, 0, 0, 0)
+  return date
+}
 
 /**
  * Tarea programada para realizar backup de Firestore.
@@ -4859,33 +5072,6 @@ exports.scheduledFirestoreBackup = onSchedule(
     }
   },
 )
-
-function calculateNextVisitDate(date, freq) {
-  const d = new Date(date)
-  switch (freq) {
-    case 'MENSUAL':
-      d.setMonth(d.getMonth() + 1)
-      break
-    case 'BIMENSUAL':
-      d.setMonth(d.getMonth() + 2)
-      break
-    case 'TRIMESTRAL':
-      d.setMonth(d.getMonth() + 3)
-      break
-    case 'SEMESTRAL':
-      d.setMonth(d.getMonth() + 6)
-      break
-    case 'SEMANAL':
-      d.setDate(d.getDate() + 7)
-      break
-    case 'QUINCENAL':
-      d.setDate(d.getDate() + 15)
-      break
-    default:
-      d.setMonth(d.getMonth() + 1)
-  }
-  return d
-}
 
 exports.getAnnualBillingReport = onCall(
   {
@@ -4963,60 +5149,32 @@ exports.getAnnualBillingReport = onCall(
         if (snap.docs.length < PAGE_SIZE) break
       }
 
-      // 2. Obtener todos los pagos en paralelo (en lotes de 30 para no saturar)
-      const paymentsByInvoice = []
-      for (let i = 0; i < allInvoiceDocs.length; i += 30) {
-        const chunk = allInvoiceDocs.slice(i, i + 30)
-        const chunkPayments = await Promise.all(
-          chunk.map((doc) => doc.ref.collection('payments').get()),
-        )
-        paymentsByInvoice.push(...chunkPayments)
-      }
-
-      // Reemplazar invoicesSnapshot.docs por allInvoiceDocs en el procesamiento
       const invoicesSnapshot = { docs: allInvoiceDocs }
 
       // Inicializar estructuras de datos
-      const monthlyTrend = new Array(12).fill(0) // Ingresos pagados por mes
-      const clientRevenue = {} // { clientId: { totalPaid, clientName } }
+      const monthlyTrend = new Array(12).fill(0)
+      const clientRevenue = {}
       const serviceDistributionByZone = {}
-      let totalPaid = 0
-      let totalBilledUnpaid = 0
+      let totalInvoiced = 0
 
-      // 3. Procesar cada factura y sus pagos.
-      invoicesSnapshot.docs.forEach((invoiceDoc, index) => {
+      // 2. Procesar cada factura emitida.
+      invoicesSnapshot.docs.forEach((invoiceDoc) => {
         const invoiceData = invoiceDoc.data()
-        const paymentsSnapshot = paymentsByInvoice[index]
-
         const invoiceTotal = invoiceData.totalValue || 0
-        let invoicePaidAmount = 0
-
-        paymentsSnapshot.forEach((paymentDoc) => {
-          const paymentData = paymentDoc.data()
-          const paymentAmount = paymentData.amount || 0
-          invoicePaidAmount += paymentAmount
-
-          // Acumular en la tendencia mensual
-          const paymentDate = paymentData.paymentDate?.toDate()
-          if (paymentDate && !isNaN(paymentDate.getTime())) {
-            const month = paymentDate.getMonth() // 0-11
-            monthlyTrend[month] += paymentAmount
-          }
-        })
-
-        totalPaid += invoicePaidAmount
-        totalBilledUnpaid += invoiceTotal - invoicePaidAmount
+        totalInvoiced += invoiceTotal
+        const invoiceMonth = Number.isInteger(invoiceData.month) ? invoiceData.month : 0
+        monthlyTrend[invoiceMonth] += invoiceTotal
 
         // Acumular para Top Clientes
         const clientId = invoiceData.clientId
         if (clientId) {
           if (!clientRevenue[clientId]) {
             clientRevenue[clientId] = {
-              totalPaid: 0,
+              totalInvoiced: 0,
               clientName: invoiceData.clientName,
             }
           }
-          clientRevenue[clientId].totalPaid += invoicePaidAmount
+          clientRevenue[clientId].totalInvoiced += invoiceTotal
         }
 
         // Acumular para distribución por zona
@@ -5025,7 +5183,7 @@ exports.getAnnualBillingReport = onCall(
           (serviceDistributionByZone[zoneKey] || 0) + (invoiceData.servicesCount || 0)
       })
 
-      // 4. Obtener visitas pendientes de facturar para el KPI "Pendiente de Facturar".
+      // 3. Obtener visitas pendientes de facturar para el KPI "Pendiente de Facturar".
       let pendingVisitsQuery = db
         .collection('visitas')
         .where('estado_visita', '==', 'Realizada')
@@ -5039,20 +5197,19 @@ exports.getAnnualBillingReport = onCall(
         totalPendingBilling += doc.data().valor_servicio || 0
       })
 
-      // 5. Procesar datos para los rankings.
+      // 4. Procesar datos para los rankings.
       const topClients = Object.entries(clientRevenue)
-        .sort(([, a], [, b]) => b.totalPaid - a.totalPaid)
+        .sort(([, a], [, b]) => b.totalInvoiced - a.totalInvoiced)
         .slice(0, 10)
         .map(([clientId, data]) => ({
           clientId,
           clientName: data.clientName,
-          totalPaid: data.totalPaid,
+          totalInvoiced: data.totalInvoiced,
         }))
 
       return {
         kpis: {
-          totalPaid: totalPaid,
-          totalBilledUnpaid: totalBilledUnpaid,
+          totalInvoiced,
           totalPendingBilling: totalPendingBilling,
           totalVisits: 0,
           billedVisits: 0,

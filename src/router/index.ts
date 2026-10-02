@@ -124,12 +124,6 @@ const router = createRouter({
           meta: { roles: ['Administrador', 'Jefe', 'Coordinador Nacionales'] },
         },
         {
-          path: 'pagos',
-          name: 'pagos',
-          component: () => import('../views/PaymentsView.vue'),
-          meta: { roles: ['Administrador', 'Jefe', 'Coordinador Nacionales'] },
-        },
-        {
           path: 'reportes',
           name: 'reportes',
           component: () => import('../views/ReportsView.vue'),

@@ -126,7 +126,7 @@ const renderAllCharts = (data: any) => {
           labels: monthLabels,
           datasets: [
             {
-              label: `Ingresos Pagados ${selectedYear.value}`,
+              label: `Facturación emitida ${selectedYear.value}`,
               data: dataPoints,
               backgroundColor: (context) => {
                 const ctx = context.chart.ctx
@@ -202,7 +202,7 @@ const renderAllCharts = (data: any) => {
           datasets: [
             {
               label: 'Facturación Total',
-              data: topClients.map((c: any) => c.totalPaid),
+              data: topClients.map((c: any) => c.totalInvoiced),
               backgroundColor: '#8b5cf6', // violet-500
               borderRadius: 4,
             },
@@ -297,13 +297,13 @@ const exportReportAsPDF = async () => {
       startY: 90,
       head: [['Indicador', 'Valor']],
       body: [
-        ['Pagado Anual', `$${reportData.value.kpis.totalPaid.toLocaleString('es-CO')}`],
-        [
-          'Pendiente de Pago',
-          `$${reportData.value.kpis.totalBilledUnpaid.toLocaleString('es-CO')}`,
-        ],
+        ['Facturación Anual', `$${reportData.value.kpis.totalInvoiced.toLocaleString('es-CO')}`],
         [
           'Pendiente de Facturar',
+          `$${reportData.value.kpis.totalPendingBilling.toLocaleString('es-CO')}`,
+        ],
+        [
+          'Visitas pendientes',
           `$${reportData.value.kpis.totalPendingBilling.toLocaleString('es-CO')}`,
         ],
       ],
@@ -345,7 +345,7 @@ const exportReportAsPDF = async () => {
       }
     }
 
-    await addChartToPdf(monthlyRevenueCanvas.value, 'Tendencia de Ingresos Pagados')
+    await addChartToPdf(monthlyRevenueCanvas.value, 'Tendencia de Facturación')
     await addChartToPdf(topClientsCanvas.value, 'Top Clientes por Facturación', 20)
 
     pdf.save(`Reporte_Anual_${selectedYear.value}.pdf`)
@@ -458,10 +458,10 @@ const exportReportAsPDF = async () => {
               class="bg-white/5 p-5 rounded-xl border border-white/10 flex flex-col items-center justify-center text-center relative overflow-hidden">
               <div class="absolute inset-0 bg-green-500/5"></div>
               <p class="text-xs font-bold text-gray-400 uppercase tracking-wider z-10">
-                Ingresos Totales (Pagado)
+                Facturación total
               </p>
               <p class="text-3xl font-bold text-green-400 mt-2 z-10">
-                {{ formatCurrency(reportData.kpis.totalPaid) }}
+                {{ formatCurrency(reportData.kpis.totalInvoiced) }}
               </p>
             </div>
 
@@ -469,10 +469,10 @@ const exportReportAsPDF = async () => {
               class="bg-white/5 p-5 rounded-xl border border-white/10 flex flex-col items-center justify-center text-center relative overflow-hidden">
               <div class="absolute inset-0 bg-yellow-500/5"></div>
               <p class="text-xs font-bold text-gray-400 uppercase tracking-wider z-10">
-                Por Cobrar (Facturado)
+                Facturado
               </p>
               <p class="text-3xl font-bold text-yellow-400 mt-2 z-10">
-                {{ formatCurrency(reportData.kpis.totalBilledUnpaid) }}
+                {{ formatCurrency(reportData.kpis.totalInvoiced) }}
               </p>
             </div>
 

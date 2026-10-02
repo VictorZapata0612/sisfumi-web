@@ -24,9 +24,25 @@ const form = ref<Service>({
   tipo_servicio: '',
   frecuencia: '',
   valor: 0,
+  recurrence: {
+    unit: 'MONTH',
+    interval: 1,
+    visitsPerPeriod: 1,
+    preferredDays: [],
+    schedulingMode: 'FLEXIBLE',
+    toleranceDays: 2,
+    allowWeekends: false,
+  },
+  billing: {
+    model: 'PER_VISIT',
+    periodValue: 0,
+    includedVisits: 1,
+    additionalVisitValue: 0,
+  },
   estado_servicio: 'Activo',
   sucursales_asignadas: [],
 })
+const preferredDaysText = ref('')
 
 const serviceTypesList = computed(() => settingsStore.businessData?.serviceTypes || [])
 // Reemplaza los valores de este array con la lista EXACTA (mayúsculas/minúsculas) de tu bot
@@ -95,15 +111,50 @@ watch(
 
       if (props.service) {
         form.value = JSON.parse(JSON.stringify(props.service))
+        if (!form.value.recurrence) {
+          form.value.recurrence = {
+            unit: ['SEMANAL', 'QUINCENAL'].includes(form.value.frecuencia) ? 'WEEK' : 'MONTH',
+            interval: form.value.frecuencia === 'BIMENSUAL' ? 2 : form.value.frecuencia === 'TRIMESTRAL' ? 3 : 1,
+            visitsPerPeriod: 1,
+            preferredDays: [],
+            schedulingMode: 'FLEXIBLE',
+            toleranceDays: 2,
+            allowWeekends: false,
+          }
+        }
+        if (!form.value.billing) {
+          form.value.billing = {
+            model: 'PER_VISIT',
+            periodValue: form.value.valor,
+            includedVisits: 1,
+            additionalVisitValue: form.value.valor,
+          }
+        }
       } else {
         form.value = {
           tipo_servicio: '',
           frecuencia: '',
           valor: 0,
+          recurrence: {
+            unit: 'MONTH',
+            interval: 1,
+            visitsPerPeriod: 1,
+            preferredDays: [],
+            schedulingMode: 'FLEXIBLE',
+            toleranceDays: 2,
+            allowWeekends: false,
+          },
+          billing: {
+            model: 'PER_VISIT',
+            periodValue: 0,
+            includedVisits: 1,
+            additionalVisitValue: 0,
+          },
           estado_servicio: 'Activo',
           sucursales_asignadas: [],
         }
       }
+      preferredDaysText.value = (form.value.recurrence?.preferredDays || []).join(', ')
     }
   },
   { immediate: true },
@@ -127,6 +178,39 @@ const handleSave = async () => {
     })
     return
   }
+
+  const recurrence = form.value.recurrence || {
+    unit: 'MONTH' as const,
+    interval: 1,
+    visitsPerPeriod: 1,
+    preferredDays: [],
+    schedulingMode: 'FLEXIBLE' as const,
+    toleranceDays: 2,
+    allowWeekends: false,
+  }
+  const billing = form.value.billing || {
+    model: 'PER_VISIT' as const,
+    periodValue: form.value.valor,
+    includedVisits: 1,
+    additionalVisitValue: form.value.valor,
+  }
+  recurrence.interval = Math.max(1, Number(recurrence.interval) || 1)
+  recurrence.visitsPerPeriod = Math.max(1, Number(recurrence.visitsPerPeriod) || 1)
+  recurrence.preferredDays = preferredDaysText.value
+    .split(',')
+    .map((day) => Number(day.trim()))
+    .filter((day) => Number.isInteger(day) && day >= 1 && day <= 31)
+  if (recurrence.unit === 'WEEK') {
+    recurrence.preferredDays = recurrence.preferredDays.filter((day) => day >= 0 && day <= 6)
+  }
+  billing.periodValue = Math.max(0, Number(billing.periodValue) || form.value.valor)
+  billing.includedVisits = Math.max(1, Number(billing.includedVisits) || recurrence.visitsPerPeriod)
+  billing.additionalVisitValue = Math.max(
+    0,
+    Number(billing.additionalVisitValue) || form.value.valor,
+  )
+  form.value.recurrence = recurrence
+  form.value.billing = billing
 
   // Salvaguarda: Si no tiene permisos, forzamos el valor a 0
   if (!canSetPrice.value) {
@@ -246,6 +330,50 @@ const handleSave = async () => {
                   <i class="fas fa-chevron-down text-xs"></i>
                 </div>
               </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Planificación y facturación -->
+        <div class="bg-white/5 p-4 rounded-lg border border-white/10">
+          <h3 class="text-sm font-bold text-cyan-400 uppercase mb-4 border-b border-white/10 pb-2">
+            Planificación y facturación
+          </h3>
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div>
+              <label for="visitsPerPeriod" class="form-label">Visitas por periodo</label>
+              <input v-model.number="form.recurrence!.visitsPerPeriod" type="number" min="1"
+                id="visitsPerPeriod" class="input-field-dark w-full" />
+              <p class="text-xs text-gray-500 mt-1">Para servicios antiguos se conserva una visita.</p>
+            </div>
+            <div>
+              <label for="preferredDays" class="form-label">Días preferidos</label>
+              <input v-model="preferredDaysText" type="text" id="preferredDays" class="input-field-dark w-full"
+                placeholder="Ej.: 2, 4, 6" />
+              <p class="text-xs text-gray-500 mt-1">Días del mes separados por coma.</p>
+            </div>
+            <div>
+              <label for="billingModel" class="form-label">Modelo de facturación</label>
+              <select v-model="form.billing!.model" id="billingModel" class="input-field-dark w-full">
+                <option value="PER_VISIT">Por visita</option>
+                <option value="FIXED_PERIOD">Fija por periodo</option>
+                <option value="INCLUDED_PLUS_ADDITIONAL">Incluidas + adicionales</option>
+              </select>
+            </div>
+            <div v-if="form.billing?.model !== 'PER_VISIT'">
+              <label for="periodValue" class="form-label">Valor del periodo</label>
+              <input v-model.number="form.billing!.periodValue" type="number" min="0" id="periodValue"
+                class="input-field-dark w-full" />
+            </div>
+            <div v-if="form.billing?.model === 'INCLUDED_PLUS_ADDITIONAL'">
+              <label for="includedVisits" class="form-label">Visitas incluidas</label>
+              <input v-model.number="form.billing!.includedVisits" type="number" min="1" id="includedVisits"
+                class="input-field-dark w-full" />
+            </div>
+            <div v-if="form.billing?.model === 'INCLUDED_PLUS_ADDITIONAL'">
+              <label for="additionalVisitValue" class="form-label">Valor visita adicional</label>
+              <input v-model.number="form.billing!.additionalVisitValue" type="number" min="0"
+                id="additionalVisitValue" class="input-field-dark w-full" />
             </div>
           </div>
         </div>

@@ -7,15 +7,14 @@ import { functions } from '@/firebase/config'
 // Interfaces para los datos del reporte anual
 export interface AnnualReportData {
   kpis: {
-    totalPaid: number
-    totalBilledUnpaid: number
+    totalInvoiced: number
     totalPendingBilling: number
     totalVisits: number
     billedVisits: number
   }
   monthlyTrend: number[]
   quarterlyComparison: Record<string, { totalServices: number; billedServices: number }>
-  topClients: { clientId: string; clientName: string; totalPaid: number }[]
+  topClients: { clientId: string; clientName: string; totalInvoiced: number }[]
   technicianRates: {
     technicianId: string
     technicianName: string

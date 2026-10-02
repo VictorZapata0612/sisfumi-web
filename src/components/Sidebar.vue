@@ -182,9 +182,6 @@ const userInitials = computed(() => {
             <RouterLink to="/facturacion" class="sub-nav-item" active-class="sub-active"
               >Facturación</RouterLink
             >
-            <RouterLink to="/pagos" class="sub-nav-item" active-class="sub-active"
-              >Gestión de Pagos</RouterLink
-            >
           </div>
         </Transition>
       </div>
