@@ -22,34 +22,27 @@ const router = createRouter({
         {
           path: 'servicios',
           name: 'public-services',
-          component: { template: '' },
-          children: [
-            {
-              path: '', // Corresponde a /servicios
-              name: 'services-list',
-              component: () => import('../views/public/ServicesPage.vue'),
-            },
-            {
-              path: 'manejo-integral-de-plagas',
-              name: 'service-detail-mip',
-              component: () => import('../views/public/services/ManejoIntegralPage.vue'),
-            },
-            {
-              path: 'desratizacion',
-              name: 'service-detail-desratizacion',
-              component: () => import('../views/public/services/DesratizacionPage.vue'),
-            },
-            {
-              path: 'desinfeccion',
-              name: 'service-detail-desinfeccion',
-              component: () => import('../views/public/services/DesinfeccionPage.vue'),
-            },
-            {
-              path: 'lavado-de-tanques',
-              name: 'service-detail-lavado-tanques',
-              component: () => import('../views/public/services/LavadoDeTanquesPage.vue'),
-            },
-          ],
+          component: () => import('../views/public/ServicesPage.vue'),
+        },
+        {
+          path: 'servicios/manejo-integral-de-plagas',
+          name: 'service-detail-mip',
+          component: () => import('../views/public/services/ManejoIntegralPage.vue'),
+        },
+        {
+          path: 'servicios/desratizacion',
+          name: 'service-detail-desratizacion',
+          component: () => import('../views/public/services/DesratizacionPage.vue'),
+        },
+        {
+          path: 'servicios/desinfeccion',
+          name: 'service-detail-desinfeccion',
+          component: () => import('../views/public/services/DesinfeccionPage.vue'),
+        },
+        {
+          path: 'servicios/lavado-de-tanques',
+          name: 'service-detail-lavado-tanques',
+          component: () => import('../views/public/services/LavadoDeTanquesPage.vue'),
         },
         {
           path: 'sobre-nosotros',

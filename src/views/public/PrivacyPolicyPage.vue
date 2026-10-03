@@ -189,11 +189,32 @@ onMounted(() => {
         </p>
       </section>
 
+      <!-- 6. SEGURIDAD DE LOS DATOS DE GOOGLE -->
+      <section class="bg-[#151515] border border-white/10 rounded-2xl p-6 md:p-8 space-y-4">
+        <h2 class="text-2xl font-bold text-white flex items-center gap-3">
+          <i class="fas fa-shield-alt text-brand-red"></i>
+          6. Medidas de Protección de los Datos de Google
+        </h2>
+        <p class="text-gray-300 text-sm md:text-base leading-relaxed">
+          Existen procedimientos de seguridad para proteger la confidencialidad, integridad y disponibilidad de los datos de Google tratados por SISFUMI. Aplicamos controles técnicos y administrativos adicionales a las medidas de seguridad proporcionadas por Google y Firebase.
+        </p>
+        <ul class="list-disc list-inside space-y-2 text-sm text-gray-300 leading-relaxed">
+          <li><strong>Cifrado:</strong> utilizamos HTTPS/TLS para proteger los datos durante la transmisión entre el navegador, SISFUMI y nuestros servicios. Las credenciales OAuth y los datos almacenados se mantienen en los servicios de Google Cloud/Firebase con los mecanismos de cifrado y protección de esos servicios.</li>
+          <li><strong>Acceso restringido:</strong> el acceso a los datos de Google y a las credenciales de integración se limita al personal autorizado y a las funciones técnicas que lo necesitan para prestar la funcionalidad solicitada. Las reglas de seguridad de Firestore verifican la autenticación, el usuario propietario y el rol antes de permitir el acceso.</li>
+          <li><strong>Principio de mínimo privilegio:</strong> solicitamos únicamente los permisos de Google necesarios para sincronizar Google Calendar, consultar el perfil básico y enviar las notificaciones autorizadas mediante Gmail. El código de autorización se canjea en el backend y no se solicita al usuario que entregue sus credenciales a SISFUMI.</li>
+          <li><strong>Supervisión y respuesta:</strong> mantenemos controles de registro y revisión de accesos, y aplicamos procedimientos para investigar, contener y corregir accesos no autorizados, pérdida o divulgación de información. Cuando corresponda, notificaremos al titular y a las autoridades competentes conforme a la ley.</li>
+          <li><strong>Conservación y eliminación:</strong> conservamos los datos de Google solo durante el tiempo necesario para las finalidades informadas o mientras exista una obligación legal. Cuando el usuario desconecta Google, revocamos la integración, eliminamos las credenciales almacenadas y dejamos de realizar nuevas sincronizaciones, salvo la información que debamos conservar por ley.</li>
+        </ul>
+        <p class="text-gray-300 text-sm md:text-base leading-relaxed">
+          Aunque aplicamos medidas razonables y apropiadas, ningún sistema de transmisión o almacenamiento electrónico puede garantizar seguridad absoluta. Si identifica un posible incidente de seguridad o tiene preguntas sobre estas medidas, puede comunicarse con {{ companyInfo.email }}.
+        </p>
+      </section>
+
       <!-- 6. DERECHOS ARCO -->
       <section class="bg-[#151515] border border-white/10 rounded-2xl p-6 md:p-8 space-y-4">
         <h2 class="text-2xl font-bold text-white flex items-center gap-3">
           <i class="fas fa-user-shield text-brand-red"></i>
-          5. Derechos de los Titulares (Derechos ARCO)
+          7. Derechos de los Titulares (Derechos ARCO)
         </h2>
         <ul class="list-disc list-inside space-y-2 text-sm text-gray-300 leading-relaxed">
           <li><strong>Conocer, actualizar y rectificar</strong> sus datos personales.</li>
@@ -207,7 +228,7 @@ onMounted(() => {
       <section class="space-y-4">
         <h2 class="text-2xl font-bold text-white flex items-center gap-3">
           <i class="fas fa-paper-plane text-brand-red"></i>
-          6. Procedimiento para Consultas y Reclamos
+          8. Procedimiento para Consultas y Reclamos
         </h2>
         <div class="bg-black/50 p-6 rounded-xl border border-brand-red/30 text-center space-y-3">
           <div class="text-lg font-bold text-white">Canal Oficial de Hábeas Data</div>
