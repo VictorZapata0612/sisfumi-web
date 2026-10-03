@@ -76,7 +76,7 @@ const renderCharts = () => {
         labels,
         datasets: [
           {
-            label: 'Ingresos Pagados',
+            label: 'Facturación emitida',
             data: annualReportData.value.monthlyTrend,
             borderColor: '#22d3ee', // cyan-400
             backgroundColor: 'rgba(34, 211, 238, 0.1)',
@@ -208,16 +208,16 @@ watch(annualReportData, (newData) => {
     <div v-else-if="annualReportData" class="space-y-6 animate-fade-in">
       <!-- KPIs -->
       <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-        <!-- Total Pagado -->
+        <!-- Total facturado -->
         <div class="bg-[#151515] p-6 rounded-xl border border-white/10 shadow-lg relative overflow-hidden group">
           <div class="absolute right-0 top-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
             <i class="fas fa-coins text-6xl text-emerald-500"></i>
           </div>
           <h3 class="text-sm font-bold text-gray-400 uppercase tracking-wider">
-            Ingresos Totales (Pagado)
+            Facturación total
           </h3>
           <p class="text-3xl font-bold text-white mt-2">
-            {{ formatCurrency(annualReportData.kpis.totalPaid) }}
+            {{ formatCurrency(annualReportData.kpis.totalInvoiced) }}
           </p>
           <div class="mt-4 h-1 w-full bg-white/10 rounded-full overflow-hidden">
             <div class="h-full bg-emerald-500 w-full"></div>
@@ -230,26 +230,26 @@ watch(annualReportData, (newData) => {
             <i class="fas fa-file-invoice-dollar text-6xl text-yellow-500"></i>
           </div>
           <h3 class="text-sm font-bold text-gray-400 uppercase tracking-wider">
-            Facturado (Pendiente Pago)
+            Pendiente de facturar
           </h3>
           <p class="text-3xl font-bold text-white mt-2">
-            {{ formatCurrency(annualReportData.kpis.totalBilledUnpaid) }}
+            {{ formatCurrency(annualReportData.kpis.totalPendingBilling) }}
           </p>
           <div class="mt-4 h-1 w-full bg-white/10 rounded-full overflow-hidden">
             <div class="h-full bg-yellow-500 w-2/3"></div>
           </div>
         </div>
 
-        <!-- Pendiente de Facturar -->
+        <!-- Visitas realizadas -->
         <div class="bg-[#151515] p-6 rounded-xl border border-white/10 shadow-lg relative overflow-hidden group">
           <div class="absolute right-0 top-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
             <i class="fas fa-clock text-6xl text-red-500"></i>
           </div>
           <h3 class="text-sm font-bold text-gray-400 uppercase tracking-wider">
-            Pendiente de Facturar
+            Visitas realizadas
           </h3>
           <p class="text-3xl font-bold text-white mt-2">
-            {{ formatCurrency(annualReportData.kpis.totalPendingBilling) }}
+            {{ annualReportData.kpis.totalVisits }}
           </p>
           <div class="mt-4 h-1 w-full bg-white/10 rounded-full overflow-hidden">
             <div class="h-full bg-red-500 w-1/3"></div>
@@ -299,7 +299,7 @@ watch(annualReportData, (newData) => {
                 <span class="text-gray-300 text-sm font-medium">{{ client.clientName }}</span>
               </div>
               <span class="font-bold text-white text-sm">{{
-                formatCurrency(client.totalPaid)
+                formatCurrency(client.totalInvoiced)
               }}</span>
             </div>
           </div>

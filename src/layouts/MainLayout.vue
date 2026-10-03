@@ -73,7 +73,6 @@ const navLinks = [
     roles: ['Administrador', 'Jefe'],
     children: [
       { name: 'Facturación', to: '/dashboard/facturacion', icon: 'fa-file-invoice-dollar' },
-      { name: 'Pagos', to: '/dashboard/pagos', icon: 'fa-hand-holding-usd' },
     ],
   },
   // Dropdown Administración (Renombrado y reorganizado)

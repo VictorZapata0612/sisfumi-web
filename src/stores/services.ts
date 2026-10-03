@@ -18,6 +18,21 @@ export interface Service {
   tipo_servicio: string
   frecuencia: string
   valor: number
+  recurrence?: {
+    unit: 'WEEK' | 'MONTH'
+    interval: number
+    visitsPerPeriod: number
+    preferredDays?: number[]
+    schedulingMode?: 'FIXED' | 'FLEXIBLE'
+    toleranceDays?: number
+    allowWeekends?: boolean
+  }
+  billing?: {
+    model: 'PER_VISIT' | 'FIXED_PERIOD' | 'INCLUDED_PLUS_ADDITIONAL'
+    periodValue?: number
+    includedVisits?: number
+    additionalVisitValue?: number
+  }
   estado_servicio: 'Activo' | 'Inactivo' | 'Completado'
   sucursales_asignadas: string[]
   needsPriceApproval?: boolean

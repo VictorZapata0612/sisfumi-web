@@ -24,14 +24,17 @@ export interface BillingGroup {
   clientAddress: string
   services: BillingService[]
   totalValue: number
-  status: 'pending' | 'billed' | 'paid' | 'partially_paid'
+  status: 'pending' | 'billed' | 'cancelled'
   month: number
   year: number
   invoiceNumber?: string
   createdAt?: string | Date
   dueDate?: string | Date
   observations?: string
-  paymentHistory?: any[] // <-- AÑADIDO
+  periodoServicio?: string
+  modeloFacturacion?: string
+  valorBase?: number
+  valorAdicionales?: number
 }
 
 // --- Store de Pinia ---
@@ -46,7 +49,7 @@ export const useBillingStore = defineStore('billing', () => {
   // --- ✅ NUEVO: Estado para filtros y búsqueda ---
   const pendingSearchTerm = ref('')
   const invoicedSearchTerm = ref('')
-  const invoicedStatusFilter = ref('todos') // 'todos', 'billed', 'partially_paid', 'paid'
+  const invoicedStatusFilter = ref('todos') // 'todos', 'billed', 'cancelled'
 
   // --- ✅ NUEVO: Estado para el ordenamiento de la tabla de detalles ---
   const detailSort = ref({ key: 'fecha_visita', order: 'asc' })
@@ -80,27 +83,8 @@ export const useBillingStore = defineStore('billing', () => {
     // ✅ CORRECCIÓN: Usar las listas filtradas para que los KPIs sean dinámicos.
     const billed = filteredInvoicedGroups.value.reduce((sum, g) => sum + g.totalValue, 0)
     const pendingToInvoice = filteredPendingGroups.value.reduce((sum, g) => sum + g.totalValue, 0)
-    // Aquí necesitarías una lógica más compleja para el total pagado si manejas pagos parciales.
-    // Por ahora, asumimos que 'paid' significa 100% pagado.
-    const paid = filteredInvoicedGroups.value.reduce((sum, g) => {
-      // Si el grupo está totalmente pagado, suma el valor total.
-      if (g.status === 'paid') {
-        return sum + g.totalValue
-      }
-      // Si tiene historial de pagos, suma los abonos.
-      if (g.paymentHistory && g.paymentHistory.length > 0) {
-        const paidInGroup = g.paymentHistory.reduce(
-          (paymentSum: number, p: any) => paymentSum + (p.amount || 0),
-          0,
-        )
-        return sum + paidInGroup
-      }
-      return sum
-    }, 0)
-
-    const pendingPayment = billed - paid
-
-    return { billed, pendingToInvoice, paid, pendingPayment, totalBilled: billed }
+    const invoicesIssued = filteredInvoicedGroups.value.filter((g) => g.status === 'billed').length
+    return { billed, pendingToInvoice, invoicesIssued, totalBilled: billed }
   })
 
   // --- Actions ---
