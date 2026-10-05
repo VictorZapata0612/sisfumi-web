@@ -76,6 +76,7 @@ const handleCalendarChange = () => {
 onMounted(async () => {
   if (authStore.userRole?.startsWith('Coordinador')) {
     selectedZone.value = authStore.userZone || 'Todos'
+    selectedCalendarUid.value = authStore.user?.uid || 'internal'
   }
   // ✅ FIX: fetchIntegrations es admin-only en el backend (403 para el
   // resto de roles). Solo se usa para el selector de calendarios de

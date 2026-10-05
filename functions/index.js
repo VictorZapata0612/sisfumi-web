@@ -88,6 +88,13 @@ const cors = require('cors')({
   ],
   optionsSuccessStatus: 200,
 })
+const callableCorsOrigins = [
+  'http://localhost:5173',
+  'https://sisfumictph.com',
+  'https://www.sisfumictph.com',
+  'https://controltotalyph.com',
+  'https://www.controltotalyph.com',
+]
 
 // Importar credenciales de Google desde archivo local o variables de entorno
 // Se recomienda usar defineString para producción, pero mantenemos require para compatibilidad
@@ -2996,7 +3003,7 @@ exports.getGoogleCalendarEvents = onCall({ cors: true }, async (request) => {
   }
 })
 
-exports.getConsolidatedPlanningData = onCall({ cors: true }, async (request) => {
+exports.getConsolidatedPlanningData = onCall({ cors: callableCorsOrigins }, async (request) => {
   const { auth, data } = request
   if (!auth) {
     // ✅ MEJORA: Lanzar error si no hay autenticación.
@@ -3017,7 +3024,12 @@ exports.getConsolidatedPlanningData = onCall({ cors: true }, async (request) => 
     'Gerente',
   ].includes(auth.token.role)
 
-  if (calendarTargetUid && calendarTargetUid !== 'internal' && !hasGlobalAccess) {
+  if (
+    calendarTargetUid &&
+    calendarTargetUid !== 'internal' &&
+    !hasGlobalAccess &&
+    calendarTargetUid !== auth.uid
+  ) {
     throw new HttpsError('permission-denied', 'No tienes permiso para consultar ese calendario.')
   }
 
@@ -4067,45 +4079,30 @@ exports.getTechnicianProfileData = onCall({ cors: true }, async (request) => {
     const endOfMonth = new Date(year, month + 1, 0, 23, 59, 59)
     const today = new Date()
 
-    const baseVisitsRef = db
+    const toDate = (val) => (val && typeof val.toDate === 'function' ? val.toDate() : new Date(val))
+    // Filtrar en memoria evita depender de índices compuestos que pueden no
+    // existir para cada combinación de zona, técnico y fecha.
+    const visitsSnapshot = await db
       .collection('visitas')
       .where('fumigadores_asignados', 'array-contains', technicianName)
-      .where('zona', '==', zone)
+      .get()
+    const visits = visitsSnapshot.docs
+      .map((doc) => ({ id: doc.id, ...doc.data(), fecha_visita: toDate(doc.data().fecha_visita) }))
+      .filter((visit) => visit.zona === zone && !Number.isNaN(visit.fecha_visita.getTime()))
 
-    // ✅ MEJORA: Hacer las 3 consultas en paralelo con filtros de fecha en Firestore
-    const [monthSnap, upcomingSnap, historySnap] = await Promise.all([
-      baseVisitsRef
-        .where('fecha_visita', '>=', startOfMonth)
-        .where('fecha_visita', '<=', endOfMonth)
-        .get(),
-      baseVisitsRef
-        .where('fecha_visita', '>=', today)
-        .orderBy('fecha_visita', 'asc')
-        .limit(10)
-        .get(),
-      baseVisitsRef
-        .where('fecha_visita', '<', today)
-        .orderBy('fecha_visita', 'desc')
-        .limit(10)
-        .get(),
-    ])
-
-    const toDate = (val) => (val && typeof val.toDate === 'function' ? val.toDate() : new Date(val))
-
-    const visitsInMonth = monthSnap.docs.map((doc) => ({
-      ...doc.data(),
-      fecha_visita: toDate(doc.data().fecha_visita),
-    }))
-
-    const upcomingVisits = upcomingSnap.docs.map((doc) => ({
-      ...doc.data(),
-      fecha_visita: toDate(doc.data().fecha_visita).toISOString(),
-    }))
-
-    const recentHistory = historySnap.docs.map((doc) => ({
-      ...doc.data(),
-      fecha_visita: toDate(doc.data().fecha_visita).toISOString(),
-    }))
+    const visitsInMonth = visits.filter(
+      (visit) => visit.fecha_visita >= startOfMonth && visit.fecha_visita <= endOfMonth,
+    )
+    const upcomingVisits = visits
+      .filter((visit) => visit.fecha_visita >= today)
+      .sort((a, b) => a.fecha_visita.getTime() - b.fecha_visita.getTime())
+      .slice(0, 10)
+      .map((visit) => ({ ...visit, fecha_visita: visit.fecha_visita.toISOString() }))
+    const recentHistory = visits
+      .filter((visit) => visit.fecha_visita < today)
+      .sort((a, b) => b.fecha_visita.getTime() - a.fecha_visita.getTime())
+      .slice(0, 10)
+      .map((visit) => ({ ...visit, fecha_visita: visit.fecha_visita.toISOString() }))
 
     const assigned = visitsInMonth.length
     const completed = visitsInMonth.filter((v) => v.estado_visita === 'Realizada').length
@@ -4131,6 +4128,7 @@ exports.getTechnicianProfileData = onCall({ cors: true }, async (request) => {
     }
   } catch (error) {
     console.error('Error al calcular estadísticas del técnico:', error)
+    if (error instanceof HttpsError) throw error
     throw new HttpsError('internal', 'No se pudieron calcular las estadísticas.')
   }
 })
@@ -4380,6 +4378,46 @@ exports.generateInvoiceReport = onCall({ cors: true }, async (request) => {
     }
     if (visitDoc.data().estado_facturacion === 'Facturada') {
       throw new HttpsError('failed-precondition', `La visita ${visitDoc.id} ya fue facturada.`)
+    }
+  }
+
+  const selectedGroups = new Map()
+  visitDocs.forEach((visitDoc) => {
+    const visit = visitDoc.data()
+    const model = visit.billingModel || 'PER_VISIT'
+    if (model === 'PER_VISIT') return
+    const groupKey = `${visit.serviceId || visit.tipo_visita}::${visit.periodoServicio || ''}`
+    if (!selectedGroups.has(groupKey)) selectedGroups.set(groupKey, [])
+    selectedGroups.get(groupKey).push(visitDoc.id)
+  })
+
+  for (const [groupKey, selectedIds] of selectedGroups) {
+    const separatorIndex = groupKey.indexOf('::')
+    const serviceId = groupKey.slice(0, separatorIndex)
+    const periodoServicio = groupKey.slice(separatorIndex + 2)
+    if (!serviceId || !periodoServicio) {
+      throw new HttpsError(
+        'failed-precondition',
+        'Las visitas de facturación híbrida deben tener servicio y periodo definidos.',
+      )
+    }
+    const periodSnapshot = await db
+      .collection('visitas')
+      .where('serviceId', '==', serviceId)
+      .where('periodoServicio', '==', periodoServicio)
+      .where('estado_visita', '==', 'Realizada')
+      .where('estado_facturacion', '==', 'Pendiente')
+      .get()
+    const availableIds = periodSnapshot.docs.map((doc) => doc.id).sort()
+    const normalizedSelectedIds = [...selectedIds].sort()
+    if (
+      availableIds.length !== normalizedSelectedIds.length ||
+      availableIds.some((id, index) => id !== normalizedSelectedIds[index])
+    ) {
+      throw new HttpsError(
+        'failed-precondition',
+        'Para facturación por periodo debe seleccionar todas las visitas pendientes del contrato y periodo.',
+      )
     }
   }
 
@@ -4838,6 +4876,13 @@ exports.scheduleRecurringVisits = onSchedule(
   async (event) => {
     logger.info('🤖 [BOT] Iniciando generación de visitas recurrentes...')
 
+    if (process.env.ENABLE_RECURRING_VISITS_V2 !== 'true') {
+      logger.warn(
+        '🤖 [BOT] Generación recurrente V2 desactivada. Configure ENABLE_RECURRING_VISITS_V2=true cuando finalice la migración.',
+      )
+      return
+    }
+
     const servicesSnapshot = await db.collection('servicios').get()
     const today = new Date()
     today.setHours(0, 0, 0, 0)
@@ -4876,13 +4921,19 @@ exports.scheduleRecurringVisits = onSchedule(
     const existingKeys = new Set()
     const existingSnapshot = await db
       .collection('visitas')
-      .where('createdBy', '==', 'SYSTEM')
       .where('fecha_visita', '>=', admin.firestore.Timestamp.fromDate(today))
       .where('fecha_visita', '<=', admin.firestore.Timestamp.fromDate(horizon))
       .get()
+    const existingLegacyKeys = new Set()
     existingSnapshot.forEach((doc) => {
-      const key = doc.data().recurrenceKey
+      const visit = doc.data()
+      const key = visit.recurrenceKey
       if (key) existingKeys.add(key)
+      if (visit.id_cliente && visit.tipo_visita && visit.fecha_visita?.toDate) {
+        existingLegacyKeys.add(
+          `${visit.id_cliente}_${visit.tipo_visita}_${visit.fecha_visita.toDate().toISOString().slice(0, 10)}`,
+        )
+      }
     })
 
     const visitsToCreate = []
@@ -4890,7 +4941,10 @@ exports.scheduleRecurringVisits = onSchedule(
       const occurrences = buildRecurringOccurrences(service, today, horizon)
       occurrences.forEach((occurrence) => {
         if (existingKeys.has(occurrence.recurrenceKey)) return
+        const legacyKey = `${service.clientId}_${service.tipoServicio}_${occurrence.date.toISOString().slice(0, 10)}`
+        if (existingLegacyKeys.has(legacyKey)) return
         existingKeys.add(occurrence.recurrenceKey)
+        existingLegacyKeys.add(legacyKey)
         visitsToCreate.push({ service, ...occurrence })
       })
     }

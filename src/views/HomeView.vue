@@ -13,14 +13,12 @@ const router = useRouter()
 const visitsPerMonthChartCanvas = ref<HTMLCanvasElement | null>(null)
 const serviceTypeChartCanvas = ref<HTMLCanvasElement | null>(null)
 const servicesByFrequencyChartCanvas = ref<HTMLCanvasElement | null>(null)
-const clientsByCityChartCanvas = ref<HTMLCanvasElement | null>(null)
 const technicianProductivityChartCanvas = ref<HTMLCanvasElement | null>(null)
 
 // Referencias a las instancias de Chart.js para poder destruirlas
 let visitsPerMonthChartInstance: Chart | null = null
 let serviceTypeChartInstance: Chart | null = null
 let servicesByFrequencyChartInstance: Chart | null = null
-let clientsByCityChartInstance: Chart | null = null
 let technicianProductivityChartInstance: Chart | null = null
 
 const formatCurrency = (value: number) => {
@@ -29,10 +27,6 @@ const formatCurrency = (value: number) => {
     currency: 'COP',
     minimumFractionDigits: 0,
   }).format(value)
-}
-
-const navigateToClientsByCity = (city: string) => {
-  router.push({ name: 'clientes', query: { cityFilter: city } })
 }
 
 const navigateToPlanning = (visitId: string) => {
@@ -55,7 +49,6 @@ const renderCharts = () => {
   if (visitsPerMonthChartInstance) visitsPerMonthChartInstance.destroy()
   if (serviceTypeChartInstance) serviceTypeChartInstance.destroy()
   if (servicesByFrequencyChartInstance) servicesByFrequencyChartInstance.destroy()
-  if (clientsByCityChartInstance) clientsByCityChartInstance.destroy()
   if (technicianProductivityChartInstance) technicianProductivityChartInstance.destroy()
 
   // 1. Gráfico de Visitas por Mes
@@ -178,60 +171,7 @@ const renderCharts = () => {
     })
   }
 
-  // 4. Gráfico de Clientes por Ciudad
-  if (clientsByCityChartCanvas.value && dashboardStore.charts.clientsByCity) {
-    const data = dashboardStore.charts.clientsByCity
-    const sortedData = Object.entries(data).sort(([, a], [, b]) => (b as number) - (a as number))
-    const labels = sortedData.map((item) => item[0])
-    const values = sortedData.map((item) => item[1] as number)
-    clientsByCityChartInstance = new Chart(clientsByCityChartCanvas.value, {
-      type: 'bar',
-      data: {
-        labels,
-        datasets: [
-          {
-            label: 'Clientes',
-            data: values,
-            backgroundColor: '#8b5cf6',
-            borderRadius: 4,
-          },
-        ],
-      },
-      options: {
-        indexAxis: 'y',
-        responsive: true,
-        maintainAspectRatio: false,
-        plugins: {
-          legend: { display: false },
-          datalabels: { display: false },
-          tooltip: {
-            callbacks: {
-              label: (context) => ` ${context.parsed.x} clientes`,
-            },
-          },
-        },
-        scales: {
-          y: { grid: { display: false } },
-          x: { display: false },
-        },
-        onClick: (event, elements) => {
-          if (elements.length > 0) {
-            const index = elements[0]!.index
-            const cityName = labels[index]
-            if (cityName) {
-              navigateToClientsByCity(cityName)
-            }
-          }
-        },
-        onHover: (event, chartElement) => {
-          const target = event.native?.target as HTMLElement
-          if (target) target.style.cursor = chartElement[0] ? 'pointer' : 'default'
-        },
-      },
-    })
-  }
-
-  // 5. Gráfico de Productividad de Técnicos
+  // 4. Gráfico de Productividad de Técnicos
   if (technicianProductivityChartCanvas.value && dashboardStore.charts.technicianStats) {
     const data = dashboardStore.charts.technicianStats as Record<
       string,
@@ -561,13 +501,6 @@ watch(
             </div>
           </div>
 
-          <!-- Clientes por Ciudad (Mini Chart) -->
-          <div class="bg-[#151515] rounded-xl border border-white/10 shadow-lg p-4">
-            <h3 class="font-bold text-gray-200 mb-2 text-sm uppercase">Top Ciudades</h3>
-            <div class="h-40 relative">
-              <canvas ref="clientsByCityChartCanvas"></canvas>
-            </div>
-          </div>
         </div>
       </section>
     </div>

@@ -39,10 +39,7 @@ ChartJS.register(Title, Tooltip, Legend, BarElement, CategoryScale, LinearScale)
 // Declaramos la variable global de Google para evitar errores de TypeScript
 declare const google: any
 
-// ✅ FIX: solo Administrador/Jefe pueden ver integraciones de calendario y
-// auditoría (el backend ya lo exige con un 403). Antes se llamaba a estos
-// endpoints para TODOS los roles, generando errores 403 en consola y toasts
-// de error innecesarios para Coordinadores/Técnicos.
+// Solo Administrador/Jefe pueden consultar integraciones y usuarios globales.
 const isAdminOrJefe = computed(() =>
   ['Administrador', 'Jefe'].includes(authStore.userRole || ''),
 )
@@ -51,11 +48,13 @@ onMounted(async () => {
   // Asegurar que los datos de negocio se carguen primero.
   await settingsStore.fetchBusinessData()
   planningStore.fetchVisitTemplates()
-  settingsStore.fetchUsers()
 
   if (isAdminOrJefe.value) {
+    settingsStore.fetchUsers()
     settingsStore.fetchIntegrations()
     fetchLogs() // Cargar logs iniciales
+  } else if (authStore.user?.uid) {
+    settingsStore.fetchOwnIntegrationStatus(authStore.user.uid)
   }
 })
 
@@ -378,13 +377,12 @@ const isCurrentUser = (uid: string) => {
   return authStore.user?.uid === uid
 }
 
-// ✅ NUEVO: estado de la integración del propio usuario, derivado de
-// settingsStore.users (endpoint accesible para todos los roles), sin
-// depender de settingsStore.integrations (solo Administrador/Jefe).
-const myUserRecord = computed(() =>
-  settingsStore.users.find((u) => u.uid === authStore.user?.uid) || null,
-)
-const myIntegrationConnected = computed(() => myUserRecord.value?.isConnected ?? false)
+const myIntegrationConnected = computed(() => {
+  if (!isAdminOrJefe.value) return settingsStore.ownIntegrationConnected
+  return (
+    settingsStore.users.find((u) => u.uid === authStore.user?.uid)?.isConnected ?? false
+  )
+})
 
 const handleConnectGoogle = (targetUid: string) => {
   const clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID
@@ -406,7 +404,11 @@ const handleConnectGoogle = (targetUid: string) => {
         message: 'La cuenta de Google ha sido conectada correctamente.',
         type: 'success',
       })
-      settingsStore.fetchUsers()
+      if (isAdminOrJefe.value && authStore.user?.uid) {
+        settingsStore.fetchUsers()
+      } else if (authStore.user?.uid) {
+        settingsStore.fetchOwnIntegrationStatus(authStore.user.uid)
+      }
       // ✅ FIX: solo refrescar la tabla de integraciones (admin-only) si el
       // usuario actual tiene permiso; si no, dispararía otro 403.
       if (isAdminOrJefe.value) settingsStore.fetchIntegrations()
@@ -435,7 +437,7 @@ const handleDisconnectMyAccount = () => {
     async onConfirm() {
       try {
         await settingsStore.disconnectAccount(uid)
-        await settingsStore.fetchUsers()
+        await settingsStore.fetchOwnIntegrationStatus(uid)
         showToast({
           title: 'Listo',
           message: 'Tu cuenta de Google ha sido desconectada.',

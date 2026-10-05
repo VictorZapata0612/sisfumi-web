@@ -72,6 +72,7 @@ export const useSettingsStore = defineStore('settings', () => {
   const loadingLogs = ref(false)
   const users = ref<SystemUser[]>([])
   const loadingUsers = ref(false)
+  const ownIntegrationConnected = ref(false)
 
   // --- Actions ---
 
@@ -213,6 +214,16 @@ export const useSettingsStore = defineStore('settings', () => {
     }
   }
 
+  async function fetchOwnIntegrationStatus(uid: string) {
+    try {
+      const integrationSnapshot = await getDoc(doc(db, 'calendar_integrations', uid))
+      ownIntegrationConnected.value = integrationSnapshot.exists()
+    } catch (err: any) {
+      console.error('Error checking own calendar integration:', err)
+      ownIntegrationConnected.value = false
+    }
+  }
+
   async function updateUserConfiguration(uid: string, role: string, zona: string, color: string) {
     const updateUserConfigFn = httpsCallable(functions, 'updateUserConfiguration')
     await updateUserConfigFn({ uid, role, zona, color })
@@ -240,6 +251,7 @@ export const useSettingsStore = defineStore('settings', () => {
     loadingLogs,
     users,
     loadingUsers,
+    ownIntegrationConnected,
     error,
     fetchIntegrations,
     disconnectAccount,
@@ -248,6 +260,7 @@ export const useSettingsStore = defineStore('settings', () => {
     fetchAuditLogs,
     undoRoleChange,
     fetchUsers,
+    fetchOwnIntegrationStatus,
     updateUserConfiguration,
     updateUserStatus,
   }

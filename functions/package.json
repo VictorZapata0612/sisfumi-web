@@ -8,6 +8,7 @@
   "scripts": {
     "backfill:technicians": "node scripts/backfill-invoice-data.js technicians",
     "backfill:zones": "node scripts/backfill-invoice-data.js zones",
+    "backfill:recurrence": "node scripts/backfill-recurrence.js",
     "serve": "firebase emulators:start --only functions",
     "shell": "firebase functions:shell",
     "deploy": "firebase deploy --only functions",
