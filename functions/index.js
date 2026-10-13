@@ -199,6 +199,13 @@ const CLIENT_MANAGER_ROLES = [
 // ✅ Roles con acceso administrativo básico
 const ADMIN_ROLES = ['Administrador', 'Jefe']
 
+// Roles autorizados para actualizar los datos maestros del negocio.
+const BUSINESS_DATA_MANAGER_ROLES = [
+  ...ADMIN_ROLES,
+  'Coordinador Valle',
+  'Coordinador Norte de Santander',
+]
+
 // ✅ Roles que pueden aprobar precios, ver auditoría, etc.
 const APPROVER_ROLES = [
   ...GLOBAL_CLIENT_ROLES, // Administrador, Jefe, Coordinador Nacionales, Coordinador Nacional, Gerente
@@ -2291,11 +2298,11 @@ exports.getPublicFileUrl = onCall({ cors: true }, async (request) => {
 
 /**
  * Actualiza los datos maestros del negocio (zonas, aliados, etc.).
- * Solo para Administradores y Jefes.
+ * Para Administradores, Jefes y coordinadores regionales.
  */
 exports.updateBusinessData = onCall({ cors: true }, async (request) => {
   const { auth, data } = request
-  if (!auth || !ADMIN_ROLES.includes(auth.token.role)) {
+  if (!auth || !BUSINESS_DATA_MANAGER_ROLES.includes(auth.token.role)) {
     throw new HttpsError(
       'permission-denied',
       'No tienes permiso para actualizar los datos de negocio.',
@@ -4897,7 +4904,7 @@ exports.onFumigadorWrite = onDocumentWritten('fumigadores/{fumigadorId}', (event
 // --- Función Programada (Cron) ---
 exports.scheduleRecurringVisits = onSchedule(
   {
-    schedule: 'every day 03:00',
+    schedule: 'every 1 hours',
     timeZone: 'America/Bogota',
   },
   async (event) => {

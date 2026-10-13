@@ -44,6 +44,15 @@ const isAdminOrJefe = computed(() =>
   ['Administrador', 'Jefe'].includes(authStore.userRole || ''),
 )
 
+const canEditBusinessData = computed(() =>
+  [
+    'Administrador',
+    'Jefe',
+    'Coordinador Valle',
+    'Coordinador Norte de Santander',
+  ].includes(authStore.userRole || ''),
+)
+
 onMounted(async () => {
   // Asegurar que los datos de negocio se carguen primero.
   await settingsStore.fetchBusinessData()
@@ -666,19 +675,20 @@ const handleImportClick = () => {
               Maestros</span>
             <div class="h-px bg-white/10 flex-grow"></div>
           </div>
-          <button @click="saveBusinessData"
+          <button @click="saveBusinessData" :disabled="!canEditBusinessData"
             class="btn btn-primary bg-green-600 hover:bg-green-700 shrink-0 ml-4 shadow-lg shadow-green-500/20">
             <i class="fas fa-save mr-2"></i> Guardar Todo
           </button>
         </div>
 
-        <div v-if="settingsStore.loadingBusinessData"
-          class="bg-[#151515] rounded-xl p-12 text-center border border-white/10 border-dashed">
-          <i class="fas fa-spinner fa-spin text-3xl text-indigo-500"></i>
-          <p class="mt-4 text-gray-400">Cargando configuración...</p>
-        </div>
+        <fieldset :disabled="!canEditBusinessData">
+          <div v-if="settingsStore.loadingBusinessData"
+            class="bg-[#151515] rounded-xl p-12 text-center border border-white/10 border-dashed">
+            <i class="fas fa-spinner fa-spin text-3xl text-indigo-500"></i>
+            <p class="mt-4 text-gray-400">Cargando configuración...</p>
+          </div>
 
-        <div v-else class="grid grid-cols-1 md:grid-cols-3 gap-6">
+          <div v-else class="grid grid-cols-1 md:grid-cols-3 gap-6">
           <!-- Zonas -->
           <div class="bg-[#151515] rounded-xl border border-white/10 shadow-md flex flex-col overflow-hidden h-80">
             <div class="bg-[#0a0a0a]/50 p-4 border-b border-white/10 flex justify-between items-center">
@@ -754,7 +764,8 @@ const handleImportClick = () => {
               </div>
             </div>
           </div>
-        </div>
+          </div>
+        </fieldset>
       </section>
 
       <!-- Plantillas de Visita -->
