@@ -1,9 +1,5 @@
 <script setup lang="ts">
-<<<<<<< HEAD
 import { ref, watch, nextTick } from 'vue'
-=======
-import { ref, watch, computed, nextTick } from 'vue'
->>>>>>> c933029 (Initial commit)
 import { useTechniciansStore, type Technician } from '@/stores/technicians'
 import Chart from 'chart.js/auto'
 
@@ -145,7 +141,6 @@ const formatDate = (dateString: string) => {
         <p class="text-gray-300 font-medium">Consultando historial del técnico...</p>
       </div>
 
-<<<<<<< HEAD
       <!-- Error State -->
       <div v-else-if="store.error && !store.selectedProfile"
         class="absolute inset-0 z-10 bg-[#151515]/60 backdrop-blur-md flex flex-col items-center justify-center gap-4 p-6">
@@ -159,8 +154,6 @@ const formatDate = (dateString: string) => {
         </button>
       </div>
 
-=======
->>>>>>> c933029 (Initial commit)
       <template v-if="store.selectedProfile">
         <!-- Header Section -->
         <header class="p-6 bg-[#0a0a0a]/50 border-b border-white/10 flex flex-col sm:flex-row items-center gap-6">

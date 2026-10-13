@@ -1,7 +1,4 @@
-<<<<<<< HEAD
 /* eslint-disable @typescript-eslint/no-explicit-any */
-=======
->>>>>>> c933029 (Initial commit)
 import { ref } from 'vue'
 import { defineStore } from 'pinia'
 import { httpsCallable } from 'firebase/functions'
@@ -10,23 +7,14 @@ import { functions } from '@/firebase/config'
 // Interfaces para los datos del reporte anual
 export interface AnnualReportData {
   kpis: {
-<<<<<<< HEAD
     totalInvoiced: number
-=======
-    totalPaid: number
-    totalBilledUnpaid: number
->>>>>>> c933029 (Initial commit)
     totalPendingBilling: number
     totalVisits: number
     billedVisits: number
   }
   monthlyTrend: number[]
   quarterlyComparison: Record<string, { totalServices: number; billedServices: number }>
-<<<<<<< HEAD
   topClients: { clientId: string; clientName: string; totalInvoiced: number }[]
-=======
-  topClients: { clientId: string; clientName: string; totalPaid: number }[]
->>>>>>> c933029 (Initial commit)
   technicianRates: {
     technicianId: string
     technicianName: string

@@ -1,17 +1,9 @@
-<<<<<<< HEAD
 /* eslint-disable @typescript-eslint/no-explicit-any */
-=======
->>>>>>> c933029 (Initial commit)
 import { ref, computed } from 'vue'
 import { defineStore } from 'pinia'
 import { httpsCallable } from 'firebase/functions'
 import { useAuthStore } from './auth'
 import { functions } from '@/firebase/config'
-<<<<<<< HEAD
-=======
-import { db } from '@/firebase/config'
-import { collection, addDoc, serverTimestamp } from 'firebase/firestore'
->>>>>>> c933029 (Initial commit)
 
 // --- Interfaces para Tipado ---
 
@@ -22,7 +14,6 @@ interface Client {
 }
 
 export interface Service {
-<<<<<<< HEAD
   id?: string
   tipo_servicio: string
   frecuencia: string
@@ -42,11 +33,6 @@ export interface Service {
     includedVisits?: number
     additionalVisitValue?: number
   }
-=======
-  tipo_servicio: string
-  frecuencia: string
-  valor: number
->>>>>>> c933029 (Initial commit)
   estado_servicio: 'Activo' | 'Inactivo' | 'Completado'
   sucursales_asignadas: string[]
   needsPriceApproval?: boolean
@@ -69,14 +55,11 @@ export interface PendingPriceRequest {
   service: Service
 }
 
-<<<<<<< HEAD
 const createStableId = (prefix: string) => {
   if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) return `${prefix}-${crypto.randomUUID()}`
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`
 }
 
-=======
->>>>>>> c933029 (Initial commit)
 // --- Store de Pinia ---
 
 export const useServicesStore = defineStore('services', () => {
@@ -94,7 +77,6 @@ export const useServicesStore = defineStore('services', () => {
   // --- Getters ---
   const clientList = computed(() => clients.value)
 
-<<<<<<< HEAD
   const normalizeClient = (client: Client): Client => ({
     ...client,
     sucursales: Array.isArray(client.sucursales)
@@ -116,8 +98,6 @@ export const useServicesStore = defineStore('services', () => {
     })),
   })
 
-=======
->>>>>>> c933029 (Initial commit)
   // --- Actions ---
 
   /**
@@ -133,14 +113,10 @@ export const useServicesStore = defineStore('services', () => {
     error.value = null
     try {
       const getClientsFn = httpsCallable(functions, 'getClientsPage')
-<<<<<<< HEAD
       const params: { status: string; pageSize: number; zone?: string } = {
         status: 'Activo',
         pageSize: 1000,
       }
-=======
-      const params: { status: string; zone?: string } = { status: 'Activo' }
->>>>>>> c933029 (Initial commit)
 
       // Si el rol es de un coordinador de zona (no Nacionales), filtramos por su zona.
       if (
@@ -151,11 +127,7 @@ export const useServicesStore = defineStore('services', () => {
       }
 
       const result = (await getClientsFn(params)) as { data: { clients: Client[] } }
-<<<<<<< HEAD
       clients.value = result.data.clients.map(normalizeClient).sort((a, b) =>
-=======
-      clients.value = result.data.clients.sort((a, b) =>
->>>>>>> c933029 (Initial commit)
         a.nombreComercial.localeCompare(b.nombreComercial),
       )
     } catch (err: any) {
@@ -168,19 +140,12 @@ export const useServicesStore = defineStore('services', () => {
   /**
    * Carga la ficha de servicio para un cliente específico.
    */
-<<<<<<< HEAD
   async function fetchServiceSheet(clientId: string): Promise<void> {
     if (!clientId) return
     loadingSheet.value = true
     error.value = null
     serviceSheet.value = null
     hasUnsavedChanges.value = false
-=======
-  async function fetchServiceSheet(clientId: string) {
-    if (!clientId) return
-    loadingSheet.value = true
-    error.value = null
->>>>>>> c933029 (Initial commit)
     selectedClient.value = clients.value.find((c) => c.id === clientId) || null
 
     try {
@@ -188,11 +153,7 @@ export const useServicesStore = defineStore('services', () => {
       const result = (await getSheetFn({ clientId })) as { data: ServiceSheet | null }
 
       if (result.data) {
-<<<<<<< HEAD
         serviceSheet.value = normalizeSheet(result.data)
-=======
-        serviceSheet.value = result.data
->>>>>>> c933029 (Initial commit)
       } else if (selectedClient.value) {
         // Si no existe, creamos una ficha vacía en memoria
         serviceSheet.value = {
@@ -202,13 +163,8 @@ export const useServicesStore = defineStore('services', () => {
           services: [],
         }
       }
-<<<<<<< HEAD
     } catch (err: any) {
       serviceSheet.value = null
-=======
-      hasUnsavedChanges.value = false
-    } catch (err: any) {
->>>>>>> c933029 (Initial commit)
       error.value = err.message || 'Error al cargar la ficha de servicio.'
     } finally {
       loadingSheet.value = false
@@ -220,10 +176,7 @@ export const useServicesStore = defineStore('services', () => {
    */
   async function saveServiceSheet() {
     if (!serviceSheet.value) return
-<<<<<<< HEAD
     if (!serviceSheet.value.clientId || !selectedClient.value) throw new Error('No hay un cliente válido seleccionado.')
-=======
->>>>>>> c933029 (Initial commit)
     savingSheet.value = true
     error.value = null
     try {
@@ -269,7 +222,6 @@ export const useServicesStore = defineStore('services', () => {
       service.requesterUid = authStore.user?.uid
     }
 
-<<<<<<< HEAD
     const serviceToSave = {
       ...service,
       id: service.id || createStableId(`${serviceSheet.value.clientId}-service`),
@@ -280,12 +232,6 @@ export const useServicesStore = defineStore('services', () => {
       serviceSheet.value.services.push(serviceToSave)
     } else {
       serviceSheet.value.services[index] = serviceToSave
-=======
-    if (index === -1) {
-      serviceSheet.value.services.push(service)
-    } else {
-      serviceSheet.value.services[index] = service
->>>>>>> c933029 (Initial commit)
     }
     hasUnsavedChanges.value = true
   }
@@ -308,13 +254,9 @@ export const useServicesStore = defineStore('services', () => {
     const canView =
       authStore.userRole === 'Administrador' ||
       authStore.userRole === 'Jefe' ||
-<<<<<<< HEAD
       authStore.userRole === 'Coordinador Nacionales' ||
       authStore.userRole === 'Coordinador Nacional' ||
       authStore.userRole === 'Gerente'
-=======
-      authStore.userRole === 'Coordinador Nacionales'
->>>>>>> c933029 (Initial commit)
 
     if (!canView) return
 

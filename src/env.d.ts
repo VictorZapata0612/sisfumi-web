@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 /* eslint-disable @typescript-eslint/no-explicit-any */
 /// <reference types="vite/client" />
 
@@ -11,10 +10,6 @@ interface ImportMeta {
   readonly env: ImportMetaEnv
 }
 
-=======
-/// <reference types="vite/client" />
-
->>>>>>> c933029 (Initial commit)
 declare module '*.vue' {
   import type { DefineComponent } from 'vue'
   const component: DefineComponent<object, object, any>

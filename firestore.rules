@@ -47,6 +47,11 @@ service cloud.firestore {
         request.resource.data.zona == request.auth.token.zona;
     }
 
+    function doesNotChangeZone() {
+      return !request.resource.data.diff(resource.data).affectedKeys()
+        .hasAny(['zona', 'zonasDeSucursales']);
+    }
+
     match /notifications/{notificationId} {
       allow read: if signedIn() &&
         request.auth.token.role in resource.data.targetRoles;
@@ -55,21 +60,34 @@ service cloud.firestore {
 
     match /clientes/{documentId} {
       allow read: if hasGlobalAccess() || isOwnZoneResource();
-      allow write: if hasGlobalAccess() ||
-        (isOwnZoneResource() && isOwnZoneWrite());
+      allow create: if hasGlobalAccess() ||
+        (isCoordinadorForZone() &&
+          request.resource.data.zona == request.auth.token.zona);
+      allow update: if hasGlobalAccess() ||
+        (isOwnZoneResource() && isOwnZoneWrite() && doesNotChangeZone());
+      allow delete: if hasGlobalAccess() || isOwnZoneResource();
     }
 
     match /servicios/{serviceId} {
       allow read: if hasGlobalAccess() || isOwnZoneResource();
-      allow write: if hasGlobalAccess();
+      allow create, update, delete: if hasGlobalAccess();
     }
 
     match /fumigadores/{documentId} {
-      allow read, write: if hasGlobalAccess() || isOwnZoneResource();
+      allow read: if hasGlobalAccess() || isOwnZoneResource();
+      allow create: if hasGlobalAccess() ||
+        (isCoordinadorForZone() &&
+          request.resource.data.zona == request.auth.token.zona);
+      allow update: if hasGlobalAccess() ||
+        (isOwnZoneResource() && isOwnZoneWrite() && doesNotChangeZone());
+      allow delete: if hasGlobalAccess() || isOwnZoneResource();
     }
 
     match /visitas/{documentId} {
-      allow read, update, delete: if hasGlobalAccess() || isOwnZoneResource();
+      allow read: if hasGlobalAccess() || isOwnZoneResource();
+      allow update: if hasGlobalAccess() ||
+        (isOwnZoneResource() && isOwnZoneWrite() && doesNotChangeZone());
+      allow delete: if hasGlobalAccess() || isOwnZoneResource();
       allow create: if hasGlobalAccess() || isOwnZoneWrite();
     }
 

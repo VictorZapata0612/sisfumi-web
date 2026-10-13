@@ -1,7 +1,4 @@
-<<<<<<< HEAD
 <!-- eslint-disable @typescript-eslint/no-explicit-any -->
-=======
->>>>>>> c933029 (Initial commit)
 <script setup lang="ts">
 import { ref, computed, onMounted, nextTick } from 'vue'
 import { httpsCallable } from 'firebase/functions'
@@ -129,11 +126,7 @@ const renderAllCharts = (data: any) => {
           labels: monthLabels,
           datasets: [
             {
-<<<<<<< HEAD
               label: `Facturación emitida ${selectedYear.value}`,
-=======
-              label: `Ingresos Pagados ${selectedYear.value}`,
->>>>>>> c933029 (Initial commit)
               data: dataPoints,
               backgroundColor: (context) => {
                 const ctx = context.chart.ctx
@@ -209,11 +202,7 @@ const renderAllCharts = (data: any) => {
           datasets: [
             {
               label: 'Facturación Total',
-<<<<<<< HEAD
               data: topClients.map((c: any) => c.totalInvoiced),
-=======
-              data: topClients.map((c: any) => c.totalPaid),
->>>>>>> c933029 (Initial commit)
               backgroundColor: '#8b5cf6', // violet-500
               borderRadius: 4,
             },
@@ -308,7 +297,6 @@ const exportReportAsPDF = async () => {
       startY: 90,
       head: [['Indicador', 'Valor']],
       body: [
-<<<<<<< HEAD
         ['Facturación Anual', `$${reportData.value.kpis.totalInvoiced.toLocaleString('es-CO')}`],
         [
           'Pendiente de Facturar',
@@ -316,15 +304,6 @@ const exportReportAsPDF = async () => {
         ],
         [
           'Visitas pendientes',
-=======
-        ['Pagado Anual', `$${reportData.value.kpis.totalPaid.toLocaleString('es-CO')}`],
-        [
-          'Pendiente de Pago',
-          `$${reportData.value.kpis.totalBilledUnpaid.toLocaleString('es-CO')}`,
-        ],
-        [
-          'Pendiente de Facturar',
->>>>>>> c933029 (Initial commit)
           `$${reportData.value.kpis.totalPendingBilling.toLocaleString('es-CO')}`,
         ],
       ],
@@ -366,11 +345,7 @@ const exportReportAsPDF = async () => {
       }
     }
 
-<<<<<<< HEAD
     await addChartToPdf(monthlyRevenueCanvas.value, 'Tendencia de Facturación')
-=======
-    await addChartToPdf(monthlyRevenueCanvas.value, 'Tendencia de Ingresos Pagados')
->>>>>>> c933029 (Initial commit)
     await addChartToPdf(topClientsCanvas.value, 'Top Clientes por Facturación', 20)
 
     pdf.save(`Reporte_Anual_${selectedYear.value}.pdf`)
@@ -483,17 +458,10 @@ const exportReportAsPDF = async () => {
               class="bg-white/5 p-5 rounded-xl border border-white/10 flex flex-col items-center justify-center text-center relative overflow-hidden">
               <div class="absolute inset-0 bg-green-500/5"></div>
               <p class="text-xs font-bold text-gray-400 uppercase tracking-wider z-10">
-<<<<<<< HEAD
                 Facturación total
               </p>
               <p class="text-3xl font-bold text-green-400 mt-2 z-10">
                 {{ formatCurrency(reportData.kpis.totalInvoiced) }}
-=======
-                Ingresos Totales (Pagado)
-              </p>
-              <p class="text-3xl font-bold text-green-400 mt-2 z-10">
-                {{ formatCurrency(reportData.kpis.totalPaid) }}
->>>>>>> c933029 (Initial commit)
               </p>
             </div>
 
@@ -501,17 +469,10 @@ const exportReportAsPDF = async () => {
               class="bg-white/5 p-5 rounded-xl border border-white/10 flex flex-col items-center justify-center text-center relative overflow-hidden">
               <div class="absolute inset-0 bg-yellow-500/5"></div>
               <p class="text-xs font-bold text-gray-400 uppercase tracking-wider z-10">
-<<<<<<< HEAD
                 Facturado
               </p>
               <p class="text-3xl font-bold text-yellow-400 mt-2 z-10">
                 {{ formatCurrency(reportData.kpis.totalInvoiced) }}
-=======
-                Por Cobrar (Facturado)
-              </p>
-              <p class="text-3xl font-bold text-yellow-400 mt-2 z-10">
-                {{ formatCurrency(reportData.kpis.totalBilledUnpaid) }}
->>>>>>> c933029 (Initial commit)
               </p>
             </div>
 

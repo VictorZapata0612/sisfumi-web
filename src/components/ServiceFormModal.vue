@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 <!-- eslint-disable @typescript-eslint/no-explicit-any -->
 <script setup lang="ts">
 import { ref, watch, computed, onUnmounted } from 'vue'
@@ -6,15 +5,6 @@ import type { Service } from '@/stores/services'
 import { useServicesStore } from '@/stores/services'
 import { useAuthStore } from '@/stores/auth'
 import { useSettingsStore } from '@/stores/settings'
-=======
-<script setup lang="ts">
-import { ref, watch, computed, onUnmounted } from 'vue'
-import { httpsCallable } from 'firebase/functions'
-import { functions } from '@/firebase/config'
-import type { Service } from '@/stores/services'
-import { useServicesStore } from '@/stores/services'
-import { useAuthStore } from '@/stores/auth'
->>>>>>> c933029 (Initial commit)
 import { useToast } from '@/composables/useToast'
 
 const props = defineProps<{
@@ -27,17 +17,13 @@ const emit = defineEmits(['close', 'save'])
 
 const servicesStore = useServicesStore()
 const authStore = useAuthStore()
-<<<<<<< HEAD
 const settingsStore = useSettingsStore()
-=======
->>>>>>> c933029 (Initial commit)
 const { showToast } = useToast()
 
 const form = ref<Service>({
   tipo_servicio: '',
   frecuencia: '',
   valor: 0,
-<<<<<<< HEAD
   recurrence: {
     unit: 'MONTH',
     interval: 1,
@@ -61,14 +47,6 @@ const preferredDaysText = ref('')
 const serviceTypesList = computed(() => settingsStore.businessData?.serviceTypes || [])
 // Reemplaza los valores de este array con la lista EXACTA (mayúsculas/minúsculas) de tu bot
 const frequencyOptions = computed(() => ['UNICA', 'SEMANAL', 'QUINCENAL', 'MENSUAL', 'BIMESTRAL', 'TRIMESTRAL', 'SEMESTRAL', 'ANUAL'])
-=======
-  estado_servicio: 'Activo',
-  sucursales_asignadas: [],
-})
-
-const businessData = ref<any>({})
-
->>>>>>> c933029 (Initial commit)
 const formattedValor = computed({
   get() {
     return form.value.valor.toLocaleString('es-CO')
@@ -84,13 +62,9 @@ const canSetPrice = computed(
   () =>
     authStore.userRole === 'Administrador' ||
     authStore.userRole === 'Jefe' ||
-<<<<<<< HEAD
     authStore.userRole === 'Coordinador Nacionales' ||
     authStore.userRole === 'Coordinador Nacional' ||
     authStore.userRole === 'Gerente',
-=======
-    authStore.userRole === 'Coordinador Nacionales',
->>>>>>> c933029 (Initial commit)
 )
 
 const showTooltip = ref(false)
@@ -121,21 +95,16 @@ const sucursalesOptions = computed(() => {
   if (!client) return []
   const options = [{ text: 'Principal', value: 'Principal' }]
   if (client.sucursales && client.sucursales.length > 0) {
-<<<<<<< HEAD
     client.sucursales.forEach((s: any, index: number) => options.push({
       text: s.nombre,
       value: s.id || `${client.id}-branch-${index + 1}`,
     }))
-=======
-    client.sucursales.forEach((s: any) => options.push({ text: s.nombre, value: s.nombre }))
->>>>>>> c933029 (Initial commit)
   }
   return options
 })
 
 watch(
   () => props.show,
-<<<<<<< HEAD
   (newVal) => {
     if (newVal) {
       isSaving.value = false
@@ -161,23 +130,11 @@ watch(
             additionalVisitValue: form.value.valor,
           }
         }
-=======
-  async (newVal) => {
-    if (newVal) {
-      isSaving.value = false
-      const getBusinessData = httpsCallable(functions, 'getBusinessData')
-      const result = (await getBusinessData()) as { data: any }
-      businessData.value = result.data
-
-      if (props.service) {
-        form.value = JSON.parse(JSON.stringify(props.service))
->>>>>>> c933029 (Initial commit)
       } else {
         form.value = {
           tipo_servicio: '',
           frecuencia: '',
           valor: 0,
-<<<<<<< HEAD
           recurrence: {
             unit: 'MONTH',
             interval: 1,
@@ -193,29 +150,18 @@ watch(
             includedVisits: 1,
             additionalVisitValue: 0,
           },
-=======
->>>>>>> c933029 (Initial commit)
           estado_servicio: 'Activo',
           sucursales_asignadas: [],
         }
       }
-<<<<<<< HEAD
       preferredDaysText.value = (form.value.recurrence?.preferredDays || []).join(', ')
-=======
->>>>>>> c933029 (Initial commit)
     }
   },
   { immediate: true },
 )
 
 const handleSave = async () => {
-<<<<<<< HEAD
   if (!form.value.tipo_servicio || !form.value.frecuencia) {
-=======
-  console.log('🕵️ [SPY] handleSave iniciado. Datos del formulario:', JSON.parse(JSON.stringify(form.value)))
-  if (!form.value.tipo_servicio || !form.value.frecuencia) {
-    console.warn('🕵️ [SPY] Validación fallida: Campos incompletos (tipo o frecuencia)')
->>>>>>> c933029 (Initial commit)
     showToast({
       title: 'Campos Incompletos',
       message: 'Por favor, complete todos los campos requeridos.',
@@ -225,10 +171,6 @@ const handleSave = async () => {
   }
 
   if (form.value.valor < 0) {
-<<<<<<< HEAD
-=======
-    console.warn('🕵️ [SPY] Validación fallida: Valor negativo')
->>>>>>> c933029 (Initial commit)
     showToast({
       title: 'Valor Inválido',
       message: 'El valor del servicio no puede ser negativo.',
@@ -237,7 +179,6 @@ const handleSave = async () => {
     return
   }
 
-<<<<<<< HEAD
   const recurrence = form.value.recurrence || {
     unit: 'MONTH' as const,
     interval: 1,
@@ -288,29 +229,10 @@ const handleSave = async () => {
       setTimeout(() => reject(new Error('El guardado está tardando demasiado. Verifique su conexión.')), 10000)
     )
 
-=======
-  isSaving.value = true
-  console.log('🕵️ [SPY] Estado isSaving establecido a TRUE. Botón debería deshabilitarse.')
-
-  try {
-    // 1. Actualizar estado local (Padre/Store)
-    console.log('🕵️ [SPY] Emitiendo evento "save" al componente padre...')
-    emit('save', form.value, props.serviceIndex)
-    console.log('🕵️ [SPY] Evento "save" emitido correctamente.')
-
-    // 2. Persistir en Base de Datos
-    // @ts-ignore: Acción del store para guardar la ficha completa
-    // Usamos Promise.race para evitar que se quede colgado indefinidamente
-    const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error('El guardado está tardando demasiado. Verifique su conexión.')), 10000))
-
-
-    console.log('🕵️ [SPY] Iniciando llamada a servicesStore.saveServiceSheet() con timeout de 10s...')
->>>>>>> c933029 (Initial commit)
     await Promise.race([
       servicesStore.saveServiceSheet(),
       timeout
     ])
-<<<<<<< HEAD
 
     emit('save', form.value, props.serviceIndex)
 
@@ -329,15 +251,6 @@ const handleSave = async () => {
   } catch (error: any) {
     if (previousSheet) servicesStore.serviceSheet = previousSheet
     servicesStore.hasUnsavedChanges = Boolean(previousSheet)
-=======
-    console.log('🕵️ [SPY] servicesStore.saveServiceSheet() completado exitosamente.')
-
-
-    showToast({ title: 'Éxito', message: 'Servicio guardado correctamente.', type: 'success' })
-    emit('close')
-  } catch (error: any) {
-    console.error('🕵️ [SPY] ERROR CAPTURADO en handleSave:', error)
->>>>>>> c933029 (Initial commit)
     showToast({
       title: 'Error de Guardado',
       message: `Se actualizó localmente pero falló en la nube: ${error.message}`,
@@ -345,10 +258,6 @@ const handleSave = async () => {
     })
   } finally {
     isSaving.value = false
-<<<<<<< HEAD
-=======
-    console.log('🕵️ [SPY] Bloque finally ejecutado. isSaving establecido a FALSE.')
->>>>>>> c933029 (Initial commit)
   }
 }
 </script>
@@ -387,13 +296,8 @@ const handleSave = async () => {
                 <select v-model="form.tipo_servicio" id="serviceType" class="input-field-dark w-full appearance-none"
                   required>
                   <option disabled value="">Seleccione...</option>
-<<<<<<< HEAD
                   <option v-for="s in serviceTypesList" :key="s.name" :value="s.name">
                     {{ s.name }}
-=======
-                  <option v-for="s in businessData.serviceTypesList" :key="s" :value="s">
-                    {{ s }}
->>>>>>> c933029 (Initial commit)
                   </option>
                 </select>
                 <div class="absolute inset-y-0 right-0 flex items-center px-2 pointer-events-none text-gray-400">
@@ -418,11 +322,7 @@ const handleSave = async () => {
                 <select v-model="form.frecuencia" id="serviceFrequency" class="input-field-dark w-full appearance-none"
                   required>
                   <option disabled value="">Seleccione...</option>
-<<<<<<< HEAD
                   <option v-for="f in frequencyOptions" :key="f" :value="f">
-=======
-                  <option v-for="f in businessData.frequencyOptions" :key="f" :value="f">
->>>>>>> c933029 (Initial commit)
                     {{ f }}
                   </option>
                 </select>
@@ -434,7 +334,6 @@ const handleSave = async () => {
           </div>
         </div>
 
-<<<<<<< HEAD
         <!-- Planificación y facturación -->
         <div class="bg-white/5 p-4 rounded-lg border border-white/10">
           <h3 class="text-sm font-bold text-cyan-400 uppercase mb-4 border-b border-white/10 pb-2">
@@ -479,8 +378,6 @@ const handleSave = async () => {
           </div>
         </div>
 
-=======
->>>>>>> c933029 (Initial commit)
         <!-- Detalles Financieros y Estado -->
         <div class="bg-white/5 p-4 rounded-lg border border-white/10">
           <h3 class="text-sm font-bold text-cyan-400 uppercase mb-4 border-b border-white/10 pb-2">

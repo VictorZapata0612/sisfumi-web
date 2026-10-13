@@ -1,20 +1,9 @@
-<<<<<<< HEAD
 /* eslint-disable @typescript-eslint/no-explicit-any */
-=======
->>>>>>> c933029 (Initial commit)
 import { ref } from 'vue'
 import { defineStore } from 'pinia'
 import { httpsCallable } from 'firebase/functions'
 import { functions } from '@/firebase/config'
 
-<<<<<<< HEAD
-=======
-export interface User {
-  // Esta interfaz ya no es necesaria aquí.
-  // La nueva interfaz estará dentro del store.
-}
-
->>>>>>> c933029 (Initial commit)
 export interface PermissionVisit {
   id: string
   nombre_cliente: string
@@ -54,14 +43,8 @@ export const usePermissionsStore = defineStore('permissions', () => {
     }
   }
 
-<<<<<<< HEAD
   async function approvePermission(visitId: string) {
     const approveFn = httpsCallable(functions, 'approveVisitPermission')
-=======
-  async function approvePermission(visitId: string, notes: string) {
-    const approveFn = httpsCallable(functions, 'approveVisitPermission')
-    // La función de backend no usa 'notes' actualmente, pero la enviamos por si se añade en el futuro.
->>>>>>> c933029 (Initial commit)
     await approveFn({ visitId })
 
     // Actualizar el estado local en lugar de eliminar
@@ -126,15 +109,12 @@ export const usePermissionsStore = defineStore('permissions', () => {
     // 5. Actualizar estado local
     const visit = pendingVisits.value.find((v) => v.id === visitId)
     if (visit) {
-<<<<<<< HEAD
       if (!visit.gestionPermiso) {
         visit.gestionPermiso = { aprobado: false, soportes: [] }
       }
       if (!Array.isArray(visit.gestionPermiso.soportes)) {
         visit.gestionPermiso.soportes = []
       }
-=======
->>>>>>> c933029 (Initial commit)
       visit.gestionPermiso.soportes.push(fileData)
     }
   }

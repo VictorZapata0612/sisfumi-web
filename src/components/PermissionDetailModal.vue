@@ -1,7 +1,4 @@
-<<<<<<< HEAD
 <!-- eslint-disable @typescript-eslint/no-explicit-any -->
-=======
->>>>>>> c933029 (Initial commit)
 <script setup lang="ts">
 import { ref, watch, computed } from 'vue'
 import { usePermissionsStore, type PermissionVisit } from '@/stores/permissions'

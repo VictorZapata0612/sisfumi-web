@@ -75,6 +75,16 @@ const storageBucketName =
   (process.env.GCLOUD_PROJECT
     ? `${process.env.GCLOUD_PROJECT}.firebasestorage.app`
     : 'sisfumi2.firebasestorage.app')
+const MAX_PROFILE_IMAGE_SIZE = 5 * 1024 * 1024
+const PROFILE_IMAGE_PATH = /^profile_pictures\/([^/]+)\/([^/]+)$/
+const PROFILE_IMAGE_CONTENT_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif'])
+
+function getProfileImagePath(filePath, uid) {
+  if (typeof filePath !== 'string') return null
+  const match = filePath.match(PROFILE_IMAGE_PATH)
+  if (!match || match[1] !== uid) return null
+  return match[0]
+}
 
 // Configuración de CORS
 // Permitimos localhost para desarrollo y el dominio de producción
@@ -1751,18 +1761,19 @@ exports.getSignedUploadUrl = onCall({ cors: true }, async (request) => {
   }
 
   const { filePath, contentType } = request.data
-  if (!filePath || !contentType) {
+  const safeFilePath = getProfileImagePath(filePath, request.auth.uid)
+  if (!safeFilePath || !PROFILE_IMAGE_CONTENT_TYPES.has(contentType)) {
     throw new HttpsError('invalid-argument', 'Se requieren filePath y contentType.')
   }
 
   try {
     const bucket = getStorageBucket()
-    const file = bucket.file(filePath)
+    const file = bucket.file(safeFilePath)
 
     const [signedUrl] = await file.getSignedUrl({
       action: 'write',
       expires: Date.now() + 15 * 60 * 1000, // 15 minutos de validez
-      contentType: contentType,
+      contentType,
     })
 
     return { signedUrl }
@@ -1781,20 +1792,32 @@ exports.makeSupportFilePublic = onCall({ cors: true }, async (request) => {
   }
 
   const { filePath } = request.data
-  if (!filePath || typeof filePath !== 'string') {
+  const safeFilePath = getProfileImagePath(filePath, request.auth.uid)
+  if (!safeFilePath) {
     throw new HttpsError('invalid-argument', 'El parámetro filePath es obligatorio.')
   }
 
   try {
     const bucket = getStorageBucket()
-    const file = bucket.file(filePath)
+    const file = bucket.file(safeFilePath)
+    const [metadata] = await file.getMetadata()
+    if (
+      !PROFILE_IMAGE_CONTENT_TYPES.has(metadata.contentType) ||
+      Number(metadata.size) > MAX_PROFILE_IMAGE_SIZE
+    ) {
+      await file.delete().catch((deleteError) => {
+        logger.error(`[makeSupportFilePublic] No se pudo eliminar el archivo inválido:`, deleteError)
+      })
+      throw new HttpsError('invalid-argument', 'La imagen no cumple los límites permitidos.')
+    }
 
     await file.makePublic()
-    logger.log(`[makeSupportFilePublic] Objeto ${filePath} marcado como público.`)
+    logger.log(`[makeSupportFilePublic] Objeto ${safeFilePath} marcado como público.`)
 
     return { success: true }
   } catch (error) {
-    logger.error(`[makeSupportFilePublic] Error al hacer público el archivo ${filePath}:`, error)
+    if (error instanceof HttpsError) throw error
+    logger.error(`[makeSupportFilePublic] Error al hacer público el archivo ${safeFilePath}:`, error)
     throw new HttpsError(
       'internal',
       `No se pudo establecer el permiso de lectura pública: ${error.message}`,
@@ -1824,12 +1847,16 @@ exports.deleteProfilePicture = onCall({ cors: true }, async (request) => {
     const url = new URL(currentPhotoURL)
     // La ruta del archivo es todo lo que viene después del nombre del bucket en el path.
     const filePath = decodeURIComponent(url.pathname.split('/').slice(2).join('/'))
+    const safeFilePath = getProfileImagePath(filePath, uid)
+    if (!safeFilePath) {
+      throw new HttpsError('failed-precondition', 'La foto de perfil no pertenece al usuario.')
+    }
 
     // 3. Eliminar el archivo de Firebase Storage
     const bucket = getStorageBucket()
-    await bucket.file(filePath).delete()
+    await bucket.file(safeFilePath).delete()
 
-    logger.log(`[deleteProfilePicture] Archivo eliminado de Storage: ${filePath}`)
+    logger.log(`[deleteProfilePicture] Archivo eliminado de Storage: ${safeFilePath}`)
 
     // 4. Actualizar el perfil del usuario en Auth para quitar la URL
     await admin.auth().updateUser(uid, { photoURL: null })

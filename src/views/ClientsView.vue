@@ -1,7 +1,4 @@
-<<<<<<< HEAD
 <!-- eslint-disable @typescript-eslint/no-explicit-any -->
-=======
->>>>>>> c933029 (Initial commit)
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref, computed, reactive, defineAsyncComponent } from 'vue'
 import { useClientsStore } from '@/stores/clients'
@@ -37,7 +34,6 @@ const editingClientId = ref<string | null>(null)
 const { showDialog } = useDialog()
 const loadMoreTrigger = ref<HTMLElement | null>(null)
 
-<<<<<<< HEAD
 const normalizeSearchText = (value: string) =>
   value
     .normalize('NFD')
@@ -53,8 +49,6 @@ const matchesSearch = (client: any, term: string) => {
     .some((value) => normalizeSearchText(String(value)).includes(normalizedTerm))
 }
 
-=======
->>>>>>> c933029 (Initial commit)
 // Propiedad computada para acceder fácilmente al perfil del cliente
 const profile = computed(() => clientsStore.selectedClientProfile)
 
@@ -76,7 +70,6 @@ const initializeFilters = () => {
 const fetchNextBatch = async () => {
   clientsStore.loading = true
   try {
-<<<<<<< HEAD
     const isSearching = Boolean(searchTerm.value.trim())
     let newClients: any[]
     if (isSearching) {
@@ -96,16 +89,6 @@ const fetchNextBatch = async () => {
       })
       newClients = (result.data as { clients: any[] }).clients
     }
-=======
-    const getClientsPage = httpsCallable(functions, 'getClientsPage')
-    const result = await getClientsPage({
-      status: statusFilter.value === 'Todos' ? undefined : statusFilter.value,
-      searchTerm: searchTerm.value || undefined,
-      startAfterDocId: pagination.pageHistory[pagination.currentPage - 1],
-    })
-
-    const newClients = (result.data as { clients: any[] }).clients
->>>>>>> c933029 (Initial commit)
     // Append instead of replace for infinite scroll
     if (pagination.currentPage === 1) {
       clientsStore.clients = newClients
@@ -119,11 +102,7 @@ const fetchNextBatch = async () => {
         pagination.pageHistory.push(lastId)
       }
     }
-<<<<<<< HEAD
     pagination.isLastPage = isSearching || newClients.length < 12
-=======
-    pagination.isLastPage = newClients.length < 12 // Asumiendo PAGE_SIZE = 12
->>>>>>> c933029 (Initial commit)
   } catch (error: any) {
     clientsStore.error = 'No se pudieron cargar los clientes. ' + error.message
   } finally {
@@ -448,11 +427,7 @@ const handleSearch = () => {
                   Sucursales y Contactos
                 </h3>
                 <div class="space-y-3">
-<<<<<<< HEAD
                   <div v-for="(sucursal, index) in profile.client.sucursales" :key="`${sucursal.nombre}-${sucursal.direccion}-${index}`"
-=======
-                  <div v-for="sucursal in profile.client.sucursales" :key="sucursal.nombre"
->>>>>>> c933029 (Initial commit)
                     class="bg-white/5 p-4 rounded-lg border border-white/10">
                     <div class="flex items-start">
                       <i class="fas fa-store text-gray-400 mt-1 mr-3"></i>
@@ -573,13 +548,10 @@ const handleSearch = () => {
             </div>
           </div>
         </div>
-<<<<<<< HEAD
         <div v-else-if="clientsStore.error" class="text-center text-red-400 py-12">
           <i class="fas fa-exclamation-triangle text-4xl mb-4"></i>
           <p>{{ clientsStore.error }}</p>
         </div>
-=======
->>>>>>> c933029 (Initial commit)
       </div>
     </div>
 

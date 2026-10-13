@@ -15,7 +15,7 @@ if (!firebaseApiKey) {
 }
 
 const firebaseConfig = {
-  apiKey: 'REDACTED_FIREBASE_API_KEY',
+  apiKey: firebaseApiKey,
   authDomain: 'sisfumi2.firebaseapp.com',
   projectId: 'sisfumi2',
   storageBucket: 'sisfumi2.firebasestorage.app',

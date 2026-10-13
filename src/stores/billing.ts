@@ -1,7 +1,4 @@
-<<<<<<< HEAD
 /* eslint-disable @typescript-eslint/no-explicit-any */
-=======
->>>>>>> c933029 (Initial commit)
 import { ref, computed } from 'vue'
 import { defineStore } from 'pinia'
 import { httpsCallable } from 'firebase/functions'
@@ -27,25 +24,17 @@ export interface BillingGroup {
   clientAddress: string
   services: BillingService[]
   totalValue: number
-<<<<<<< HEAD
   status: 'pending' | 'billed' | 'cancelled'
-=======
-  status: 'pending' | 'billed' | 'paid' | 'partially_paid'
->>>>>>> c933029 (Initial commit)
   month: number
   year: number
   invoiceNumber?: string
   createdAt?: string | Date
   dueDate?: string | Date
   observations?: string
-<<<<<<< HEAD
   periodoServicio?: string
   modeloFacturacion?: string
   valorBase?: number
   valorAdicionales?: number
-=======
-  paymentHistory?: any[] // <-- AÑADIDO
->>>>>>> c933029 (Initial commit)
 }
 
 // --- Store de Pinia ---
@@ -60,11 +49,7 @@ export const useBillingStore = defineStore('billing', () => {
   // --- ✅ NUEVO: Estado para filtros y búsqueda ---
   const pendingSearchTerm = ref('')
   const invoicedSearchTerm = ref('')
-<<<<<<< HEAD
   const invoicedStatusFilter = ref('todos') // 'todos', 'billed', 'cancelled'
-=======
-  const invoicedStatusFilter = ref('todos') // 'todos', 'billed', 'partially_paid', 'paid'
->>>>>>> c933029 (Initial commit)
 
   // --- ✅ NUEVO: Estado para el ordenamiento de la tabla de detalles ---
   const detailSort = ref({ key: 'fecha_visita', order: 'asc' })
@@ -98,32 +83,8 @@ export const useBillingStore = defineStore('billing', () => {
     // ✅ CORRECCIÓN: Usar las listas filtradas para que los KPIs sean dinámicos.
     const billed = filteredInvoicedGroups.value.reduce((sum, g) => sum + g.totalValue, 0)
     const pendingToInvoice = filteredPendingGroups.value.reduce((sum, g) => sum + g.totalValue, 0)
-<<<<<<< HEAD
     const invoicesIssued = filteredInvoicedGroups.value.filter((g) => g.status === 'billed').length
     return { billed, pendingToInvoice, invoicesIssued, totalBilled: billed }
-=======
-    // Aquí necesitarías una lógica más compleja para el total pagado si manejas pagos parciales.
-    // Por ahora, asumimos que 'paid' significa 100% pagado.
-    const paid = filteredInvoicedGroups.value.reduce((sum, g) => {
-      // Si el grupo está totalmente pagado, suma el valor total.
-      if (g.status === 'paid') {
-        return sum + g.totalValue
-      }
-      // Si tiene historial de pagos, suma los abonos.
-      if (g.paymentHistory && g.paymentHistory.length > 0) {
-        const paidInGroup = g.paymentHistory.reduce(
-          (paymentSum: number, p: any) => paymentSum + (p.amount || 0),
-          0,
-        )
-        return sum + paidInGroup
-      }
-      return sum
-    }, 0)
-
-    const pendingPayment = billed - paid
-
-    return { billed, pendingToInvoice, paid, pendingPayment, totalBilled: billed }
->>>>>>> c933029 (Initial commit)
   })
 
   // --- Actions ---
@@ -189,44 +150,26 @@ export const useBillingStore = defineStore('billing', () => {
   }
 
   /**
-<<<<<<< HEAD
    * Genera una factura validada y segura en el backend.
    */
   async function generateInvoiceReport(options: {
     servicesToInvoice: BillingService[]
     groupName: string
     clientId: string
-=======
-   * Genera un reporte de factura y devuelve el archivo Excel en base64.
-   */
-  async function generateInvoiceReport(options: {
-    visitIds: string[]
-    groupName: string
->>>>>>> c933029 (Initial commit)
     dueDays: number
     observations: string
   }) {
     const generateFn = httpsCallable(functions, 'generateInvoiceReport')
     const result = (await generateFn(options)) as {
-<<<<<<< HEAD
       data: { invoiceNumber: string }
-=======
-      data: { success: boolean; invoiceId: string; invoiceNumber: string; fileData: string }
->>>>>>> c933029 (Initial commit)
     }
     return result.data
   }
 
   /**
-<<<<<<< HEAD
    * Descarga el archivo Excel de una factura existente.
    */
   async function getInvoiceExcel(invoiceNumber: string) {
-=======
-   * Descarga un reporte de factura existente.
-   */
-  async function downloadExistingInvoice(invoiceNumber: string) {
->>>>>>> c933029 (Initial commit)
     const downloadFn = httpsCallable(functions, 'getInvoiceExcel')
     const result = (await downloadFn({ invoiceNumber })) as { data: { fileData: string } }
     return result.data
@@ -257,11 +200,7 @@ export const useBillingStore = defineStore('billing', () => {
     kpis,
     fetchBillingData,
     generateInvoiceReport,
-<<<<<<< HEAD
     getInvoiceExcel,
-=======
-    downloadExistingInvoice,
->>>>>>> c933029 (Initial commit)
     changeMonth,
     // --- ✅ NUEVO: Exponer nuevos estados y getters ---
     // ✅ CORRECCIÓN: Se añaden las propiedades que faltaban al return.

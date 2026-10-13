@@ -1,9 +1,6 @@
-<<<<<<< HEAD
 <!-- eslint-disable @typescript-eslint/no-unused-vars -->
 <!-- eslint-disable @typescript-eslint/ban-ts-comment -->
 <!-- eslint-disable @typescript-eslint/no-explicit-any -->
-=======
->>>>>>> c933029 (Initial commit)
 <script setup lang="ts">
 import { ref, watch, computed, nextTick, onMounted } from 'vue'
 import {
@@ -19,19 +16,13 @@ import { functions } from '@/firebase/config'
 import { useAuthStore } from '@/stores/auth'
 import { useToast } from '@/composables/useToast'
 import { useDialog } from '@/composables/useDialog'
-<<<<<<< HEAD
 import { onClickOutside } from '@vueuse/core'
-=======
->>>>>>> c933029 (Initial commit)
 
 const props = defineProps<{
   show: boolean
   visit: Visit | null
   selectedDate: Date | null
-<<<<<<< HEAD
   saving?: boolean
-=======
->>>>>>> c933029 (Initial commit)
 }>()
 
 const emit = defineEmits<{
@@ -53,7 +44,6 @@ const localVisit = ref<
 const activeTab = ref('details')
 const organizerName = ref<string | null>(null)
 const newChatNote = ref('')
-<<<<<<< HEAD
 const newClientEmailInput = ref('')
 const clientSearchTerm = ref('')
 const showClientResults = ref(false)
@@ -160,14 +150,11 @@ const filteredClients = computed(() => {
       .some((value) => normalizeSearchText(String(value)).includes(normalizedSearch)),
   )
 })
-=======
->>>>>>> c933029 (Initial commit)
 
 onMounted(() => {
   planningStore.fetchVisitTemplates()
 })
 
-<<<<<<< HEAD
 onClickOutside(clientSearchContainer, () => {
   showClientResults.value = false
 })
@@ -186,8 +173,6 @@ const handleClientSearchInput = () => {
   showClientResults.value = true
 }
 
-=======
->>>>>>> c933029 (Initial commit)
 const isEditMode = computed(() => !!localVisit.value.id)
 
 const availableServices = computed(() => {
@@ -217,7 +202,6 @@ watch(
   () => props.show,
   (newVal) => {
     if (newVal) activeTab.value = 'details'
-<<<<<<< HEAD
     if (!newVal) isSubmitting.value = false
 
     if (newVal) {
@@ -252,34 +236,6 @@ watch(
           fecha_visita_date: props.selectedDate
             ? formatDateInput(props.selectedDate)
             : formatDateInput(new Date()),
-=======
-
-    if (newVal) {
-      if (props.visit) {
-        const client = planningStore.clients.find((c: Client) => c.id === props.visit?.id_cliente)
-        if (client) {
-          localVisit.value.id_cliente = client.id
-        }
-        const visitDate = props.visit.start || props.visit.fecha_visita
-        const dateObj = new Date(visitDate)
-        localVisit.value = {
-          // @ts-ignore
-          ...(props.visit.extendedProps || props.visit),
-          fecha_visita_date: !isNaN(dateObj.getTime()) ? dateObj.toISOString().split('T')[0] : '',
-          fecha_visita_time: !isNaN(dateObj.getTime())
-            ? String(dateObj.toTimeString().split(' ')[0] ?? '00:00').substring(0, 5)
-            : '08:00',
-        }
-        nextTick(() => {
-          localVisit.value.tipo_visita = (props.visit?.extendedProps as Visit)?.tipo_visita || props.visit?.tipo_visita
-          localVisit.value.ubicacion = (props.visit?.extendedProps as Visit)?.ubicacion || props.visit?.ubicacion
-        })
-      } else {
-        localVisit.value = {
-          fecha_visita_date: props.selectedDate
-            ? props.selectedDate.toISOString().split('T')[0]
-            : new Date().toISOString().split('T')[0],
->>>>>>> c933029 (Initial commit)
           fecha_visita_time: '08:00',
           estado_visita: 'Programada',
           fumigadores_asignados: [],
@@ -309,12 +265,9 @@ watch(
   (newClientId) => {
     const client = planningStore.clients.find((c: Client) => c.id === newClientId)
     updateOrganizerName(client?.zona)
-<<<<<<< HEAD
 
     localVisit.value.zona = client?.zona || 'Sin Zona'
 
-=======
->>>>>>> c933029 (Initial commit)
     if (!isEditMode.value) {
       localVisit.value.tipo_visita = ''
       localVisit.value.ubicacion = ''
@@ -327,18 +280,14 @@ watch(
   (newLocation) => {
     const client = planningStore.clients.find((c: Client) => c.id === localVisit.value.id_cliente)
     const sucursal = client?.sucursales?.find((s: any) => s.direccion === newLocation)
-<<<<<<< HEAD
 
     const targetZone = sucursal?.zona || client?.zona || 'Sin Zona'
     localVisit.value.zona = targetZone
 
-=======
->>>>>>> c933029 (Initial commit)
     updateOrganizerName(sucursal?.zona || client?.zona)
   },
 )
 
-<<<<<<< HEAD
 watch(
   () => localVisit.value.tipo_visita,
   (newTipo) => {
@@ -370,8 +319,6 @@ watch(
   }
 )
 
-=======
->>>>>>> c933029 (Initial commit)
 const applyTemplate = (templateId: string) => {
   if (!templateId) return
   const template = planningStore.visitTemplates.find((t: VisitTemplate) => t.id === templateId)
@@ -387,7 +334,6 @@ const applyTemplate = (templateId: string) => {
 }
 
 const handleSubmit = async () => {
-<<<<<<< HEAD
   if (isSubmitting.value || props.saving) return
   isSubmitting.value = true
 
@@ -400,21 +346,11 @@ const handleSubmit = async () => {
     if (sucursalMatch) {
       if (sucursalMatch.zona) visitZone = sucursalMatch.zona
       sucursalNombre = sucursalMatch.nombre // <-- AQUí CAPTURAMOS EL NOMBRE (Ej: "Qbano")
-=======
-  const client = planningStore.clients.find((c: Client) => c.id === localVisit.value.id_cliente)
-  let visitZone = client?.zona || 'Sin Zona'
-
-  if (client && client.sucursales) {
-    const sucursalMatch = client.sucursales.find((s: any) => s.direccion === localVisit.value.ubicacion)
-    if (sucursalMatch && sucursalMatch.zona) {
-      visitZone = sucursalMatch.zona
->>>>>>> c933029 (Initial commit)
     }
   }
 
   localVisit.value.zona = visitZone
 
-<<<<<<< HEAD
   const visitToSave: typeof localVisit.value & { duracion_minutos?: number; sucursal: string } = {
     ...localVisit.value,
     sucursal: sucursalNombre // <-- LO INCLUIDOS EN EL OBJETO QUE VIAJA A FIREBASE
@@ -423,10 +359,6 @@ const handleSubmit = async () => {
   const combinedDateTime = new Date(
     `${localVisit.value.fecha_visita_date}T${localVisit.value.fecha_visita_time || '00:00'}:00`,
   )
-=======
-  const visitToSave = { ...localVisit.value }
-  const combinedDateTime = new Date(`${visitToSave.fecha_visita_date}T${visitToSave.fecha_visita_time || '00:00'}:00`)
->>>>>>> c933029 (Initial commit)
   visitToSave.fecha_visita = combinedDateTime.toISOString()
   delete visitToSave.fecha_visita_date
   delete visitToSave.fecha_visita_time
@@ -441,10 +373,7 @@ const handleSubmit = async () => {
   const technicians = visitToSave.fumigadores_asignados || []
 
   if (technicians.length === 0 || visitToSave.isUrgent) {
-<<<<<<< HEAD
     isSubmitting.value = false
-=======
->>>>>>> c933029 (Initial commit)
     emit('save', visitToSave)
     return
   }
@@ -454,10 +383,7 @@ const handleSubmit = async () => {
     const result = (await checkForConflictsFn({
       technicians: technicians,
       startTimeISO: combinedDateTime.toISOString(),
-<<<<<<< HEAD
       durationMinutes: visitToSave.duracion_minutos,
-=======
->>>>>>> c933029 (Initial commit)
       visitIdToIgnore: visitToSave.id || null,
     })) as { data: { hasConflict: boolean; conflictingClient?: string; conflictingTechnician?: string } }
 
@@ -467,7 +393,6 @@ const handleSubmit = async () => {
         message: `El técnico <strong>${result.data.conflictingTechnician}</strong> ya tiene una visita con <strong>${result.data.conflictingClient}</strong>. <br><br>¿Desea ignorar el aviso y programar de todas formas?`,
         isConfirmation: true,
         confirmationText: 'Sí, programar',
-<<<<<<< HEAD
         onConfirm: () => {
           isSubmitting.value = false
           emit('save', visitToSave)
@@ -479,14 +404,6 @@ const handleSubmit = async () => {
     }
   } catch (error: any) {
     isSubmitting.value = false
-=======
-        onConfirm: () => emit('save', visitToSave)
-      })
-    } else {
-      emit('save', visitToSave)
-    }
-  } catch (error: any) {
->>>>>>> c933029 (Initial commit)
     showToast({
       title: 'Error de Verificación',
       message: `No se pudo verificar disponibilidad: ${error.message}`,
@@ -622,7 +539,6 @@ const addChatNote = () => {
             <div :class="{ 'md:col-span-2': isEditMode || planningStore.visitTemplates.length === 0 }">
               <label class="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2 block">Cliente <span
                   class="text-[#d60000]">*</span></label>
-<<<<<<< HEAD
               <div ref="clientSearchContainer" class="relative">
                 <input v-model="clientSearchTerm" type="search" class="input-field-dark w-full"
                   placeholder="Buscar cliente..." autocomplete="off" @focus="showClientResults = true"
@@ -646,12 +562,6 @@ const addChatNote = () => {
               </div>
               <input v-model="localVisit.id_cliente" type="text" required tabindex="-1" aria-hidden="true"
                 class="sr-only" />
-=======
-              <select v-model="localVisit.id_cliente" class="input-field-dark w-full" required>
-                <option disabled value="">Seleccione un cliente...</option>
-                <option v-for="c in planningStore.clients" :key="c.id" :value="c.id">{{ c.nombreComercial }}</option>
-              </select>
->>>>>>> c933029 (Initial commit)
             </div>
           </div>
 
@@ -759,7 +669,6 @@ const addChatNote = () => {
           </div>
         </div>
 
-<<<<<<< HEAD
 <!-- Sección: Correos de Clientes Invitados (Dinámico por Cliente) -->
           <div class="p-4 bg-white/5 rounded-xl border border-white/10 space-y-3">
             <label class="text-xs font-bold text-gray-400 uppercase tracking-wider flex items-center gap-2">
@@ -824,8 +733,6 @@ const addChatNote = () => {
             </div>
           </div>
 
-=======
->>>>>>> c933029 (Initial commit)
         <!-- Pestaña: HISTORIAL -->
         <div v-show="activeTab === 'history'" class="space-y-4 animate-fade-in">
           <div v-if="!visit?.history?.length" class="flex flex-col items-center justify-center py-20 text-gray-600">
@@ -842,11 +749,7 @@ const addChatNote = () => {
                 <div class="flex justify-between items-start mb-2">
                   <span class="text-xs font-bold text-[#d60000] uppercase tracking-wider">{{ log.action }}</span>
                   <span class="text-[10px] text-gray-500 font-mono">{{ new Date(log.timestamp.toDate()).toLocaleString()
-<<<<<<< HEAD
                     }}</span>
-=======
-                  }}</span>
->>>>>>> c933029 (Initial commit)
                 </div>
                 <p class="text-sm text-gray-200 leading-relaxed">{{ log.details }}</p>
                 <div class="mt-2 flex items-center gap-2 text-xs text-gray-500">
@@ -896,7 +799,6 @@ const addChatNote = () => {
         <div v-else class="hidden sm:block"></div>
 
         <div class="flex gap-3 justify-end">
-<<<<<<< HEAD
           <button @click="$emit('close')" type="button" :disabled="isSubmitting || saving"
             class="btn btn-secondary bg-white/5 hover:bg-white/10 border-white/10 disabled:opacity-50">Cancelar</button>
           <button @click="handleSubmit" type="button" :disabled="isSubmitting || saving"
@@ -904,14 +806,6 @@ const addChatNote = () => {
             <i v-if="isSubmitting || saving" class="fas fa-spinner fa-spin mr-2"></i>
             <i v-else class="fas fa-save mr-2"></i>
             {{ isSubmitting || saving ? (isEditMode ? 'Guardando...' : 'Creando visita...') : (isEditMode ? 'Guardar Cambios' : 'Confirmar Programación') }}
-=======
-          <button @click="$emit('close')" type="button"
-            class="btn btn-secondary bg-white/5 hover:bg-white/10 border-white/10">Cancelar</button>
-          <button @click="handleSubmit" type="button"
-            class="btn btn-primary bg-[#d60000] hover:bg-red-700 shadow-lg shadow-red-500/20 px-8">
-            <i class="fas fa-save mr-2"></i>
-            {{ isEditMode ? 'Guardar Cambios' : 'Confirmar Programación' }}
->>>>>>> c933029 (Initial commit)
           </button>
         </div>
       </div>

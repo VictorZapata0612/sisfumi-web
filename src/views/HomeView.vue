@@ -13,20 +13,12 @@ const router = useRouter()
 const visitsPerMonthChartCanvas = ref<HTMLCanvasElement | null>(null)
 const serviceTypeChartCanvas = ref<HTMLCanvasElement | null>(null)
 const servicesByFrequencyChartCanvas = ref<HTMLCanvasElement | null>(null)
-<<<<<<< HEAD
-=======
-const clientsByCityChartCanvas = ref<HTMLCanvasElement | null>(null)
->>>>>>> c933029 (Initial commit)
 const technicianProductivityChartCanvas = ref<HTMLCanvasElement | null>(null)
 
 // Referencias a las instancias de Chart.js para poder destruirlas
 let visitsPerMonthChartInstance: Chart | null = null
 let serviceTypeChartInstance: Chart | null = null
 let servicesByFrequencyChartInstance: Chart | null = null
-<<<<<<< HEAD
-=======
-let clientsByCityChartInstance: Chart | null = null
->>>>>>> c933029 (Initial commit)
 let technicianProductivityChartInstance: Chart | null = null
 
 const formatCurrency = (value: number) => {
@@ -37,13 +29,6 @@ const formatCurrency = (value: number) => {
   }).format(value)
 }
 
-<<<<<<< HEAD
-=======
-const navigateToClientsByCity = (city: string) => {
-  router.push({ name: 'clientes', query: { cityFilter: city } })
-}
-
->>>>>>> c933029 (Initial commit)
 const navigateToPlanning = (visitId: string) => {
   router.push({ name: 'planeacion', query: { visitIdToOpen: visitId } })
 }
@@ -64,10 +49,6 @@ const renderCharts = () => {
   if (visitsPerMonthChartInstance) visitsPerMonthChartInstance.destroy()
   if (serviceTypeChartInstance) serviceTypeChartInstance.destroy()
   if (servicesByFrequencyChartInstance) servicesByFrequencyChartInstance.destroy()
-<<<<<<< HEAD
-=======
-  if (clientsByCityChartInstance) clientsByCityChartInstance.destroy()
->>>>>>> c933029 (Initial commit)
   if (technicianProductivityChartInstance) technicianProductivityChartInstance.destroy()
 
   // 1. Gráfico de Visitas por Mes
@@ -190,64 +171,7 @@ const renderCharts = () => {
     })
   }
 
-<<<<<<< HEAD
   // 4. Gráfico de Productividad de Técnicos
-=======
-  // 4. Gráfico de Clientes por Ciudad
-  if (clientsByCityChartCanvas.value && dashboardStore.charts.clientsByCity) {
-    const data = dashboardStore.charts.clientsByCity
-    const sortedData = Object.entries(data).sort(([, a], [, b]) => (b as number) - (a as number))
-    const labels = sortedData.map((item) => item[0])
-    const values = sortedData.map((item) => item[1] as number)
-    clientsByCityChartInstance = new Chart(clientsByCityChartCanvas.value, {
-      type: 'bar',
-      data: {
-        labels,
-        datasets: [
-          {
-            label: 'Clientes',
-            data: values,
-            backgroundColor: '#8b5cf6',
-            borderRadius: 4,
-          },
-        ],
-      },
-      options: {
-        indexAxis: 'y',
-        responsive: true,
-        maintainAspectRatio: false,
-        plugins: {
-          legend: { display: false },
-          datalabels: { display: false },
-          tooltip: {
-            callbacks: {
-              label: (context) => ` ${context.parsed.x} clientes`,
-            },
-          },
-        },
-        scales: {
-          y: { grid: { display: false } },
-          x: { display: false },
-        },
-        onClick: (event, elements) => {
-          if (elements.length > 0) {
-            const index = elements[0]!.index
-            const cityName = labels[index]
-            if (cityName) {
-              navigateToClientsByCity(cityName)
-            }
-          }
-        },
-        onHover: (event, chartElement) => {
-          const target = event.native?.target as HTMLElement
-          if (target) target.style.cursor = chartElement[0] ? 'pointer' : 'default'
-        },
-      },
-    })
-  }
-
-  // 5. Gráfico de Productividad de Técnicos
->>>>>>> c933029 (Initial commit)
   if (technicianProductivityChartCanvas.value && dashboardStore.charts.technicianStats) {
     const data = dashboardStore.charts.technicianStats as Record<
       string,
@@ -352,13 +276,8 @@ watch(
 
     <!-- Skeleton Loader -->
     <div v-if="dashboardStore.loading" class="animate-pulse space-y-6">
-<<<<<<< HEAD
       <div class="grid grid-cols-2 md:grid-cols-6 gap-4">
         <div v-for="i in 6" :key="i" class="bg-[#151515] rounded-xl h-24"></div>
-=======
-      <div class="grid grid-cols-2 md:grid-cols-5 gap-4">
-        <div v-for="i in 5" :key="i" class="bg-[#151515] rounded-xl h-24"></div>
->>>>>>> c933029 (Initial commit)
       </div>
       <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div class="lg:col-span-2 bg-[#151515] rounded-xl h-80"></div>
@@ -379,11 +298,7 @@ watch(
     <!-- Dashboard Content -->
     <div v-else-if="dashboardStore.kpis" class="space-y-6 animate-fade-in">
       <!-- KPIs Grid -->
-<<<<<<< HEAD
       <section class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-4">
-=======
-      <section class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
->>>>>>> c933029 (Initial commit)
         <!-- Clientes -->
         <RouterLink to="/clientes"
           class="bg-[#151515] p-4 rounded-xl border border-white/10 shadow-lg hover:border-indigo-500/50 hover:shadow-indigo-500/10 transition-all group">
@@ -400,7 +315,6 @@ watch(
           </div>
         </RouterLink>
 
-<<<<<<< HEAD
         <!-- Sucursales -->
         <RouterLink to="/clientes"
           class="bg-[#151515] p-4 rounded-xl border border-white/10 shadow-lg hover:border-orange-500/50 hover:shadow-orange-500/10 transition-all group">
@@ -417,8 +331,6 @@ watch(
           </div>
         </RouterLink>
 
-=======
->>>>>>> c933029 (Initial commit)
         <!-- Servicios -->
         <RouterLink to="/servicios"
           class="bg-[#151515] p-4 rounded-xl border border-white/10 shadow-lg hover:border-emerald-500/50 hover:shadow-emerald-500/10 transition-all group">
@@ -589,16 +501,6 @@ watch(
             </div>
           </div>
 
-<<<<<<< HEAD
-=======
-          <!-- Clientes por Ciudad (Mini Chart) -->
-          <div class="bg-[#151515] rounded-xl border border-white/10 shadow-lg p-4">
-            <h3 class="font-bold text-gray-200 mb-2 text-sm uppercase">Top Ciudades</h3>
-            <div class="h-40 relative">
-              <canvas ref="clientsByCityChartCanvas"></canvas>
-            </div>
-          </div>
->>>>>>> c933029 (Initial commit)
         </div>
       </section>
     </div>

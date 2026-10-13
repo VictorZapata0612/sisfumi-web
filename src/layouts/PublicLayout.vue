@@ -82,7 +82,6 @@ onUnmounted(() => {
               <span
                 class="absolute bottom-0 left-0 w-0 h-0.5 bg-brand-red transition-all duration-300 group-hover:w-full"></span>
             </RouterLink>
-<<<<<<< HEAD
 
             <RouterLink to="/politicas-de-privacidad"
               class="relative text-gray-300 hover:text-white transition-colors duration-300 group py-2">
@@ -99,8 +98,6 @@ onUnmounted(() => {
             </RouterLink>
 
 
-=======
->>>>>>> c933029 (Initial commit)
             <div class="pl-6 border-l border-white/10">
               <RouterLink to="/login" target="_blank" rel="noopener noreferrer"
                 class="btn-public-secondary !px-5 !py-2 !text-xs !uppercase !tracking-wider">

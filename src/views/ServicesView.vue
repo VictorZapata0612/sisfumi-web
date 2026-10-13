@@ -1,25 +1,16 @@
-<<<<<<< HEAD
 <!-- eslint-disable @typescript-eslint/no-explicit-any -->
-=======
->>>>>>> c933029 (Initial commit)
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
 import { useServicesStore, type Service } from '@/stores/services'
 import { useAuthStore } from '@/stores/auth'
-<<<<<<< HEAD
 import { useSettingsStore } from '@/stores/settings'
-=======
->>>>>>> c933029 (Initial commit)
 import ServiceFormModal from '@/components/ServiceFormModal.vue'
 import { useToast } from '@/composables/useToast'
 import { onClickOutside } from '@vueuse/core'
 
 const servicesStore = useServicesStore()
 const authStore = useAuthStore()
-<<<<<<< HEAD
 const settingsStore = useSettingsStore()
-=======
->>>>>>> c933029 (Initial commit)
 const { showToast } = useToast()
 const searchTerm = ref('')
 const showModal = ref(false)
@@ -28,7 +19,6 @@ const editingServiceIndex = ref(-1)
 const showClientResults = ref(false)
 const searchResultsContainer = ref(null)
 
-<<<<<<< HEAD
 const normalizeSearchText = (value: string) =>
   value
     .normalize('NFD')
@@ -37,25 +27,17 @@ const normalizeSearchText = (value: string) =>
     .trim()
     .replace(/\s+/g, ' ')
 
-=======
->>>>>>> c933029 (Initial commit)
 // Filtro local de clientes
 const filteredClients = computed(() => {
   // Si no hay término de búsqueda, mostrar los primeros 10 para no saturar la lista
   if (!searchTerm.value) {
     return servicesStore.clientList.slice(0, 10)
   }
-<<<<<<< HEAD
   const normalizedSearch = normalizeSearchText(searchTerm.value)
 
   // Permitir coincidencias parciales, sin distinguir mayúsculas ni tildes.
   return servicesStore.clientList.filter((client) =>
     normalizeSearchText(client.nombreComercial).includes(normalizedSearch),
-=======
-  // Filtrar por nombre comercial (case insensitive)
-  return servicesStore.clientList.filter((client) =>
-    client.nombreComercial.toLowerCase().includes(searchTerm.value.toLowerCase()),
->>>>>>> c933029 (Initial commit)
   )
 })
 
@@ -63,7 +45,6 @@ const canApprovePrices = computed(() => {
   return (
     authStore.userRole === 'Administrador' ||
     authStore.userRole === 'Jefe' ||
-<<<<<<< HEAD
     authStore.userRole === 'Coordinador Nacionales' ||
     authStore.userRole === 'Coordinador Nacional' ||
     authStore.userRole === 'Gerente'
@@ -74,13 +55,6 @@ onMounted(async () => {
   // Cargar los datos maestros (tipos de servicio, zonas, etc.) para que el modal los tenga disponibles
   await settingsStore.fetchBusinessData()
 
-=======
-    authStore.userRole === 'Coordinador Nacionales'
-  )
-})
-
-onMounted(() => {
->>>>>>> c933029 (Initial commit)
   // Aseguramos cargar la lista completa para el buscador local
   servicesStore.fetchClients()
   // Si el usuario tiene permisos, cargamos las solicitudes pendientes
@@ -94,13 +68,8 @@ onClickOutside(searchResultsContainer, () => {
   showClientResults.value = false
 })
 
-<<<<<<< HEAD
 const handleSelectClient = async (clientId: string) => {
   await servicesStore.fetchServiceSheet(clientId)
-=======
-const handleSelectClient = (clientId: string) => {
-  servicesStore.fetchServiceSheet(clientId)
->>>>>>> c933029 (Initial commit)
   // Actualizar el input con el nombre seleccionado
   const client = servicesStore.clientList.find((c) => c.id === clientId)
   if (client) {
@@ -129,7 +98,6 @@ const openEditModal = (service: Service, index: number) => {
   showModal.value = true
 }
 
-<<<<<<< HEAD
 const handlePriceRequest = async (request: any) => {
   // 1. Seleccionar el cliente
   await handleSelectClient(request.clientId)
@@ -139,21 +107,6 @@ const handlePriceRequest = async (request: any) => {
 }
 
 const handleSaveService = () => {
-=======
-const handlePriceRequest = (request: any) => {
-  // 1. Seleccionar el cliente
-  handleSelectClient(request.clientId)
-
-  // 2. Abrir el modal con el servicio correcto
-  // Esperamos un tick para que la ficha de servicio del cliente se cargue
-  setTimeout(() => {
-    openEditModal(request.service, request.serviceIndex)
-  }, 200) // Un pequeño delay para asegurar la carga
-}
-
-const handleSaveService = (service: Service, index: number) => {
-  servicesStore.upsertService(service, index)
->>>>>>> c933029 (Initial commit)
   showModal.value = false
 }
 
@@ -177,7 +130,6 @@ const handleSaveSheet = async () => {
     })
   }
 }
-<<<<<<< HEAD
 
 // Función auxiliar para obtener los nombres de las sucursales a partir de sus IDs
 const getBranchNames = (branchIds: string[]) => {
@@ -192,8 +144,6 @@ const getBranchNames = (branchIds: string[]) => {
   return branchNames.join(', ')
 }
 
-=======
->>>>>>> c933029 (Initial commit)
 </script>
 
 <template>
@@ -209,11 +159,7 @@ const getBranchNames = (branchIds: string[]) => {
       <!-- Corrección Z-Index: Bajamos a z-10 para no tapar el menú lateral -->
       <div class="relative w-full md:w-96 z-10" ref="searchResultsContainer">
         <div class="relative">
-<<<<<<< HEAD
           <input v-model="searchTerm" @focus="handleFocus" type="text" id="clientSearchInput"
-=======
-          <input v-model="searchTerm" @focus="handleFocus" type="search" id="clientSearchInput"
->>>>>>> c933029 (Initial commit)
             class="w-full pl-10 pr-4 py-2.5 bg-[#0a0a0a] border border-white/10 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-[#d60000] focus:border-[#d60000] transition-all shadow-sm"
             placeholder="Buscar cliente..." autocomplete="off" />
           <i class="fas fa-search absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"></i>
@@ -362,18 +308,12 @@ const getBranchNames = (branchIds: string[]) => {
 
               <div class="flex justify-between items-end border-t border-white/10 pt-3 mt-2">
                 <div class="text-xs text-gray-400 max-w-[60%]">
-<<<<<<< HEAD
                   <p class="truncate" :title="getBranchNames(service.sucursales_asignadas)">
                     <i class="fas fa-map-marker-alt mr-1"></i>
                     Sucursales: {{ service.sucursales_asignadas.length > 0 ? service.sucursales_asignadas.length : 'Todas' }}
                   </p>
                   <p v-if="service.sucursales_asignadas.length > 0" class="truncate mt-1 text-gray-500">
                     {{ getBranchNames(service.sucursales_asignadas) }}
-=======
-                  <p class="truncate">
-                    <i class="fas fa-map-marker-alt mr-1"></i> Sucursales:
-                    {{ service.sucursales_asignadas.length }}
->>>>>>> c933029 (Initial commit)
                   </p>
                 </div>
                 <div class="text-right">
@@ -432,17 +372,8 @@ const getBranchNames = (branchIds: string[]) => {
                   </td>
                   <td class="px-6 py-4">
                     <div class="text-sm text-gray-300 truncate max-w-xs"
-<<<<<<< HEAD
                       :title="getBranchNames(service.sucursales_asignadas)">
                       {{ getBranchNames(service.sucursales_asignadas) }}
-=======
-                      :title="service.sucursales_asignadas.join(', ')">
-                      {{
-                        service.sucursales_asignadas.length > 0
-                          ? service.sucursales_asignadas.join(', ')
-                          : 'Todas'
-                      }}
->>>>>>> c933029 (Initial commit)
                     </div>
                   </td>
                   <td class="px-6 py-4 whitespace-nowrap">

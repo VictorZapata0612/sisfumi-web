@@ -1,8 +1,5 @@
-<<<<<<< HEAD
 <!-- eslint-disable @typescript-eslint/no-unused-vars -->
 <!-- eslint-disable @typescript-eslint/no-explicit-any -->
-=======
->>>>>>> c933029 (Initial commit)
 <script setup lang="ts">
 import { onMounted, ref, nextTick, computed, watch } from 'vue'
 import {
@@ -42,7 +39,6 @@ ChartJS.register(Title, Tooltip, Legend, BarElement, CategoryScale, LinearScale)
 // Declaramos la variable global de Google para evitar errores de TypeScript
 declare const google: any
 
-<<<<<<< HEAD
 // Solo Administrador/Jefe pueden consultar integraciones y usuarios globales.
 const isAdminOrJefe = computed(() =>
   ['Administrador', 'Jefe'].includes(authStore.userRole || ''),
@@ -60,15 +56,6 @@ onMounted(async () => {
   } else if (authStore.user?.uid) {
     settingsStore.fetchOwnIntegrationStatus(authStore.user.uid)
   }
-=======
-onMounted(async () => {
-  // Asegurar que los datos de negocio se carguen primero.
-  await settingsStore.fetchBusinessData()
-  settingsStore.fetchIntegrations()
-  planningStore.fetchVisitTemplates()
-  fetchLogs() // Cargar logs iniciales
-  settingsStore.fetchUsers()
->>>>>>> c933029 (Initial commit)
 })
 
 // Observar cambios en el usuario actual (ej. al subir foto) y actualizar la lista localmente
@@ -390,7 +377,6 @@ const isCurrentUser = (uid: string) => {
   return authStore.user?.uid === uid
 }
 
-<<<<<<< HEAD
 const myIntegrationConnected = computed(() => {
   if (!isAdminOrJefe.value) return settingsStore.ownIntegrationConnected
   return (
@@ -399,18 +385,6 @@ const myIntegrationConnected = computed(() => {
 })
 
 const handleConnectGoogle = (targetUid: string) => {
-=======
-const handleConnectGoogle = (targetUid: string) => {
-  if (typeof google === 'undefined') {
-    showToast({
-      title: 'Error de Carga',
-      message: 'Los servicios de Google no están listos. Por favor recarga la página.',
-      type: 'error',
-    })
-    return
-  }
-
->>>>>>> c933029 (Initial commit)
   const clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID
 
   if (!clientId) {
@@ -422,7 +396,6 @@ const handleConnectGoogle = (targetUid: string) => {
     return
   }
 
-<<<<<<< HEAD
   authStore
     .connectGoogleAccount(clientId, targetUid)
     .then(() => {
@@ -479,35 +452,6 @@ const handleDisconnectMyAccount = () => {
       }
     },
   })
-=======
-  const client = google.accounts.oauth2.initCodeClient({
-    client_id: clientId,
-    scope: 'https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile https://www.googleapis.com/auth/gmail.send',
-    ux_mode: 'popup',
-    callback: async (response: any) => {
-      if (response.code) {
-        try {
-          await authStore.connectGoogleAccount(response.code, targetUid)
-          showToast({
-            title: '¡Éxito!',
-            message: 'La cuenta de Google ha sido conectada correctamente.',
-            type: 'success',
-          })
-          settingsStore.fetchUsers()
-          settingsStore.fetchIntegrations()
-        } catch (error: any) {
-          showToast({
-            title: 'Error de Conexión',
-            message: error.message || 'No se pudo conectar la cuenta.',
-            type: 'error',
-          })
-        }
-      }
-    },
-  })
-
-  client.requestCode()
->>>>>>> c933029 (Initial commit)
 }
 
 const handleUndoRoleChange = (log: AuditLog) => {
@@ -891,11 +835,7 @@ const handleImportClick = () => {
       </section>
 
       <!-- Auditoría -->
-<<<<<<< HEAD
       <section v-if="isAdminOrJefe && settingsStore.auditLogs.length > 0">
-=======
-      <section v-if="settingsStore.auditLogs.length > 0">
->>>>>>> c933029 (Initial commit)
         <div class="flex items-center gap-3 mb-4 text-gray-300">
           <div class="h-px bg-white/10 flex-grow"></div>
           <span class="text-sm font-bold uppercase tracking-wider"><i
@@ -975,11 +915,7 @@ const handleImportClick = () => {
       </section>
 
       <!-- Gestión de Usuarios -->
-<<<<<<< HEAD
       <section v-if="isAdminOrJefe">
-=======
-      <section>
->>>>>>> c933029 (Initial commit)
         <div class="flex items-center gap-3 mb-4 text-gray-300">
           <div class="h-px bg-white/10 flex-grow"></div>
           <span class="text-sm font-bold uppercase tracking-wider"><i class="fas fa-users-cog mr-2"></i>Usuarios del
@@ -1092,7 +1028,6 @@ const handleImportClick = () => {
         </div>
       </section>
 
-<<<<<<< HEAD
       <!-- Mi Cuenta de Google (Coordinadores y demás roles no-admin) -->
       <section v-if="!isAdminOrJefe">
         <div class="flex items-center gap-3 mb-4 text-gray-300">
@@ -1131,10 +1066,6 @@ const handleImportClick = () => {
 
       <!-- Integraciones -->
       <section v-if="isAdminOrJefe && settingsStore.integrations.length > 0">
-=======
-      <!-- Integraciones -->
-      <section v-if="settingsStore.integrations.length > 0">
->>>>>>> c933029 (Initial commit)
         <div class="flex items-center gap-3 mb-4 text-gray-300">
           <div class="h-px bg-white/10 flex-grow"></div>
           <span class="text-sm font-bold uppercase tracking-wider"><i class="fas fa-link mr-2"></i>Cuentas

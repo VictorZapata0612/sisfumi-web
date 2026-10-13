@@ -1,7 +1,4 @@
-<<<<<<< HEAD
 /* eslint-disable @typescript-eslint/no-explicit-any */
-=======
->>>>>>> c933029 (Initial commit)
 import { ref } from 'vue'
 import { defineStore } from 'pinia'
 import { httpsCallable } from 'firebase/functions'

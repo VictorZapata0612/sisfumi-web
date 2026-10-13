@@ -35,8 +35,5 @@ coverage
 
 # Vitest
 __screenshots__/
-<<<<<<< HEAD
 functions/googleConfig.js
 functions/.env.*
-=======
->>>>>>> c933029 (Initial commit)

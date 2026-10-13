@@ -6,11 +6,8 @@ const props = defineProps<{
   selectedCount: number
   clientName: string
   totalAmount: number
-<<<<<<< HEAD
   error?: string | null
   loading?: boolean
-=======
->>>>>>> c933029 (Initial commit)
 }>()
 
 const emit = defineEmits(['close', 'generate'])
@@ -65,14 +62,11 @@ const formatCurrency = (value: number) => {
 
       <!-- Body -->
       <div class="p-6 space-y-6">
-<<<<<<< HEAD
         <!-- Error Message -->
         <div v-if="error" class="bg-red-500/10 border border-red-500/30 rounded-lg p-4 flex gap-3">
           <i class="fas fa-exclamation-circle text-red-400 flex-shrink-0 mt-0.5"></i>
           <p class="text-red-200 text-sm">{{ error }}</p>
         </div>
-=======
->>>>>>> c933029 (Initial commit)
         <!-- Info Resumen -->
         <div class="bg-blue-900/20 rounded-xl border border-blue-500/30 p-4">
           <p class="text-xs text-blue-300 font-bold uppercase tracking-wider mb-2">Resumen de Selección</p>
@@ -111,7 +105,6 @@ const formatCurrency = (value: number) => {
 
       <!-- Footer -->
       <div class="p-6 bg-[#0a0a0a]/30 border-t border-white/10 flex gap-3">
-<<<<<<< HEAD
         <button @click="emit('close')" type="button" :disabled="loading"
           class="flex-1 py-3 px-4 rounded-xl font-bold text-gray-400 hover:text-white hover:bg-white/10 transition-colors disabled:opacity-50">
           Cancelar
@@ -121,15 +114,6 @@ const formatCurrency = (value: number) => {
           <i v-if="!loading" class="fas fa-file-invoice-dollar"></i>
           <i v-else class="fas fa-spinner animate-spin"></i>
           {{ loading ? 'Generando...' : 'Confirmar y Crear' }}
-=======
-        <button @click="emit('close')" type="button"
-          class="flex-1 py-3 px-4 rounded-xl font-bold text-gray-400 hover:text-white hover:bg-white/10 transition-colors">
-          Cancelar
-        </button>
-        <button @click="handleGenerate" type="button"
-          class="flex-1 py-3 px-4 bg-[#d60000] hover:bg-red-700 text-white font-bold rounded-xl shadow-lg shadow-red-500/20 transition-all active:scale-95">
-          Confirmar y Crear
->>>>>>> c933029 (Initial commit)
         </button>
       </div>
 
