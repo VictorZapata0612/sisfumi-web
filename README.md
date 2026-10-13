@@ -24,20 +24,23 @@ Sisfumi APP es una plataforma web para la gestión integral de servicios de fumi
 - Tailwind CSS
 - Chart.js
 
-## Configuración de Google Calendar
+## Configuración de Firebase y Google Calendar
 
-El frontend necesita el ID de cliente OAuth de Google para conectar calendarios.
+La aplicación necesita la configuración del proyecto Firebase y el ID de cliente OAuth de Google. La API key de Firebase es un valor de configuración del cliente, no un secreto de backend, pero se mantiene fuera del código fuente para evitar publicar credenciales de configuración y facilitar el uso de distintos proyectos.
 
-1. En Google Cloud Console, abre el proyecto `sisfumi2` y ve a **APIs y servicios > Credenciales**.
-2. Crea o selecciona un **ID de cliente OAuth 2.0** de tipo **Aplicación web**.
-3. En **Orígenes autorizados de JavaScript**, agrega `https://controltotalyph.com` y el origen local que uses, por ejemplo `http://localhost:5173`.
-4. Copia `.env.example` como `.env.local` y reemplaza el valor por el Client ID real:
+1. Copia `.env.example` como `.env.local`.
+2. En Firebase Console, abre el proyecto `sisfumi2`, ve a **Configuración del proyecto > Tus aplicaciones** y copia la API key web en `VITE_FIREBASE_API_KEY`.
+
+3. En Google Cloud Console, abre el proyecto `sisfumi2` y ve a **APIs y servicios > Credenciales**.
+4. Crea o selecciona un **ID de cliente OAuth 2.0** de tipo **Aplicación web**.
+5. En **Orígenes autorizados de JavaScript**, agrega `https://controltotalyph.com` y el origen local que uses, por ejemplo `http://localhost:5173`.
+6. En `.env.local`, reemplaza el valor por el Client ID real:
 
 	```text
 	VITE_GOOGLE_CLIENT_ID=tu-client-id.apps.googleusercontent.com
 	```
 
-5. Ejecuta nuevamente `npm run build` y publica la carpeta `dist`.
+7. Ejecuta nuevamente `npm run build` y publica la carpeta `dist`.
 
 El archivo `.env.local` no debe publicarse ni subirse al repositorio. El Client ID puede aparecer en el frontend; las credenciales secretas deben permanecer únicamente en Cloud Functions.
 

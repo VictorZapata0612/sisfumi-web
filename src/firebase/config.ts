@@ -6,12 +6,16 @@ import { getFunctions } from 'firebase/functions'
 import { getStorage } from 'firebase/storage'
 
 // Tu configuración de Firebase, la misma que usas en la app de Electron.
+const firebaseApiKey = import.meta.env.VITE_FIREBASE_API_KEY
+
+if (!firebaseApiKey) {
+  throw new Error(
+    'Falta VITE_FIREBASE_API_KEY. Configúrala en el archivo .env.local.',
+  )
+}
+
 const firebaseConfig = {
-<<<<<<< HEAD
-  apiKey: 'AIzaSyDgaO6YDaHSsdypxbl8iyPDOmgikE5ayTU',
-=======
   apiKey: 'REDACTED_FIREBASE_API_KEY',
->>>>>>> c933029 (Initial commit)
   authDomain: 'sisfumi2.firebaseapp.com',
   projectId: 'sisfumi2',
   storageBucket: 'sisfumi2.firebasestorage.app',
