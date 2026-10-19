@@ -34,7 +34,7 @@ const roleColorClass = computed(() => {
       return 'bg-red-600 shadow-red-500/20'
     case 'Jefe':
       return 'bg-yellow-500 shadow-yellow-500/20'
-    case 'Coordinador Nacionales':
+    case 'Coordinador Nacional':
       return 'bg-blue-500 shadow-blue-500/20'
     case 'Coordinador Valle':
       return 'bg-green-500 shadow-green-500/20'
@@ -156,7 +156,7 @@ const userInitials = computed(() => {
       <div
         class="relative"
         v-if="
-          ['Administrador', 'Jefe', 'Coordinador Nacionales'].includes(authStore.userRole ?? '')
+          ['Administrador', 'Jefe', 'Coordinador Nacional'].includes(authStore.userRole ?? '')
         "
       >
         <button
@@ -193,7 +193,7 @@ const userInitials = computed(() => {
           [
             'Administrador',
             'Jefe',
-            'Coordinador Nacionales',
+            'Coordinador Nacional',
             'Coordinador Valle',
             'Coordinador Norte de Santander',
           ].includes(authStore.userRole ?? '')

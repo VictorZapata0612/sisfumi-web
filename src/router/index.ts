@@ -114,7 +114,7 @@ const router = createRouter({
           path: 'facturacion',
           name: 'facturacion',
           component: () => import('../views/BillingView.vue'),
-          meta: { roles: ['Administrador', 'Jefe', 'Coordinador Nacionales'] },
+          meta: { roles: ['Administrador', 'Jefe', 'Coordinador Nacional'] },
         },
         {
           path: 'reportes',

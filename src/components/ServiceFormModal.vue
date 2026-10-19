@@ -62,9 +62,7 @@ const canSetPrice = computed(
   () =>
     authStore.userRole === 'Administrador' ||
     authStore.userRole === 'Jefe' ||
-    authStore.userRole === 'Coordinador Nacionales' ||
-    authStore.userRole === 'Coordinador Nacional' ||
-    authStore.userRole === 'Gerente',
+    authStore.userRole === 'Coordinador Nacional',
 )
 
 const showTooltip = ref(false)

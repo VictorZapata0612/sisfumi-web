@@ -1201,7 +1201,7 @@ export const ESTADOS = ['Activo', 'Inactivo']
 export const ROLES = [
   'Administrador',
   'Jefe',
-  'Coordinador Nacionales',
+  'Coordinador Nacional',
   'Coordinador Regional',
   'Técnico',
   'Cliente',

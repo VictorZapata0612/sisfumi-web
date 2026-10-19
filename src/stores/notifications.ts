@@ -59,7 +59,7 @@ export const useNotificationStore = defineStore('notifications', () => {
     const canView =
       authStore.userRole === 'Administrador' ||
       authStore.userRole === 'Jefe' ||
-      authStore.userRole === 'Coordinador Nacionales'
+      authStore.userRole === 'Coordinador Nacional'
 
     if (!canView) {
       priceRequestsCount.value = 0

@@ -149,7 +149,7 @@ const roleColorClass = computed(() => {
     case 'Administrador': return 'bg-red-600 shadow-red-500/20'
     case 'Jefe': return 'bg-yellow-500 shadow-yellow-500/20'
     case 'Coordinador Valle': return 'bg-green-500 shadow-green-500/20'
-    case 'Coordinador Nacionales': return 'bg-blue-500 shadow-blue-500/20'
+    case 'Coordinador Nacional': return 'bg-blue-500 shadow-blue-500/20'
     default: return 'bg-indigo-500 shadow-indigo-500/20'
   }
 })

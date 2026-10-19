@@ -121,7 +121,7 @@ export const useServicesStore = defineStore('services', () => {
       // Si el rol es de un coordinador de zona (no Nacionales), filtramos por su zona.
       if (
         authStore.userRole?.startsWith('Coordinador') &&
-        authStore.userRole !== 'Coordinador Nacionales'
+        authStore.userRole !== 'Coordinador Nacional'
       ) {
         params.zone = authStore.userZone || undefined
       }
@@ -215,7 +215,7 @@ export const useServicesStore = defineStore('services', () => {
     // Si el usuario es un coordinador de zona y el valor es 0, se marca para aprobación.
     const isZoneCoordinator =
       authStore.userRole?.startsWith('Coordinador') &&
-      authStore.userRole !== 'Coordinador Nacionales'
+      authStore.userRole !== 'Coordinador Nacional'
 
     if (isZoneCoordinator && service.valor === 0) {
       service.needsPriceApproval = true
@@ -254,9 +254,9 @@ export const useServicesStore = defineStore('services', () => {
     const canView =
       authStore.userRole === 'Administrador' ||
       authStore.userRole === 'Jefe' ||
-      authStore.userRole === 'Coordinador Nacionales' ||
       authStore.userRole === 'Coordinador Nacional' ||
-      authStore.userRole === 'Gerente'
+      authStore.userRole === 'Administrador' ||
+      authStore.userRole === 'Jefe'
 
     if (!canView) return
 

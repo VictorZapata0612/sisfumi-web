@@ -53,7 +53,7 @@ const matchesSearch = (client: any, term: string) => {
 const profile = computed(() => clientsStore.selectedClientProfile)
 
 const canChangeZone = computed(() => {
-  const allowedRoles = ['Administrador', 'Jefe', 'Coordinador Nacionales', 'Coordinador Nacional', 'Gerente']
+  const allowedRoles = ['Administrador', 'Jefe', 'Coordinador Nacional']
   return allowedRoles.includes(authStore.userRole || '')
 })
 

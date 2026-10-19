@@ -37,3 +37,4 @@ coverage
 __screenshots__/
 functions/googleConfig.js
 functions/.env.*
+!functions/.env.example

@@ -21,7 +21,7 @@ let zoneDistributionChartInstance: Chart | null = null
 
 const canFilterByZone = computed(() => {
   // Aquí se configuran los roles que pueden ver TODAS las zonas
-  const allowedRoles = ['Administrador', 'Jefe', 'Coordinador Nacionales', 'Coordinador Nacional', 'Gerente']
+  const allowedRoles = ['Administrador', 'Jefe', 'Coordinador Nacional']
   return allowedRoles.includes(authStore.userRole || '')
 })
 

@@ -14,7 +14,6 @@ service cloud.firestore {
 
     function isCoordinadorNacional() {
       return signedIn() && (
-        request.auth.token.role == 'Coordinador Nacionales' ||
         request.auth.token.role == 'Coordinador Nacional'
       );
     }
@@ -26,8 +25,7 @@ service cloud.firestore {
     function canReadAuditLogs() {
       return signedIn() && (
         isAdminOrJefe() ||
-        isCoordinadorNacional() ||
-        request.auth.token.role == 'Gerente'
+        isCoordinadorNacional()
       );
     }
 

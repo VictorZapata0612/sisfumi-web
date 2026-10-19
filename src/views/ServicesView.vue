@@ -45,9 +45,9 @@ const canApprovePrices = computed(() => {
   return (
     authStore.userRole === 'Administrador' ||
     authStore.userRole === 'Jefe' ||
-    authStore.userRole === 'Coordinador Nacionales' ||
     authStore.userRole === 'Coordinador Nacional' ||
-    authStore.userRole === 'Gerente'
+    authStore.userRole === 'Administrador' ||
+    authStore.userRole === 'Jefe'
   )
 })
 

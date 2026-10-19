@@ -106,17 +106,10 @@ const callableCorsOrigins = [
   'https://www.controltotalyph.com',
 ]
 
-// Importar credenciales de Google desde archivo local o variables de entorno
-// Se recomienda usar defineString para producción, pero mantenemos require para compatibilidad
-let googleConfig
-try {
-  googleConfig = require('./googleConfig')
-} catch (e) {
-  logger.warn('googleConfig.js no encontrado, usando variables de entorno o valores por defecto.')
-  googleConfig = {
-    clientId: process.env.GOOGLE_CLIENT_ID,
-    clientSecret: process.env.GOOGLE_CLIENT_SECRET,
-  }
+// Las credenciales OAuth solo se cargan desde la configuración segura del entorno.
+const googleConfig = {
+  clientId: process.env.GOOGLE_CLIENT_ID,
+  clientSecret: process.env.GOOGLE_CLIENT_SECRET,
 }
 
 // ==========================================
@@ -159,7 +152,7 @@ function assertAuth(request) {
 const ZONES_TO_ROLES_MAP = {
   'Valle del Cauca': 'Coordinador Valle',
   'Norte de Santander': 'Coordinador Norte de Santander',
-  Nacionales: 'Coordinador Nacionales',
+  Nacionales: 'Coordinador Nacional',
 }
 
 /**
@@ -185,9 +178,7 @@ function assertRole(request, allowedRoles) {
 const GLOBAL_CLIENT_ROLES = [
   'Administrador',
   'Jefe',
-  'Coordinador Nacionales',
   'Coordinador Nacional',
-  'Gerente',
 ]
 
 const CLIENT_MANAGER_ROLES = [
@@ -208,7 +199,7 @@ const BUSINESS_DATA_MANAGER_ROLES = [
 
 // ✅ Roles que pueden aprobar precios, ver auditoría, etc.
 const APPROVER_ROLES = [
-  ...GLOBAL_CLIENT_ROLES, // Administrador, Jefe, Coordinador Nacionales, Coordinador Nacional, Gerente
+  ...GLOBAL_CLIENT_ROLES,
 ]
 
 const AI_READ_ROLES = CLIENT_MANAGER_ROLES
@@ -462,13 +453,11 @@ exports.getClientsPage = onCall({ cors: true }, async (request) => {
     }
 
     // Filtros de Seguridad por Zona (Row Level Security manual)
-    // ✅ CORRECCIÓN: Incluir Coordinador Nacional (singular y plural) como rol global
+    // ✅ CORRECCIÓN: Mantener Coordinador Nacional como rol global
     const hasGlobalAccess = [
       'Administrador',
       'Jefe',
-      'Coordinador Nacionales',
       'Coordinador Nacional',
-      'Gerente',
     ].includes(userRole)
 
     if (!hasGlobalAccess && userZone) {
@@ -764,9 +753,7 @@ exports.getFumigadoresPage = onCall({ cors: true }, async (request) => {
     const isAdmin = [
       'Administrador',
       'Jefe',
-      'Coordinador Nacionales',
       'Coordinador Nacional',
-      'Gerente',
     ].includes(userRole)
     let requestedZone = zone
     if (!isAdmin && userZone && zone && zone !== userZone) {
@@ -815,7 +802,6 @@ exports.addFumigador = onCall({ cors: true }, async (request) => {
   assertRole(request, [
     'Administrador',
     'Jefe',
-    'Coordinador Nacionales',
     'Coordinador Valle',
     'Coordinador Norte de Santander',
   ])
@@ -866,7 +852,6 @@ exports.updateFumigador = onCall({ cors: true }, async (request) => {
   assertRole(request, [
     'Administrador',
     'Jefe',
-    'Coordinador Nacionales',
     'Coordinador Valle',
     'Coordinador Norte de Santander',
   ])
@@ -880,7 +865,7 @@ exports.updateFumigador = onCall({ cors: true }, async (request) => {
       throw new HttpsError('not-found', 'Técnico no encontrado.')
     }
     const currentData = currentDoc.data()
-    const isAdmin = ['Administrador', 'Jefe', 'Coordinador Nacionales'].includes(userRole)
+    const isAdmin = ['Administrador', 'Jefe', 'Coordinador Nacional'].includes(userRole)
     if (!isAdmin && userZone && currentData.zona !== userZone) {
       throw new HttpsError(
         'permission-denied',
@@ -2015,7 +2000,7 @@ exports.getPendingPriceRequestsCount = onCall({ cors: true }, async (request) =>
   const { role: userRole } = request.auth.token
   // ✅ FIX: antes solo Administrador/Jefe podían ver el conteo, pero
   // getPendingPriceRequests (la lista completa) sí incluye a Coordinador
-  // Nacionales/Gerente. Esto causaba que el badge mostrara 0 para el
+  // acceso global. Esto causaba que el badge mostrara 0 para el
   // Nacional aunque sí hubiera solicitudes pendientes en su bandeja.
   const canApprovePrices = APPROVER_ROLES.includes(userRole)
 
@@ -2556,7 +2541,6 @@ exports.deleteVisit = onCall({ cors: true }, async (request) => {
   assertRole(request, [
     'Administrador',
     'Jefe',
-    'Coordinador Nacionales',
     'Coordinador Valle',
     'Coordinador Norte de Santander',
   ])
@@ -3178,13 +3162,7 @@ exports.getConsolidatedPlanningData = onCall({ cors: callableCorsOrigins }, asyn
   // ✅ NUEVO: Se añade el UID del calendario de Google a consultar.
   const calendarTargetUid = data.calendarTargetUid
 
-  const hasGlobalAccess = [
-    'Administrador',
-    'Jefe',
-    'Coordinador Nacionales',
-    'Coordinador Nacional',
-    'Gerente',
-  ].includes(auth.token.role)
+  const hasGlobalAccess = ['Administrador', 'Jefe', 'Coordinador Nacional'].includes(auth.token.role)
 
   if (
     calendarTargetUid &&
@@ -3410,7 +3388,7 @@ exports.getBillingDataForMonth = onCall({ cors: true }, async (request) => {
 
   try {
     // Validar que usuario tenga permiso para ver datos de billing
-    const isAdmin = ['Administrador', 'Jefe', 'Coordinador Nacionales'].includes(userRole)
+    const isAdmin = ['Administrador', 'Jefe', 'Coordinador Nacional'].includes(userRole)
     if (!isAdmin && !userZone) {
       throw new HttpsError(
         'permission-denied',
@@ -3792,13 +3770,7 @@ exports.getConsolidatedDashboardStats = onCall(
     const userRole = auth.token.role
     const isAdminOrJefe = userRole === 'Administrador' || userRole === 'Jefe'
 
-    const hasGlobalAccess = [
-      'Administrador',
-      'Jefe',
-      'Coordinador Nacionales',
-      'Coordinador Nacional',
-      'Gerente',
-    ].includes(userRole)
+    const hasGlobalAccess = ['Administrador', 'Jefe', 'Coordinador Nacional'].includes(userRole)
 
     if (!userZone && !hasGlobalAccess && !isAdminOrJefe) {
       throw new HttpsError(
@@ -4132,9 +4104,7 @@ async function sendNotificationToAdmins(payload) {
   const targetRoles = [
     'Administrador',
     'Jefe',
-    'Coordinador Nacionales',
     'Coordinador Nacional',
-    'Gerente',
   ]
 
   try {
@@ -4187,9 +4157,7 @@ exports.onServicePriceAssigned = onDocumentUpdated('servicios/{serviceSheetId}',
   const targetRoles = [
     'Administrador',
     'Jefe',
-    'Coordinador Nacionales',
     'Coordinador Nacional',
-    'Gerente',
   ]
   const uids = await getUidsByRoles(targetRoles)
   if (uids.length === 0) return null
@@ -4229,7 +4197,7 @@ exports.getTechnicianProfileData = onCall({ cors: true }, async (request) => {
     const zone = technicianData.zona
 
     // Validar que el usuario tiene permiso para ver este técnico
-    const isAdmin = ['Administrador', 'Jefe', 'Coordinador Nacionales'].includes(userRole)
+    const isAdmin = ['Administrador', 'Jefe', 'Coordinador Nacional'].includes(userRole)
     if (!isAdmin && userZone && zone !== userZone) {
       throw new HttpsError(
         'permission-denied',
@@ -4410,7 +4378,7 @@ exports.getPaymentDataForMonth = onCall({ cors: true }, async (request) => {
 
   const userRole = auth.token.role
   const userZone = auth.token.zona
-  const allowedRoles = ['Jefe', 'Administrador', 'Coordinador Nacionales']
+  const allowedRoles = ['Jefe', 'Administrador', 'Coordinador Nacional']
   if (!allowedRoles.includes(userRole)) {
     throw new HttpsError('permission-denied', 'No tienes permiso para acceder a esta información.')
   }
@@ -4502,7 +4470,6 @@ exports.generateInvoiceReport = onCall({ cors: true }, async (request) => {
   assertRole(request, [
     'Administrador',
     'Jefe',
-    'Coordinador Nacionales',
     'Coordinador Valle',
     'Coordinador Norte de Santander',
   ])
@@ -5308,13 +5275,7 @@ exports.getAnnualBillingReport = onCall(
 
     const userZone = auth.token.zona
     const userRole = auth.token.role
-    const hasGlobalAccess = [
-      'Administrador',
-      'Jefe',
-      'Coordinador Nacionales',
-      'Coordinador Nacional',
-      'Gerente',
-    ].includes(userRole)
+    const hasGlobalAccess = ['Administrador', 'Jefe', 'Coordinador Nacional'].includes(userRole)
 
     const { year, zone: requestedZone } = data
     if (typeof year !== 'number') throw new HttpsError('invalid-argument', 'Se requiere el año.')
@@ -6053,13 +6014,7 @@ exports.getServiceSheetByClientId = onCall(
     }
 
     const { role: userRole, zona: userZone } = request.auth.token
-    const canManageAllServices = [
-      'Administrador',
-      'Jefe',
-      'Coordinador Nacionales',
-      'Coordinador Nacional',
-      'Gerente',
-    ].includes(userRole)
+    const canManageAllServices = ['Administrador', 'Jefe', 'Coordinador Nacional'].includes(userRole)
 
     try {
       const authorizedClient = await getAuthorizedClient(request, clientId)
@@ -6120,20 +6075,12 @@ exports.saveServiceSheet = onCall(
     }
 
     const { role: userRole, zona: userZone } = request.auth.token
-    const globalServiceRoles = [
-      'Administrador',
-      'Jefe',
-      'Coordinador Nacionales',
-      'Coordinador Nacional',
-      'Gerente',
-    ]
+    const globalServiceRoles = ['Administrador', 'Jefe', 'Coordinador Nacional']
     const canManageAllServices = globalServiceRoles.includes(userRole)
     const canSetPrice = [
       'Administrador',
       'Jefe',
-      'Coordinador Nacionales',
       'Coordinador Nacional',
-      'Gerente',
     ].includes(userRole)
     const authorizedClient = await getAuthorizedClient(request, sheetData.clientId)
     const clientZones = Array.isArray(authorizedClient.data.zonasDeSucursales)
@@ -6365,7 +6312,7 @@ exports.onServiceSheetUpdateForPriceRequest = onDocumentWritten(
       `Detectadas ${newPriceRequests.length} nuevas solicitudes de precio para el cliente ${afterData.clientName}.`,
     )
 
-    const targetRoles = ['Administrador', 'Jefe', 'Coordinador Nacionales']
+    const targetRoles = ['Administrador', 'Jefe', 'Coordinador Nacional']
     const uids = await getUidsByRoles(targetRoles)
 
     if (uids.length === 0) {

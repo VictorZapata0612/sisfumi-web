@@ -99,9 +99,7 @@ const availableServices = computed(() => settingsStore.businessData.serviceTypes
 const roles = [
   'Administrador',
   'Jefe',
-  'Coordinador Nacionales',
   'Coordinador Nacional',
-  'Gerente',
   'Coordinador Valle',
   'Coordinador Norte de Santander',
   'Técnico',

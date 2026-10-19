@@ -81,7 +81,7 @@ const navLinks = [
     name: 'Administración',
     icon: 'fa-screwdriver-wrench',
     // Roles de ejemplo, ajusta según sea necesario
-    roles: ['Administrador', 'Jefe', 'Coordinador Nacionales'],
+    roles: ['Administrador', 'Jefe', 'Coordinador Nacional'],
     children: [
       { name: 'Reportes', to: '/dashboard/reportes', icon: 'fa-chart-pie' },
       { name: 'Permisos', to: '/dashboard/permisos', icon: 'fa-file-signature' },

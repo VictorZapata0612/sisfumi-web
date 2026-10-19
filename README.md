@@ -56,6 +56,12 @@ npx firebase-tools deploy --only firestore:rules,storage
 
 Configura también restricciones de API para la clave `VITE_FIREBASE_API_KEY` en Google Cloud Console: limita los orígenes web de producción/desarrollo y habilita únicamente las APIs necesarias.
 
+Para Functions, configura `GOOGLE_CLIENT_ID` y `GOOGLE_CLIENT_SECRET` en el entorno seguro de Firebase antes de desplegar. Usa `functions/.env.example` como referencia y no crees un archivo versionado con valores reales. El secreto OAuth que existía en `functions/googleConfig.js` debe revocarse y reemplazarse desde Google Cloud Console.
+
+## Política inicial para IA
+
+Hasta aprobar un proveedor, su región de procesamiento, sus garantías de privacidad y la retención de datos, SISFUMI no debe enviar a servicios externos de IA datos personales identificables, información financiera, tokens de Google ni documentos o soportes. Un primer agente solo podrá trabajar con indicadores agregados, identificadores internos y datos operativos mínimos, con permisos por rol y zona. Cualquier acción que modifique datos requerirá confirmación del usuario y auditoría en backend.
+
 ## Requisitos
 
 - Node.js 20.19+ o 22.12+

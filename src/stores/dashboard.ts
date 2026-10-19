@@ -61,7 +61,7 @@ export const useDashboardStore = defineStore('dashboard', () => {
       // Si el rol es de un coordinador de zona (no Nacionales), filtramos por su zona.
       if (
         authStore.userRole?.startsWith('Coordinador') &&
-        authStore.userRole !== 'Coordinador Nacionales'
+        authStore.userRole !== 'Coordinador Nacional'
       ) {
         params.zone = authStore.userZone || undefined
       }
