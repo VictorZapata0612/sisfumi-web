@@ -1,0 +1,359 @@
+import { httpsCallable } from 'firebase/functions'
+import { functions } from '@/firebase/config'
+
+type SearchResult = {
+  id: string
+  nombreComercial?: string
+  nombreCompleto?: string
+  ciudad?: string
+  zona?: string
+  estado?: string
+  sucursales?: Array<{ id?: string; nombre?: string }>
+}
+
+type ClientProfile = {
+  client?: SearchResult
+  serviceSheet?: {
+    services?: Array<{
+      tipo_servicio?: string
+      frecuencia?: string
+      estado_servicio?: string
+      sucursales_asignadas?: string[]
+    }>
+  } | null
+  upcomingVisits?: Array<Record<string, unknown>>
+  visitHistory?: Array<Record<string, unknown>>
+}
+
+type TechnicianProfile = {
+  technician?: SearchResult
+  kpis?: { assigned: number; completed: number; rate: number }
+  upcomingVisits?: Array<Record<string, unknown>>
+  recentHistory?: Array<Record<string, unknown>>
+}
+
+const cleanSearchTerm = (value: string) =>
+  value
+    .replace(/^según los datos proporcionados[,\s]*/i, '')
+    .replace(/^segun los datos proporcionados[,\s]*/i, '')
+    .replace(/^datos proporcionados[,\s]*/i, '')
+    .replace(/[¿?¡!,:;]/g, ' ')
+    .replace(/\b(hoy|ahora|este mes|del mes|de hoy)\b/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+
+const extractClientTerm = (question: string) => {
+  const afterTiene = question.match(/\btiene\s+(?:el\s+cliente\s+)?(.+)$/i)
+  if (afterTiene?.[1]) {
+    const term = cleanSearchTerm(afterTiene[1]).replace(/^el\s+técnico\s+/i, '').trim()
+    if (
+      term.length >= 3 &&
+      !/servicio|sucursal|contratad|programad/i.test(term) &&
+      !/^(en|para)$/i.test(term)
+    ) {
+      return term
+    }
+  }
+
+  const beforeTiene = question.match(/(?:^|,\s*)(.+?)\s+tiene\b/i)
+  if (beforeTiene?.[1]) {
+    const term = cleanSearchTerm(beforeTiene[1])
+      .replace(/^(qué|que)\s+(servicios?|ficha)\s+/i, '')
+      .replace(/^el\s+cliente\s+/i, '')
+      .trim()
+    if (term.length >= 3 && !/^(según|segun|los datos)$/i.test(term)) return term
+  }
+
+  const explicitClient = question.match(/\bcliente\s+(.+?)(?:\s+(?:tiene|posee|cuenta|dispone)|$)/i)
+  return explicitClient?.[1] ? cleanSearchTerm(explicitClient[1]) : null
+}
+
+const extractEntity = (question: string, kind: 'client' | 'technician') => {
+  if (kind === 'client') return extractClientTerm(question)
+
+  const pattern = /(?:técnico|tecnico|visitas de|perfil de|rendimiento de|desempeño de|carga de)\s+(?:del|de la|de|para)?\s*(.+)$/i
+  const match = question.match(pattern)
+  const term = match?.[1] ? cleanSearchTerm(match[1]) : ''
+  if (!term || term.length < 3 || /^(un cliente|un técnico|un tecnico)$/i.test(term)) return null
+  return term
+}
+
+const isServiceQuestion = (question: string) =>
+  /servicio|servicios|contratad|frecuencia|sucursal/i.test(question)
+
+const isVisitQuestion = (question: string) =>
+  /visita|visitas|agenda|pendiente|historial|programad|realizad/i.test(question)
+
+const searchEntity = async (term: string, kind: 'client' | 'technician') => {
+  const searchFn = httpsCallable(functions, 'globalSearch')
+  const candidates = Array.from(
+    new Set([term, term.replace(/[.,]+$/, ''), term.split(/\s+/)[0]]),
+  ).filter(Boolean)
+
+  for (const candidate of candidates) {
+    const result = (await searchFn({ term: candidate })) as {
+      data: { clients?: SearchResult[]; fumigadores?: SearchResult[] }
+    }
+    const results = kind === 'client' ? result.data.clients || [] : result.data.fumigadores || []
+    if (results.length > 0) {
+      const normalizedTerm = term.toLowerCase().replace(/[.,]/g, '')
+      const exact = results.find((item) => {
+        const name = (kind === 'client' ? item.nombreComercial : item.nombreCompleto) || ''
+        return name.toLowerCase().replace(/[.,]/g, '').includes(normalizedTerm)
+      })
+      return exact || results[0]
+    }
+  }
+
+  return null
+}
+
+const summarizeVisits = (
+  visits: Array<Record<string, unknown>> = [],
+  futureOnly = false,
+) =>
+  visits
+    .filter((visit) => {
+      if (!futureOnly) return true
+      const date = new Date(String(visit.fecha_visita || ''))
+      return !Number.isNaN(date.getTime()) && date >= new Date()
+    })
+    .slice(0, 10)
+    .map((visit) => ({
+    cliente: visit.nombre_cliente || visit.clientName || 'Cliente sin dato',
+    sucursal: visit.sucursal || visit.nombre_sucursal || 'Sucursal sin dato',
+    fecha: visit.fecha_visita,
+    tipo: visit.tipo_visita,
+    estado: visit.estado_visita,
+    zona: visit.zona,
+    tecnicos: visit.fumigadores_asignados,
+    }))
+
+const summarizeByStatus = (
+  visits: Array<Record<string, unknown>> = [],
+  status: string,
+) => summarizeVisits(visits.filter((visit) => visit.estado_visita === status))
+
+const summarizeOverdue = (visits: Array<Record<string, unknown>> = []) =>
+  summarizeVisits(
+    visits.filter(
+      (visit) => visit.estado_visita !== 'Realizada' && visit.estado_visita !== 'Cancelada',
+    ),
+  )
+
+const getTechnicianContext = async (technician: SearchResult) => {
+  const today = new Date()
+  const profileFn = httpsCallable(functions, 'getTechnicianProfileData')
+  const profileResult = (await profileFn({
+    technicianId: technician.id,
+    month: today.getMonth(),
+    year: today.getFullYear(),
+  })) as { data: TechnicianProfile }
+  const profile = profileResult.data
+
+  return {
+    tipo: 'visitas de técnico',
+    encontrado: true,
+    técnico: {
+      id: profile.technician?.id,
+      nombre: profile.technician?.nombreCompleto,
+      zona: profile.technician?.zona,
+    },
+    indicadores: profile.kpis,
+    visitasFuturas: summarizeVisits(profile.upcomingVisits, true),
+    visitasVencidas: summarizeOverdue(profile.recentHistory),
+    historialPasado: summarizeByStatus(profile.recentHistory, 'Realizada'),
+  }
+}
+
+export async function getAgentEntityContext(question: string) {
+  const hasTechnicianHint = /\btécnic[oa]\b|\btecnico\b|rendimiento|desempeño|carga de/i.test(question)
+  const clientTerm = hasTechnicianHint ? null : extractEntity(question, 'client')
+  const technicianTerm = extractEntity(question, 'technician')
+  if (!clientTerm && !technicianTerm) return null
+
+  if (clientTerm) {
+    const client = await searchEntity(clientTerm, 'client')
+    if (!client) {
+      const technician = await searchEntity(clientTerm, 'technician')
+      if (technician) return getTechnicianContext(technician)
+      return { tipo: 'cliente', encontrado: false, termino: clientTerm }
+    }
+
+    const profileFn = httpsCallable(functions, 'getClientProfileData')
+    const profileResult = (await profileFn({ clientId: client.id })) as { data: ClientProfile }
+    const profile = profileResult.data
+    const branchNames = new Map<string, string>([['Principal', 'Principal']])
+    ;(profile.client?.sucursales || []).forEach((branch, index) => {
+      const name = branch.nombre || `Sucursal ${index + 1}`
+      const id = branch.id || `${profile.client?.id}-branch-${index + 1}`
+      branchNames.set(id, name)
+      branchNames.set(name, name)
+    })
+    const services = (profile.serviceSheet?.services || []).map((service) => ({
+      tipo: service.tipo_servicio,
+      frecuencia: service.frecuencia,
+      estado: service.estado_servicio,
+      sucursales: (service.sucursales_asignadas || []).map(
+        (branch) => branchNames.get(branch) || branch,
+      ),
+    }))
+
+    if (isServiceQuestion(question)) {
+      const servicesByBranch = services.reduce<Record<string, typeof services>>((groups, service) => {
+        const branches = service.sucursales.length > 0 ? service.sucursales : ['Sin sucursal especificada']
+        branches.forEach((branch) => {
+          if (!groups[branch]) groups[branch] = []
+          groups[branch].push({ ...service, sucursales: [branch] })
+        })
+        return groups
+      }, {})
+
+      return {
+        tipo: 'servicios por sucursal',
+        encontrado: true,
+        cliente: {
+          id: profile.client?.id,
+          nombre: profile.client?.nombreComercial,
+        },
+        serviciosPorSucursal: servicesByBranch,
+        nota: 'Esta consulta es de servicios contratados. No incluye agenda, historial ni fechas de visitas.',
+      }
+    }
+
+    if (isVisitQuestion(question)) {
+      return {
+        tipo: 'visitas de cliente',
+        encontrado: true,
+        cliente: {
+          id: profile.client?.id,
+          nombre: profile.client?.nombreComercial,
+        },
+        visitasFuturas: summarizeVisits(profile.upcomingVisits, true),
+        historialPasado: summarizeVisits(profile.visitHistory),
+        nota: 'Esta consulta es de visitas. No incluye servicios contratados como si fueran visitas.',
+      }
+    }
+
+    return {
+      tipo: 'cliente',
+      encontrado: true,
+      cliente: {
+        id: profile.client?.id,
+        nombre: profile.client?.nombreComercial,
+        ciudad: profile.client?.ciudad,
+        zona: profile.client?.zona,
+        estado: profile.client?.estado,
+      },
+      serviciosContratados: services,
+      visitasFuturas: summarizeVisits(profile.upcomingVisits, true),
+      visitasVencidas: summarizeOverdue(profile.visitHistory),
+      historialPasado: summarizeByStatus(profile.visitHistory, 'Realizada'),
+    }
+  }
+
+  const technician = technicianTerm ? await searchEntity(technicianTerm, 'technician') : null
+  if (!technician) return { tipo: 'técnico', encontrado: false, termino: technicianTerm }
+  return getTechnicianContext(technician)
+}
+
+const addDays = (date: Date, days: number) => {
+  const result = new Date(date)
+  result.setDate(result.getDate() + days)
+  return result
+}
+
+const getPlanningDateRange = (question: string) => {
+  const now = new Date()
+  const start = new Date(now)
+  start.setHours(0, 0, 0, 0)
+  const normalized = question.toLowerCase()
+  let end: Date | null = null
+
+  if (normalized.includes('mañana') || normalized.includes('manana')) {
+    start.setDate(start.getDate() + 1)
+    end = addDays(start, 1)
+  } else if (normalized.includes('pasado mañana') || normalized.includes('pasado manana')) {
+    start.setDate(start.getDate() + 2)
+    end = addDays(start, 1)
+  } else if (normalized.includes('hoy')) {
+    end = addDays(start, 1)
+  } else if (normalized.includes('esta semana')) {
+    end = addDays(start, 7)
+  } else {
+    const match = normalized.match(/(\d{1,2})\s+de\s+(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)/)
+    if (!match) return null
+    const months = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre']
+    start.setMonth(months.indexOf(match[2] || ''), Number(match[1]))
+    end = addDays(start, 1)
+  }
+
+  return { startDateISO: start.toISOString(), endDateISO: end.toISOString() }
+}
+
+export async function getPlanningContext(question: string) {
+  if (!/agenda|visitas?|planeación|planeacion|hoy|mañana|manana|esta semana|\d{1,2}\s+de\s+/i.test(question)) {
+    return null
+  }
+
+  const dateRange = getPlanningDateRange(question)
+  if (!dateRange) return null
+
+  const planningFn = httpsCallable(functions, 'getConsolidatedPlanningData')
+  const result = (await planningFn({
+    ...dateRange,
+    calendarTargetUid: 'internal',
+  })) as { data: { monthlyVisits?: Array<Record<string, unknown>> } }
+
+  return {
+    rango: dateRange,
+    visitas: result.data.monthlyVisits || [],
+  }
+}
+
+export async function getPlanningConflictContext(question: string) {
+  if (!/conflict|cruce|solapamiento|choque/i.test(question)) return null
+
+  const planning = await getPlanningContext(question)
+  if (!planning) return { conflictos: [] }
+
+  const visits = planning.visitas.filter((visit) => visit.estado_visita !== 'Cancelada')
+  const conflicts: Array<Record<string, unknown>> = []
+
+  for (let index = 0; index < visits.length; index++) {
+    const first = visits[index] as
+      | { fecha_visita?: unknown; duracion_minutos?: unknown; fumigadores_asignados?: string[] }
+      | undefined
+    if (!first) continue
+    const firstDate = new Date(String(first.fecha_visita || ''))
+    const firstEnd = new Date(
+      firstDate.getTime() + (Number(first.duracion_minutos) || 60) * 60 * 1000,
+    )
+    if (Number.isNaN(firstDate.getTime())) continue
+
+    for (let otherIndex = index + 1; otherIndex < visits.length; otherIndex++) {
+      const second = visits[otherIndex] as
+        | { fecha_visita?: unknown; duracion_minutos?: unknown; fumigadores_asignados?: string[] }
+        | undefined
+      if (!second) continue
+      const secondDate = new Date(String(second.fecha_visita || ''))
+      const secondEnd = new Date(
+        secondDate.getTime() + (Number(second.duracion_minutos) || 60) * 60 * 1000,
+      )
+      if (Number.isNaN(secondDate.getTime())) continue
+
+      const technicians = (first.fumigadores_asignados || []).filter((technician) =>
+        (second.fumigadores_asignados || []).includes(technician),
+      )
+      if (technicians.length === 0 || firstDate >= secondEnd || secondDate >= firstEnd) continue
+
+      conflicts.push({
+        técnicos: technicians,
+        primera: first,
+        segunda: second,
+      })
+    }
+  }
+
+  return { conflictos: conflicts, rango: planning.rango }
+}

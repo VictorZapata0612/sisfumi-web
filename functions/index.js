@@ -4192,9 +4192,12 @@ exports.getTechnicianProfileData = onCall({ cors: true }, async (request) => {
     if (!techDoc.exists) {
       throw new HttpsError('not-found', 'Técnico no encontrado.')
     }
-    const technicianData = techDoc.data()
+    const technicianData = techDoc.data() || {}
     const technicianName = technicianData.nombreCompleto
     const zone = technicianData.zona
+    if (!technicianName) {
+      throw new HttpsError('failed-precondition', 'El técnico no tiene un nombre configurado.')
+    }
 
     // Validar que el usuario tiene permiso para ver este técnico
     const isAdmin = ['Administrador', 'Jefe', 'Coordinador Nacional'].includes(userRole)
@@ -4209,7 +4212,10 @@ exports.getTechnicianProfileData = onCall({ cors: true }, async (request) => {
     const endOfMonth = new Date(year, month + 1, 0, 23, 59, 59)
     const today = new Date()
 
-    const toDate = (val) => (val && typeof val.toDate === 'function' ? val.toDate() : new Date(val))
+    const toDate = (val) => {
+      const parsed = val && typeof val.toDate === 'function' ? val.toDate() : new Date(val)
+      return parsed instanceof Date && !Number.isNaN(parsed.getTime()) ? parsed : null
+    }
     // Filtrar en memoria evita depender de índices compuestos que pueden no
     // existir para cada combinación de zona, técnico y fecha.
     const visitsSnapshot = await db
@@ -4217,8 +4223,11 @@ exports.getTechnicianProfileData = onCall({ cors: true }, async (request) => {
       .where('fumigadores_asignados', 'array-contains', technicianName)
       .get()
     const visits = visitsSnapshot.docs
-      .map((doc) => ({ id: doc.id, ...doc.data(), fecha_visita: toDate(doc.data().fecha_visita) }))
-      .filter((visit) => visit.zona === zone && !Number.isNaN(visit.fecha_visita.getTime()))
+      .map((doc) => {
+        const data = doc.data()
+        return { id: doc.id, ...data, fecha_visita: toDate(data.fecha_visita) }
+      })
+      .filter((visit) => visit.zona === zone && visit.fecha_visita instanceof Date)
 
     const visitsInMonth = visits.filter(
       (visit) => visit.fecha_visita >= startOfMonth && visit.fecha_visita <= endOfMonth,

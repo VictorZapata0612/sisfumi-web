@@ -26,6 +26,8 @@ interface Visit {
   tipo_visita: string
   fecha_visita: string // Esperamos un string en formato ISO
   fumigadores_asignados?: string[]
+  estado_visita?: string
+  zona?: string
 }
 
 // Definimos la estructura de la respuesta de la Cloud Function

@@ -26,6 +26,27 @@ Sisfumi APP es una plataforma web para la gestión integral de servicios de fumi
 
 ## Configuración de Firebase y Google Calendar
 
+## Ollama para desarrollo
+
+El asistente usa `VITE_OLLAMA_URL` y por defecto consulta Ollama en `http://127.0.0.1:11434`. Para otros usuarios no se debe publicar directamente el puerto de Ollama: la opción de producción requiere un servidor central con autenticación o una Cloud Function/proxy que valide al usuario antes de reenviar la solicitud al modelo.
+
+### Configurar Ollama en un computador
+
+1. Instala Ollama para Windows desde [ollama.com/download/windows](https://ollama.com/download/windows).
+2. Abre PowerShell en la raíz del proyecto y ejecuta:
+
+	```powershell
+	powershell -ExecutionPolicy Bypass -File .\scripts\setup-ollama.ps1
+	```
+
+3. Comprueba que el modelo exista:
+
+	```powershell
+	ollama list
+	```
+
+Debe aparecer `sisfumi-assistant`. Después inicia la aplicación con `npm run dev`.
+
 La aplicación necesita la configuración del proyecto Firebase y el ID de cliente OAuth de Google. La API key de Firebase es un valor de configuración del cliente, no un secreto de backend, pero se mantiene fuera del código fuente para evitar publicar credenciales de configuración y facilitar el uso de distintos proyectos.
 
 1. Copia `.env.example` como `.env.local`.

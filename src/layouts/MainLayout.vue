@@ -3,6 +3,7 @@ import { ref, onMounted, onUnmounted, defineAsyncComponent } from 'vue'
 import { RouterView, RouterLink, useRoute } from 'vue-router'
 
 import AppHeader from '@/components/Header.vue'
+import AgentPanel from '@/components/AgentPanel.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useNotificationStore } from '@/stores/notifications'
 
@@ -21,6 +22,7 @@ const sidebarOpen = ref(true)
 const isCollapsed = ref(false)
 const openDropdown = ref<string | null>(null)
 const showProfileModal = ref(false)
+const showAgentPanel = ref(false)
 const isOnline = ref(navigator.onLine)
 
 const updateOnlineStatus = () => {
@@ -39,6 +41,7 @@ const handleKeydown = (e: KeyboardEvent) => {
   if (e.key === 'Escape') {
     if (sidebarOpen.value) sidebarOpen.value = false
     if (showProfileModal.value) showProfileModal.value = false
+    if (showAgentPanel.value) showAgentPanel.value = false
   }
 }
 
@@ -128,6 +131,16 @@ const toggleCollapse = () => {
     <ToastContainer />
     <ConfirmDialog />
     <AssistantChat />
+    <AgentPanel v-if="showAgentPanel" @close="showAgentPanel = false" />
+    <button
+      type="button"
+      class="fixed bottom-5 right-5 z-50 flex h-12 w-12 items-center justify-center rounded-full bg-red-700 text-white shadow-xl transition hover:scale-105 hover:bg-red-600"
+      title="Abrir asistente SISFUMI"
+      aria-label="Abrir asistente SISFUMI"
+      @click="showAgentPanel = !showAgentPanel"
+    >
+      <i class="fas fa-sparkles"></i>
+    </button>
     <!-- Overlay para cerrar el sidebar en móvil -->
     <div v-if="sidebarOpen && !isCollapsed" @click="sidebarOpen = false"
       class="fixed inset-0 bg-black/60 z-20 lg:hidden"></div>
