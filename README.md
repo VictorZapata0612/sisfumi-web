@@ -10,6 +10,7 @@ Sisfumi APP es una plataforma web para la gestión integral de servicios de fumi
 - Facturación, cobros y seguimiento de pagos.
 - Administración de técnicos, usuarios, zonas, aliados y tipos de servicio.
 - Panel de estadísticas, reportes y búsqueda global.
+- Asistente interno local con Ollama para consultas operativas de solo lectura.
 - Sitio público informativo con páginas de inicio, servicios, contacto y privacidad.
 
 ## Tecnologías
@@ -73,6 +74,43 @@ npm run dev
 ```
 
 La aplicación se ejecuta normalmente en `http://localhost:5173`.
+
+## Asistente local con Ollama (MVP)
+
+El asistente aparece como un botón flotante dentro del dashboard. En esta primera versión solo consulta
+información y no puede crear, editar, borrar ni asignar visitas. El backend valida la autenticación y el
+rol antes de consultar una muestra limitada de clientes, visitas, servicios y técnicos.
+
+1. Instala Ollama y descarga el modelo configurado:
+
+	```sh
+	ollama pull llama3.1
+	ollama serve
+	```
+
+2. Inicia el emulador de Functions desde la carpeta `functions`:
+
+	```sh
+	npm install
+	npm run serve
+	```
+
+3. En otra terminal inicia Vite:
+
+	```sh
+	npm run dev
+	```
+
+En `.env.local`, activa el emulador para que el frontend use la Function local:
+
+```text
+VITE_USE_FIREBASE_EMULATORS=true
+```
+
+El callable usa `http://127.0.0.1:11434` y el modelo `llama3.1` por defecto. Puedes cambiarlo con
+`OLLAMA_BASE_URL` y `OLLAMA_MODEL` en la configuración del emulador de Functions. No expongas Ollama
+directamente a internet. Las acciones de escritura requieren una fase posterior con herramientas
+explícitas, validación de permisos y confirmación del usuario.
 
 ## Scripts disponibles
 

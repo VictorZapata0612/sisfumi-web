@@ -9,6 +9,7 @@ import { useNotificationStore } from '@/stores/notifications'
 const UserProfileModal = defineAsyncComponent(() => import('@/components/UserProfileModal.vue'))
 const ToastContainer = defineAsyncComponent(() => import('@/components/ToastContainer.vue'))
 const ConfirmDialog = defineAsyncComponent(() => import('@/components/ConfirmDialog.vue'))
+const AssistantChat = defineAsyncComponent(() => import('@/components/AssistantChat.vue'))
 
 const authStore = useAuthStore()
 const notificationStore = useNotificationStore()
@@ -126,6 +127,7 @@ const toggleCollapse = () => {
   <div class="flex h-screen bg-[#0a0a0a] text-gray-200">
     <ToastContainer />
     <ConfirmDialog />
+    <AssistantChat />
     <!-- Overlay para cerrar el sidebar en móvil -->
     <div v-if="sidebarOpen && !isCollapsed" @click="sidebarOpen = false"
       class="fixed inset-0 bg-black/60 z-20 lg:hidden"></div>
