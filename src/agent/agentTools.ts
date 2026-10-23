@@ -11,6 +11,17 @@ type SearchResult = {
   sucursales?: Array<{ id?: string; nombre?: string }>
 }
 
+export const isUnassignedVisitsQuestion = (question: string) =>
+  /sin técnico|sin tecnico|no tienen técnico|no tienen tecnico|sin asignar/i.test(question)
+
+export const isTechnicianWorkloadQuestion = (question: string) =>
+  /sobrecarg|carga de técnicos|carga de tecnicos|técnicos disponibles|tecnicos disponibles/i.test(question)
+
+export const isPlanningQuestion = (question: string) =>
+  /agenda|visitas?|planeación|planeacion|hoy|mañana|manana|esta semana|próxima semana|proxima semana|este mes|\d{1,2}\s+de\s+/i.test(
+    question,
+  )
+
 type ClientProfile = {
   client?: SearchResult
   serviceSheet?: {
@@ -367,16 +378,21 @@ const getPlanningDateRange = (question: string) => {
   const normalized = question.toLowerCase()
   let end: Date | null = null
 
-  if (normalized.includes('mañana') || normalized.includes('manana')) {
-    start.setDate(start.getDate() + 1)
-    end = addDays(start, 1)
-  } else if (normalized.includes('pasado mañana') || normalized.includes('pasado manana')) {
+  if (normalized.includes('pasado mañana') || normalized.includes('pasado manana')) {
     start.setDate(start.getDate() + 2)
+    end = addDays(start, 1)
+  } else if (normalized.includes('mañana') || normalized.includes('manana')) {
+    start.setDate(start.getDate() + 1)
     end = addDays(start, 1)
   } else if (normalized.includes('hoy')) {
     end = addDays(start, 1)
   } else if (normalized.includes('esta semana')) {
     end = addDays(start, 7)
+  } else if (normalized.includes('próxima semana') || normalized.includes('proxima semana')) {
+    start.setDate(start.getDate() + 7)
+    end = addDays(start, 7)
+  } else if (normalized.includes('este mes')) {
+    end = new Date(start.getFullYear(), start.getMonth() + 1, 1)
   } else {
     const match = normalized.match(/(\d{1,2})\s+de\s+(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)/)
     if (!match) return null
@@ -389,7 +405,7 @@ const getPlanningDateRange = (question: string) => {
 }
 
 export async function getPlanningContext(question: string) {
-  if (!/agenda|visitas?|planeación|planeacion|hoy|mañana|manana|esta semana|\d{1,2}\s+de\s+/i.test(question)) {
+  if (!isPlanningQuestion(question)) {
     return null
   }
 
@@ -408,10 +424,13 @@ export async function getPlanningContext(question: string) {
   }
 }
 
-export async function getPlanningConflictContext(question: string) {
+export async function getPlanningConflictContext(
+  question: string,
+  existingPlanning?: Awaited<ReturnType<typeof getPlanningContext>>,
+) {
   if (!/conflict|cruce|solapamiento|choque/i.test(question)) return null
 
-  const planning = await getPlanningContext(question)
+  const planning = existingPlanning ?? (await getPlanningContext(question))
   if (!planning) return { conflictos: [] }
 
   const visits = planning.visitas.filter((visit) => visit.estado_visita !== 'Cancelada')

@@ -8,6 +8,8 @@ import {
   getPlanningContext,
   getTechnicianWorkloadContext,
   getUnassignedVisitsContext,
+  isTechnicianWorkloadQuestion,
+  isUnassignedVisitsQuestion,
   type AgentVisit,
 } from '@/agent/agentTools'
 
@@ -29,6 +31,11 @@ type OllamaResponse = {
   message?: {
     content?: string
   }
+
+  type OllamaMessage = {
+    role: 'system' | 'user' | 'assistant'
+    content: string
+  }
 }
 
 const emit = defineEmits<{
@@ -38,6 +45,7 @@ const emit = defineEmits<{
 const authStore = useAuthStore()
 const dashboardStore = useDashboardStore()
 const ollamaBaseUrl = (import.meta.env.VITE_OLLAMA_URL || 'http://127.0.0.1:11434').replace(/\/$/, '')
+const ollamaModel = import.meta.env.VITE_OLLAMA_MODEL || 'sisfumi-assistant'
 const input = ref('')
 const isLoading = ref(false)
 const loadingStatus = ref('Ollama está preparando la respuesta...')
@@ -53,6 +61,24 @@ const messages = ref<ChatMessage[]>([
 
 const canSend = computed(() => input.value.trim().length > 0 && !isLoading.value)
 
+const getRecentConversation = (): OllamaMessage[] =>
+  messages.value
+    .slice(-6)
+    .map((message) => ({
+      role: message.role,
+      content: message.content.slice(0, 800),
+    }))
+
+const getRoutingQuestion = (currentQuestion: string) => {
+  const previousUserMessage = [...messages.value]
+    .reverse()
+    .find((message) => message.role === 'user')?.content
+
+  return previousUserMessage
+    ? `Contexto de la pregunta anterior: ${previousUserMessage}\nPregunta actual: ${currentQuestion}`
+    : currentQuestion
+}
+
 const scrollToBottom = async () => {
   await nextTick()
   if (messagesContainer.value) {
@@ -61,9 +87,58 @@ const scrollToBottom = async () => {
 }
 
 const getOperationalContext = async (question: string) => {
+  const asksUnassigned = isUnassignedVisitsQuestion(question)
+  const asksWorkload = isTechnicianWorkloadQuestion(question)
+  const asksConflict = /conflict|cruce|solapamiento|choque/i.test(question)
+  const asksPlanning =
+    asksUnassigned ||
+    asksWorkload ||
+    asksConflict ||
+    /agenda|hoy|mañana|manana|esta semana|próxima semana|proxima semana|este mes|\d{1,2}\s+de\s+/i.test(
+      question,
+    )
+  const asksEntity = /cliente|técnic|tecnico|servicio|sucursal|rendimiento|desempeño/i.test(question)
+
+  loadingStatus.value = asksPlanning
+    ? 'Consultando agenda autorizada...'
+    : asksEntity
+      ? 'Consultando entidad autorizada...'
+      : 'Consultando indicadores autorizados...'
+
+  const entityContext = asksEntity ? await getAgentEntityContext(question) : null
+  const planningContext = asksPlanning ? await getPlanningContext(question) : null
+  const conflictContext = asksConflict
+    ? await getPlanningConflictContext(question, planningContext)
+    : null
+  const planningVisits = (planningContext?.visitas || []) as AgentVisit[]
+
+  if (asksUnassigned || asksWorkload) {
+    let visits = planningVisits
+    if (visits.length === 0) {
+      await dashboardStore.fetchDashboardData()
+      visits = [...dashboardStore.todaysAgenda, ...dashboardStore.pendingVisits] as AgentVisit[]
+    }
+    return {
+      entidadConsultada: null,
+      agendaConsultada: planningContext,
+      conflictosAgenda: conflictContext,
+      visitasSinTecnico: asksUnassigned ? getUnassignedVisitsContext(visits) : null,
+      cargaTecnicos: asksWorkload ? getTechnicianWorkloadContext(visits) : null,
+    }
+  }
+
+  if (entityContext || planningContext || conflictContext) {
+    return {
+      entidadConsultada: entityContext,
+      agendaConsultada: planningContext,
+      conflictosAgenda: conflictContext,
+      visitasSinTecnico: null,
+      cargaTecnicos: null,
+    }
+  }
+
   loadingStatus.value = 'Consultando indicadores autorizados...'
   await dashboardStore.fetchDashboardData()
-
   if (!dashboardStore.kpis) {
     throw new Error(dashboardStore.error || 'No se pudieron cargar los indicadores operativos.')
   }
@@ -85,11 +160,6 @@ const getOperationalContext = async (question: string) => {
   }
   const futurePendingVisits = dashboardStore.pendingVisits.filter(isFutureVisit)
   const overduePendingVisits = dashboardStore.pendingVisits.filter((visit) => !isFutureVisit(visit))
-  const dashboardVisits = [...dashboardStore.todaysAgenda, ...dashboardStore.pendingVisits] as AgentVisit[]
-
-  const entityContext = await getAgentEntityContext(question)
-  const planningContext = await getPlanningContext(question)
-  const conflictContext = await getPlanningConflictContext(question)
 
   return {
     fechaConsulta: new Date().toISOString().slice(0, 10),
@@ -123,12 +193,8 @@ const getOperationalContext = async (question: string) => {
     entidadConsultada: entityContext,
     agendaConsultada: planningContext,
     conflictosAgenda: conflictContext,
-    visitasSinTecnico: /sin técnico|sin tecnico|no tienen técnico|no tienen tecnico|sin asignar/i.test(question)
-      ? getUnassignedVisitsContext(dashboardVisits)
-      : null,
-    cargaTecnicos: /sobrecarg|carga de técnicos|carga de tecnicos|técnicos disponibles|tecnicos disponibles/i.test(question)
-      ? getTechnicianWorkloadContext(dashboardVisits)
-      : null,
+    visitasSinTecnico: null,
+    cargaTecnicos: null,
     nota: 'Estos datos fueron obtenidos por la aplicación usando los permisos del usuario actual. El total de visitas pendientes pertenece al conjunto devuelto por el dashboard y no debe interpretarse automáticamente como un total mensual.',
   }
 
@@ -227,7 +293,10 @@ const formatDashboard = (operationalContext: unknown, question: string): ChatMes
     { key: 'ingresos', label: 'Ingresos del mes', value: indicators.ingresosDelMes ?? 'Sin dato', match: /ingresos?|facturación|facturacion/i },
   ]
   const requested = availableKpis.filter((kpi) => kpi.match.test(question))
-  const kpis = (requested.length > 0 ? requested : availableKpis).map(({ match: _match, key: _key, ...kpi }) => kpi)
+  const kpis = (requested.length > 0 ? requested : availableKpis).map((kpi) => ({
+    label: kpi.label,
+    value: kpi.value,
+  }))
 
   return {
     role: 'assistant',
@@ -347,16 +416,16 @@ const sendMessage = async () => {
 
   error.value = ''
   input.value = ''
+  const conversationHistory = getRecentConversation()
+  const routingQuestion = getRoutingQuestion(content)
   messages.value.push({ role: 'user', content })
   await scrollToBottom()
   isLoading.value = true
   loadingStatus.value = 'Ollama está preparando la respuesta...'
-
-  const controller = new AbortController()
-  const timeoutId = window.setTimeout(() => controller.abort(), 120000)
+  let timeoutId: number | undefined
 
   try {
-    const operationalContext = await getOperationalContext(content)
+    const operationalContext = await getOperationalContext(routingQuestion)
     const entityContext = operationalContext.entidadConsultada as
       | { tipo?: string; cliente?: { nombre?: string }; serviciosPorSucursal?: Record<string, Array<{ tipo?: string; frecuencia?: string; estado?: string }>> }
       | null
@@ -392,26 +461,36 @@ const sendMessage = async () => {
       return
     }
 
-    if (/cuántos clientes|cuántas visitas|cumplimiento|ingresos|indicadores|dashboard|servicios activos|visitas pendientes/i.test(content)) {
-      messages.value.push(formatDashboard(operationalContext, content))
+    if (/cuántos clientes|cuántas visitas|cumplimiento|ingresos|indicadores|dashboard|servicios activos|visitas pendientes/i.test(routingQuestion)) {
+      messages.value.push(formatDashboard(operationalContext, routingQuestion))
       return
     }
 
     const context = `Contexto operativo autorizado de SISFUMI:\n${JSON.stringify(operationalContext)}\n\nReglas de interpretación: si existe serviciosPorSucursal, responde agrupando cada servicio bajo su sucursal y no enumeres fechas ni menciones agenda o historial. Usa serviciosContratados solo para describir servicios contratados. Usa visitasFuturas para preguntas sobre próximas visitas. Usa historialPasado solo para visitas anteriores. Nunca presentes una fecha de historial como pendiente, futura o programada. Usa visitasDelMes únicamente para el indicador mensual, agendaDeHoy para la fecha actual y visitasPendientesFuturas para pendientes futuros.`
-    const apiMessages = [
+    const apiMessages: OllamaMessage[] = [
+      {
+        role: 'system',
+        content:
+          'Eres el asistente interno de SISFUMI. Usa la conversación reciente para entender preguntas de seguimiento. Responde únicamente con el contexto operativo entregado y no inventes datos. Este asistente es de solo lectura.',
+      },
+      ...conversationHistory,
       {
         role: 'user' as const,
         content: `${context}\n\nPregunta del usuario:\n${content}`,
       },
     ]
+    loadingStatus.value = 'Ollama está generando la respuesta...'
+    const controller = new AbortController()
+    timeoutId = window.setTimeout(() => controller.abort(), 300000)
     const response = await fetch(`${ollamaBaseUrl}/api/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       signal: controller.signal,
       body: JSON.stringify({
-        model: 'sisfumi-assistant',
+        model: ollamaModel,
         stream: false,
-        options: { temperature: 0.2, num_predict: 256 },
+        keep_alive: '10m',
+        options: { temperature: 0.2, num_predict: 192 },
         messages: apiMessages,
       }),
     })
@@ -430,10 +509,10 @@ const sendMessage = async () => {
   } catch (requestError) {
     console.error('Error conectando con Ollama:', requestError)
     error.value = requestError instanceof DOMException && requestError.name === 'AbortError'
-      ? 'Ollama tardó demasiado en responder. Puedes intentarlo de nuevo.'
-      : `No se pudo conectar con el asistente local (${ollamaBaseUrl}). Verifica que Ollama esté ejecutándose con el modelo sisfumi-assistant.`
+      ? `Ollama tardó más de 5 minutos en responder. Verifica el modelo ${ollamaModel} o reduce el volumen de datos de la consulta.`
+      : `No se pudo conectar con el asistente local (${ollamaBaseUrl}). Verifica que Ollama esté ejecutándose con el modelo ${ollamaModel}.`
   } finally {
-    window.clearTimeout(timeoutId)
+    if (timeoutId !== undefined) window.clearTimeout(timeoutId)
     isLoading.value = false
     await scrollToBottom()
   }
