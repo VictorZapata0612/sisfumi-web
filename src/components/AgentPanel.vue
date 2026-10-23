@@ -1,13 +1,17 @@
 <script setup lang="ts">
 import { computed, nextTick, ref } from 'vue'
+import { httpsCallable } from 'firebase/functions'
 import { useAuthStore } from '@/stores/auth'
 import { useDashboardStore } from '@/stores/dashboard'
+import { functions } from '@/firebase/config'
 import {
   getAgentEntityContext,
+  getAssignmentProposalContext,
   getPlanningConflictContext,
   getPlanningContext,
   getTechnicianWorkloadContext,
   getUnassignedVisitsContext,
+  isAssignmentProposalQuestion,
   isTechnicianWorkloadQuestion,
   isUnassignedVisitsQuestion,
   type AgentVisit,
@@ -17,9 +21,9 @@ type ChatMessage = {
   role: 'user' | 'assistant'
   content: string
   structured?: {
-    type: 'visits' | 'services' | 'dashboard' | 'conflicts' | 'unassigned' | 'workload'
+    type: 'visits' | 'services' | 'dashboard' | 'conflicts' | 'unassigned' | 'workload' | 'proposal'
     subject?: string
-    sections?: Array<{ title: string; items: Array<Record<string, unknown>> }>
+    sections?: Array<{ title: string; key?: string; items: Array<Record<string, unknown>> }>
     branches?: Record<string, Array<Record<string, unknown>>>
     kpis?: Array<{ label: string; value: string | number }>
     conflicts?: Array<Record<string, unknown>>
@@ -57,6 +61,10 @@ const welcomeMessage: ChatMessage = {
     'Hola. Soy el asistente local de SISFUMI. Puedo ayudarte a entender la aplicación y analizar los indicadores autorizados de tu operación.',
 }
 const messages = ref<ChatMessage[]>([welcomeMessage])
+const selectedAssignments = ref<Record<string, string>>({})
+const selectedAssignmentLabels = ref<Record<string, string>>({})
+const reviewSelection = ref<Array<{ visit: string; technician: string }>>([])
+const isConfirmingAssignments = ref(false)
 
 const canSend = computed(() => input.value.trim().length > 0 && !isLoading.value)
 
@@ -90,16 +98,77 @@ const startNewConversation = async () => {
   messages.value = [{ ...welcomeMessage }]
   input.value = ''
   error.value = ''
+  selectedAssignments.value = {}
+  selectedAssignmentLabels.value = {}
+  reviewSelection.value = []
+  isConfirmingAssignments.value = false
   await scrollToBottom()
+}
+
+const selectAssignmentCandidate = (
+  proposalKey: string,
+  proposalLabel: string,
+  candidate: Record<string, unknown>,
+) => {
+  if (candidate.tieneConflicto || typeof candidate.tecnico !== 'string') return
+  selectedAssignments.value = {
+    ...selectedAssignments.value,
+    [proposalKey]: candidate.tecnico,
+  }
+  selectedAssignmentLabels.value = {
+    ...selectedAssignmentLabels.value,
+    [proposalKey]: proposalLabel,
+  }
+}
+
+const reviewAssignments = () => {
+  reviewSelection.value = Object.entries(selectedAssignments.value).map(([visit, technician]) => ({
+    visit: selectedAssignmentLabels.value[visit] || visit,
+    technician,
+  }))
+}
+
+const confirmAssignments = async () => {
+  if (reviewSelection.value.length === 0 || isConfirmingAssignments.value) return
+  if (!window.confirm('¿Confirmas las asignaciones seleccionadas? Esta acción modificará las visitas.')) {
+    return
+  }
+
+  isConfirmingAssignments.value = true
+  error.value = ''
+  try {
+    const confirmFn = httpsCallable(functions, 'confirmAssistantAssignments')
+    const result = (await confirmFn({
+      assignments: Object.entries(selectedAssignments.value).map(([visitId, technician]) => ({
+        visitId,
+        technician,
+      })),
+    })) as { data?: { message?: string } }
+    messages.value.push({
+      role: 'assistant',
+      content: result.data?.message || 'Asignaciones confirmadas correctamente.',
+    })
+    selectedAssignments.value = {}
+    selectedAssignmentLabels.value = {}
+    reviewSelection.value = []
+    await scrollToBottom()
+  } catch (err) {
+    console.error('Error confirmando asignaciones del asistente:', err)
+    error.value = err instanceof Error ? err.message : 'No fue posible confirmar las asignaciones.'
+  } finally {
+    isConfirmingAssignments.value = false
+  }
 }
 
 const getOperationalContext = async (question: string) => {
   const asksUnassigned = isUnassignedVisitsQuestion(question)
   const asksWorkload = isTechnicianWorkloadQuestion(question)
+  const asksAssignmentProposal = isAssignmentProposalQuestion(question)
   const asksConflict = /conflict|cruce|solapamiento|choque/i.test(question)
   const asksPlanning =
     asksUnassigned ||
     asksWorkload ||
+    asksAssignmentProposal ||
     asksConflict ||
     /agenda|hoy|mañana|manana|esta semana|próxima semana|proxima semana|este mes|\d{1,2}\s+de\s+/i.test(
       question,
@@ -113,7 +182,15 @@ const getOperationalContext = async (question: string) => {
       : 'Consultando indicadores autorizados...'
 
   const entityContext = asksEntity ? await getAgentEntityContext(question) : null
-  const planningContext = asksPlanning ? await getPlanningContext(question) : null
+  const hasExplicitDateRange =
+    /hoy|mañana|manana|pasado mañana|pasado manana|esta semana|próxima semana|proxima semana|este mes|\d{1,2}\s+de\s+/i.test(
+      question,
+    )
+  const planningContext = asksPlanning
+    ? await getPlanningContext(
+        asksAssignmentProposal && !hasExplicitDateRange ? `${question} este mes` : question,
+      )
+    : null
   const conflictContext = asksConflict
     ? await getPlanningConflictContext(question, planningContext)
     : null
@@ -131,6 +208,9 @@ const getOperationalContext = async (question: string) => {
       conflictosAgenda: conflictContext,
       visitasSinTecnico: asksUnassigned ? getUnassignedVisitsContext(visits) : null,
       cargaTecnicos: asksWorkload ? getTechnicianWorkloadContext(visits) : null,
+      propuestaAsignacion: asksAssignmentProposal
+        ? getAssignmentProposalContext(visits, planningContext?.técnicos || [])
+        : null,
     }
   }
 
@@ -141,6 +221,7 @@ const getOperationalContext = async (question: string) => {
       conflictosAgenda: conflictContext,
       visitasSinTecnico: null,
       cargaTecnicos: null,
+      propuestaAsignacion: null,
     }
   }
 
@@ -202,6 +283,7 @@ const getOperationalContext = async (question: string) => {
     conflictosAgenda: conflictContext,
     visitasSinTecnico: null,
     cargaTecnicos: null,
+    propuestaAsignacion: null,
     nota: 'Estos datos fueron obtenidos por la aplicación usando los permisos del usuario actual. El total de visitas pendientes pertenece al conjunto devuelto por el dashboard y no debe interpretarse automáticamente como un total mensual.',
   }
 
@@ -256,6 +338,46 @@ const formatWorkload = (operationalContext: unknown): ChatMessage => {
       ],
     },
   }
+}
+
+const formatAssignmentProposal = (operationalContext: unknown): ChatMessage => {
+  const context = operationalContext as {
+    totalVisitas?: number
+    propuestas?: Array<{
+      visita?: Record<string, unknown>
+      candidatos?: Array<Record<string, unknown>>
+      advertencia?: string
+    }>
+  }
+
+  return {
+    role: 'assistant',
+    content: context.totalVisitas
+      ? `Preparé propuestas para ${context.totalVisitas} visita${context.totalVisitas === 1 ? '' : 's'} sin técnico. No se ha ejecutado ninguna asignación.`
+      : 'No encontré visitas sin técnico para proponer asignaciones.',
+    structured: {
+      type: 'proposal',
+      sections: (context.propuestas || []).map((proposal, index) => ({
+        title: `${proposal.visita?.cliente || 'Cliente sin dato'} · ${proposal.visita?.fecha || 'Fecha sin dato'}`,
+        key: String(proposal.visita?.id || `proposal-${index}`),
+        items: proposal.candidatos?.length
+          ? proposal.candidatos
+          : [{ advertencia: proposal.advertencia || 'Sin candidatos disponibles.' }],
+      })),
+    },
+  }
+}
+
+const formatCandidateConflicts = (value: unknown) => {
+  if (!Array.isArray(value)) return ''
+  return value
+    .map((conflict) => {
+      if (!conflict || typeof conflict !== 'object') return ''
+      const item = conflict as { cliente?: string; fecha?: string }
+      return `${item.cliente || 'Cliente sin dato'} · ${item.fecha || 'Fecha sin dato'}`
+    })
+    .filter(Boolean)
+    .join('; ')
 }
 
 const formatServicesByBranch = (entityContext: unknown) => {
@@ -436,6 +558,11 @@ const sendMessage = async () => {
     const entityContext = operationalContext.entidadConsultada as
       | { tipo?: string; cliente?: { nombre?: string }; serviciosPorSucursal?: Record<string, Array<{ tipo?: string; frecuencia?: string; estado?: string }>> }
       | null
+
+    if (operationalContext.propuestaAsignacion) {
+      messages.value.push(formatAssignmentProposal(operationalContext.propuestaAsignacion))
+      return
+    }
 
     if (operationalContext.visitasSinTecnico) {
       messages.value.push(formatUnassignedVisits(operationalContext.visitasSinTecnico))
@@ -728,6 +855,101 @@ const sendMessage = async () => {
               </p>
               <p class="mt-1 text-xs text-gray-400">
                 {{ technician.total || 0 }} visita(s) activa(s)
+              </p>
+            </article>
+          </section>
+        </template>
+        <template v-else-if="message.structured?.type === 'proposal'">
+          <p class="mb-3 font-semibold text-white">Propuestas de asignación</p>
+          <p class="mb-3 text-xs text-yellow-200">
+            Selecciona un técnico disponible por visita. La selección todavía no modifica ninguna visita.
+          </p>
+          <div v-if="Object.keys(selectedAssignments).length" class="mb-3 rounded-md border border-blue-400/30 bg-blue-400/10 p-3">
+            <p class="text-xs font-semibold text-blue-200">
+              {{ Object.keys(selectedAssignments).length }} selección(es) preparada(s)
+            </p>
+            <button
+              type="button"
+              class="mt-2 rounded bg-blue-500 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-blue-400"
+              @click="reviewAssignments"
+            >
+              Revisar selección
+            </button>
+          </div>
+          <div v-if="reviewSelection.length" class="mb-3 rounded-md border border-yellow-400/30 bg-yellow-400/10 p-3">
+            <p class="text-xs font-semibold text-yellow-100">Revisión antes de confirmar</p>
+            <ul class="mt-2 space-y-1 text-xs text-yellow-100">
+              <li v-for="selection in reviewSelection" :key="selection.visit">
+                {{ selection.visit }} → {{ selection.technician }}
+              </li>
+            </ul>
+            <p class="mt-2 text-xs text-yellow-200">
+              Revisa cuidadosamente la selección. La confirmación validará nuevamente permisos, estado y cruces horarios en el backend.
+            </p>
+            <button
+              type="button"
+              class="mt-3 rounded bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-50"
+              :disabled="isConfirmingAssignments"
+              @click="confirmAssignments"
+            >
+              {{ isConfirmingAssignments ? 'Confirmando...' : 'Confirmar asignaciones' }}
+            </button>
+          </div>
+          <section
+            v-for="section in message.structured.sections"
+            :key="section.title"
+            class="mb-3 last:mb-0"
+          >
+            <h4 class="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-400">
+              {{ section.title }}
+            </h4>
+            <article
+              v-for="(candidate, candidateIndex) in section.items"
+              :key="`proposal-${section.title}-${candidateIndex}`"
+              class="mb-2 rounded-md border border-white/10 bg-black/20 p-2 last:mb-0"
+            >
+              <template v-if="candidate.tecnico">
+                <p class="font-medium text-gray-100">{{ candidate.tecnico }}</p>
+                <p class="mt-1 text-xs text-gray-400">
+                  Zona: {{ candidate.zona || 'Sin zona' }} ·
+                  {{ candidate.visitasActivas || 0 }} visita(s) activa(s)
+                </p>
+                <p
+                  class="mt-1 text-xs"
+                  :class="candidate.tieneConflicto ? 'text-red-300' : 'text-emerald-300'"
+                >
+                  {{ candidate.tieneConflicto ? 'Tiene cruce horario' : 'Sin cruce horario detectado' }}
+                </p>
+                <p
+                  v-if="candidate.tieneConflicto && formatCandidateConflicts(candidate.conflictos)"
+                  class="mt-1 text-xs text-red-200"
+                >
+                  {{ formatCandidateConflicts(candidate.conflictos) }}
+                </p>
+                <button
+                  type="button"
+                  class="mt-2 rounded px-2 py-1 text-xs font-semibold transition"
+                  :class="
+                    selectedAssignments[section.key || section.title] === candidate.tecnico
+                      ? 'bg-emerald-500 text-white'
+                      : candidate.tieneConflicto
+                        ? 'cursor-not-allowed bg-gray-700 text-gray-400'
+                        : 'bg-white/10 text-gray-200 hover:bg-white/20'
+                  "
+                  :disabled="Boolean(candidate.tieneConflicto)"
+                  @click="selectAssignmentCandidate(section.key || section.title, section.title, candidate)"
+                >
+                  {{
+                    selectedAssignments[section.key || section.title] === candidate.tecnico
+                      ? 'Técnico seleccionado'
+                      : candidate.tieneConflicto
+                        ? 'No disponible por cruce'
+                        : 'Elegir este técnico'
+                  }}
+                </button>
+              </template>
+              <p v-else class="text-xs text-yellow-200">
+                {{ candidate.advertencia || 'Sin candidatos disponibles.' }}
               </p>
             </article>
           </section>

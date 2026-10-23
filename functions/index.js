@@ -3743,6 +3743,151 @@ exports.batchAssignVisits = onCall({ cors: true }, async (request) => {
   return { message: `${visitIds.length} visitas asignadas correctamente.` }
 })
 
+exports.confirmAssistantAssignments = onCall({ cors: true }, async (request) => {
+  assertRole(request, CLIENT_MANAGER_ROLES)
+  const assignments = request.data?.assignments
+
+  if (
+    !Array.isArray(assignments) ||
+    assignments.length === 0 ||
+    assignments.length > 100 ||
+    assignments.some(
+      (assignment) =>
+        !assignment ||
+        typeof assignment.visitId !== 'string' ||
+        !assignment.visitId ||
+        typeof assignment.technician !== 'string' ||
+        !assignment.technician,
+    )
+  ) {
+    throw new HttpsError(
+      'invalid-argument',
+      'Debes enviar entre 1 y 100 asignaciones válidas.',
+    )
+  }
+
+  const uniqueAssignments = new Map(
+    assignments.map((assignment) => [assignment.visitId, assignment.technician]),
+  )
+  if (uniqueAssignments.size !== assignments.length) {
+    throw new HttpsError('invalid-argument', 'No se permiten visitas repetidas.')
+  }
+
+  const { zona: userZone, role: userRole } = request.auth.token
+  const isGlobal = GLOBAL_CLIENT_ROLES.includes(userRole)
+  const visitRefs = Array.from(uniqueAssignments.keys()).map((id) =>
+    db.collection('visitas').doc(id),
+  )
+  const visitDocs = await Promise.all(visitRefs.map((ref) => ref.get()))
+
+  const technicianNames = Array.from(new Set(uniqueAssignments.values()))
+  const technicianSnapshot = await db.collection('fumigadores').get()
+  const techniciansByName = new Map(
+    technicianSnapshot.docs
+      .map((doc) => [doc.data().nombreCompleto, { id: doc.id, ...doc.data() }])
+      .filter(([name]) => technicianNames.includes(name)),
+  )
+
+  const visitDataById = new Map()
+  let earliestDate = null
+  let latestDate = null
+  for (const visitDoc of visitDocs) {
+    if (!visitDoc.exists) {
+      throw new HttpsError('not-found', `La visita ${visitDoc.id} no existe.`)
+    }
+
+    const visitData = visitDoc.data()
+    if (!isGlobal && userZone && visitData.zona !== userZone) {
+      throw new HttpsError('permission-denied', 'No puedes asignar visitas fuera de tu zona.')
+    }
+    if (visitData.estado_visita === 'Realizada' || visitData.estado_visita === 'Cancelada') {
+      throw new HttpsError('failed-precondition', `La visita ${visitDoc.id} ya no está activa.`)
+    }
+    if (Array.isArray(visitData.fumigadores_asignados) && visitData.fumigadores_asignados.length > 0) {
+      throw new HttpsError('failed-precondition', `La visita ${visitDoc.id} ya tiene técnico asignado.`)
+    }
+
+    const visitDate = visitData.fecha_visita?.toDate
+      ? visitData.fecha_visita.toDate()
+      : new Date(visitData.fecha_visita)
+    if (Number.isNaN(visitDate.getTime())) {
+      throw new HttpsError('failed-precondition', `La visita ${visitDoc.id} no tiene una fecha válida.`)
+    }
+    const duration = Number(visitData.duracion_minutos) || 60
+    earliestDate = !earliestDate || visitDate < earliestDate ? visitDate : earliestDate
+    const endDate = new Date(visitDate.getTime() + duration * 60 * 1000)
+    latestDate = !latestDate || endDate > latestDate ? endDate : latestDate
+    visitDataById.set(visitDoc.id, { ...visitData, visitDate, duration })
+  }
+
+  for (const technicianName of technicianNames) {
+    const technician = techniciansByName.get(technicianName)
+    if (!technician) {
+      throw new HttpsError('not-found', `No existe el técnico ${technicianName}.`)
+    }
+    if (!isGlobal && userZone && technician.zona !== userZone) {
+      throw new HttpsError('permission-denied', 'No puedes asignar técnicos fuera de tu zona.')
+    }
+  }
+
+  const conflictSnapshot = await db
+    .collection('visitas')
+    .where('fecha_visita', '>=', earliestDate)
+    .where('fecha_visita', '<=', latestDate)
+    .get()
+  const activeByTechnician = new Map()
+  conflictSnapshot.docs.forEach((doc) => {
+    const data = doc.data()
+    if (data.estado_visita === 'Realizada' || data.estado_visita === 'Cancelada') return
+    ;(data.fumigadores_asignados || []).forEach((technician) => {
+      const current = activeByTechnician.get(technician) || []
+      current.push({ id: doc.id, data })
+      activeByTechnician.set(technician, current)
+    })
+  })
+
+  const overlaps = (firstStart, firstDuration, secondStart, secondDuration) =>
+    firstStart < new Date(secondStart.getTime() + secondDuration * 60 * 1000) &&
+    secondStart < new Date(firstStart.getTime() + firstDuration * 60 * 1000)
+
+  for (const [visitId, technician] of uniqueAssignments) {
+    const visit = visitDataById.get(visitId)
+    const conflicts = (activeByTechnician.get(technician) || []).some(
+      (scheduled) =>
+        scheduled.id !== visitId &&
+        overlaps(
+          visit.visitDate,
+          visit.duration,
+          scheduled.data.fecha_visita.toDate
+            ? scheduled.data.fecha_visita.toDate()
+            : new Date(scheduled.data.fecha_visita),
+          Number(scheduled.data.duracion_minutos) || 60,
+        ),
+    )
+    if (conflicts) {
+      throw new HttpsError(
+        'failed-precondition',
+        `El técnico ${technician} tiene un cruce horario en la visita ${visitId}.`,
+      )
+    }
+  }
+
+  const batch = db.batch()
+  for (const [visitId, technician] of uniqueAssignments) {
+    batch.update(db.collection('visitas').doc(visitId), {
+      fumigadores_asignados: [technician],
+      updatedBy: request.auth.uid,
+      estado_visita: 'Programada',
+    })
+  }
+  await batch.commit()
+  logger.info('Asignaciones confirmadas desde el asistente', {
+    uid: request.auth.uid,
+    count: uniqueAssignments.size,
+  })
+  return { message: `${uniqueAssignments.size} visita(s) asignada(s) correctamente.` }
+})
+
 exports.getConsolidatedDashboardStats = onCall(
   {
     cors: [

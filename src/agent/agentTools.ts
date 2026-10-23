@@ -17,6 +17,15 @@ export const isUnassignedVisitsQuestion = (question: string) =>
 export const isTechnicianWorkloadQuestion = (question: string) =>
   /sobrecarg|carga de técnicos|carga de tecnicos|técnicos disponibles|tecnicos disponibles/i.test(question)
 
+export const isAssignmentProposalQuestion = (question: string) => {
+  const hasProposalVerb = /proponer|prop[oó]n|sugerir|sugiere|recomendar|recomienda/i.test(question)
+  const hasAssignmentVerb =
+    /asignar|asigna|asignación|asignacion/i.test(question) &&
+    !isUnassignedVisitsQuestion(question)
+
+  return (hasProposalVerb || hasAssignmentVerb) && /técnic|tecnic|visita|visitas/i.test(question)
+}
+
 export const isPlanningQuestion = (question: string) =>
   /agenda|visitas?|planeación|planeacion|hoy|mañana|manana|esta semana|próxima semana|proxima semana|este mes|\d{1,2}\s+de\s+/i.test(
     question,
@@ -51,9 +60,17 @@ export type AgentVisit = {
   fecha_visita?: string
   estado_visita?: string
   fumigadores_asignados?: string[]
+  duracion_minutos?: number
   zona?: string
   sucursal?: string
   nombre_sucursal?: string
+}
+
+export type AgentTechnician = {
+  id?: string
+  nombreCompleto?: string
+  nombre?: string
+  zona?: string
 }
 
 const isUnassignedVisit = (visit: AgentVisit) =>
@@ -61,6 +78,25 @@ const isUnassignedVisit = (visit: AgentVisit) =>
 
 const isActiveVisit = (visit: AgentVisit) =>
   visit.estado_visita !== 'Realizada' && visit.estado_visita !== 'Cancelada'
+
+const getVisitInterval = (visit: AgentVisit) => {
+  const start = new Date(String(visit.fecha_visita || ''))
+  if (Number.isNaN(start.getTime())) return null
+
+  const duration = Number(visit.duracion_minutos) || 60
+  return {
+    start,
+    end: new Date(start.getTime() + duration * 60 * 1000),
+  }
+}
+
+const visitsOverlap = (first: AgentVisit, second: AgentVisit) => {
+  const firstInterval = getVisitInterval(first)
+  const secondInterval = getVisitInterval(second)
+  if (!firstInterval || !secondInterval) return false
+
+  return firstInterval.start < secondInterval.end && secondInterval.start < firstInterval.end
+}
 
 const formatVisitDate = (value?: string) => {
   if (!value) return 'Fecha sin dato'
@@ -137,6 +173,81 @@ export function getTechnicianWorkloadContext(visits: AgentVisit[]) {
       total: entry.total,
     })),
     nota: 'La sobrecarga es una señal operativa basada en visitas activas del conjunto consultado; debe revisarse antes de reasignar.',
+  }
+}
+
+export function getAssignmentProposalContext(
+    visits: AgentVisit[],
+    technicians: AgentTechnician[],
+  ) {
+    const unassigned = uniqueVisits(visits).filter(
+      (visit) => isActiveVisit(visit) && isUnassignedVisit(visit),
+    )
+    const activeVisits = uniqueVisits(visits).filter(
+      (visit) => isActiveVisit(visit) && !isUnassignedVisit(visit),
+    )
+    const workload = new Map<string, number>()
+
+    activeVisits.forEach((visit) => {
+      visit.fumigadores_asignados?.forEach((technician) => {
+        workload.set(technician, (workload.get(technician) || 0) + 1)
+      })
+    })
+
+    const proposals = unassigned.slice(0, 20).map((visit) => {
+      const candidates = technicians
+        .filter((technician) => !visit.zona || !technician.zona || technician.zona === visit.zona)
+        .map((technician) => {
+          const name = technician.nombreCompleto || technician.nombre || technician.id || 'Técnico sin nombre'
+          const conflictingVisits = activeVisits
+            .filter(
+              (scheduledVisit) =>
+                scheduledVisit.fumigadores_asignados?.includes(name) &&
+                visitsOverlap(visit, scheduledVisit),
+            )
+            .slice(0, 3)
+
+          return {
+            tecnico: name,
+            zona: technician.zona || 'Zona sin dato',
+            visitasActivas: workload.get(name) || 0,
+            tieneConflicto: conflictingVisits.length > 0,
+            conflictos: conflictingVisits.map((conflictingVisit) => ({
+              cliente:
+                conflictingVisit.nombre_cliente ||
+                conflictingVisit.clientName ||
+                'Cliente sin dato',
+              fecha: formatVisitDate(conflictingVisit.fecha_visita),
+            })),
+          }
+        })
+        .sort((first, second) => {
+          if (first.tieneConflicto !== second.tieneConflicto) {
+            return first.tieneConflicto ? 1 : -1
+          }
+          return first.visitasActivas - second.visitasActivas
+        })
+
+      return {
+        visita: {
+          id: visit.id,
+          cliente: visit.nombre_cliente || visit.clientName || 'Cliente sin dato',
+          fecha: formatVisitDate(visit.fecha_visita),
+          zona: visit.zona || 'Zona sin dato',
+          tipo: visit.tipo_visita || 'Tipo sin dato',
+        },
+        candidatos: candidates.slice(0, 3),
+        advertencia:
+          candidates.length === 0 ? 'No hay técnicos candidatos en la zona.' : undefined,
+      }
+    })
+
+    return {
+      tipo: 'propuesta de asignación',
+      totalVisitas: unassigned.length,
+      propuestas: proposals,
+      limitado: unassigned.length > 20,
+      nota: 'Esto es una propuesta de solo lectura. No se ha asignado ninguna visita.',
   }
 }
 
@@ -416,11 +527,17 @@ export async function getPlanningContext(question: string) {
   const result = (await planningFn({
     ...dateRange,
     calendarTargetUid: 'internal',
-  })) as { data: { monthlyVisits?: Array<Record<string, unknown>> } }
+  })) as {
+    data: {
+      monthlyVisits?: Array<Record<string, unknown>>
+      technicians?: AgentTechnician[]
+    }
+  }
 
   return {
     rango: dateRange,
     visitas: result.data.monthlyVisits || [],
+    técnicos: result.data.technicians || [],
   }
 }
 
