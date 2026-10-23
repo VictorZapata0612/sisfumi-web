@@ -31,11 +31,11 @@ type OllamaResponse = {
   message?: {
     content?: string
   }
+}
 
-  type OllamaMessage = {
-    role: 'system' | 'user' | 'assistant'
-    content: string
-  }
+type OllamaMessage = {
+  role: 'system' | 'user' | 'assistant'
+  content: string
 }
 
 const emit = defineEmits<{
@@ -51,13 +51,12 @@ const isLoading = ref(false)
 const loadingStatus = ref('Ollama está preparando la respuesta...')
 const error = ref('')
 const messagesContainer = ref<HTMLElement | null>(null)
-const messages = ref<ChatMessage[]>([
-  {
-    role: 'assistant',
-    content:
-      'Hola. Soy el asistente local de SISFUMI. Puedo ayudarte a entender la aplicación y analizar los indicadores autorizados de tu operación.',
-  },
-])
+const welcomeMessage: ChatMessage = {
+  role: 'assistant',
+  content:
+    'Hola. Soy el asistente local de SISFUMI. Puedo ayudarte a entender la aplicación y analizar los indicadores autorizados de tu operación.',
+}
+const messages = ref<ChatMessage[]>([welcomeMessage])
 
 const canSend = computed(() => input.value.trim().length > 0 && !isLoading.value)
 
@@ -83,6 +82,14 @@ const scrollToBottom = async () => {
   await nextTick()
   if (messagesContainer.value) {
     messagesContainer.value.scrollTop = messagesContainer.value.scrollHeight
+  }
+
+  const startNewConversation = async () => {
+    if (isLoading.value) return
+    messages.value = [{ ...welcomeMessage }]
+    input.value = ''
+    error.value = ''
+    await scrollToBottom()
   }
 }
 
@@ -529,15 +536,27 @@ const sendMessage = async () => {
         <p class="font-semibold text-white">Asistente SISFUMI</p>
         <p class="text-xs text-gray-400">Modelo local · solo lectura</p>
       </div>
-      <button
-        type="button"
-        class="rounded p-2 text-gray-400 transition hover:bg-white/10 hover:text-white"
-        title="Cerrar asistente"
-        aria-label="Cerrar asistente"
-        @click="emit('close')"
-      >
-        <i class="fas fa-times"></i>
-      </button>
+      <div class="flex items-center gap-1">
+        <button
+          type="button"
+          class="rounded p-2 text-gray-400 transition hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+          title="Nueva conversación"
+          aria-label="Iniciar nueva conversación"
+          :disabled="isLoading"
+          @click="startNewConversation"
+        >
+          <i class="fas fa-rotate-right"></i>
+        </button>
+        <button
+          type="button"
+          class="rounded p-2 text-gray-400 transition hover:bg-white/10 hover:text-white"
+          title="Cerrar asistente"
+          aria-label="Cerrar asistente"
+          @click="emit('close')"
+        >
+          <i class="fas fa-times"></i>
+        </button>
+      </div>
     </header>
 
     <div ref="messagesContainer" class="flex-1 space-y-3 overflow-y-auto p-4">
