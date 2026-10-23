@@ -83,14 +83,14 @@ const scrollToBottom = async () => {
   if (messagesContainer.value) {
     messagesContainer.value.scrollTop = messagesContainer.value.scrollHeight
   }
+}
 
-  const startNewConversation = async () => {
-    if (isLoading.value) return
-    messages.value = [{ ...welcomeMessage }]
-    input.value = ''
-    error.value = ''
-    await scrollToBottom()
-  }
+const startNewConversation = async () => {
+  if (isLoading.value) return
+  messages.value = [{ ...welcomeMessage }]
+  input.value = ''
+  error.value = ''
+  await scrollToBottom()
 }
 
 const getOperationalContext = async (question: string) => {
