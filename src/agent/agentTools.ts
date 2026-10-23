@@ -32,6 +32,103 @@ type TechnicianProfile = {
   recentHistory?: Array<Record<string, unknown>>
 }
 
+export type AgentVisit = {
+  id?: string
+  nombre_cliente?: string
+  clientName?: string
+  tipo_visita?: string
+  fecha_visita?: string
+  estado_visita?: string
+  fumigadores_asignados?: string[]
+  zona?: string
+  sucursal?: string
+  nombre_sucursal?: string
+}
+
+const isUnassignedVisit = (visit: AgentVisit) =>
+  !Array.isArray(visit.fumigadores_asignados) || visit.fumigadores_asignados.length === 0
+
+const isActiveVisit = (visit: AgentVisit) =>
+  visit.estado_visita !== 'Realizada' && visit.estado_visita !== 'Cancelada'
+
+const formatVisitDate = (value?: string) => {
+  if (!value) return 'Fecha sin dato'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  return new Intl.DateTimeFormat('es-CO', {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  }).format(date)
+}
+
+const uniqueVisits = (visits: AgentVisit[]) =>
+  Array.from(new Map(visits.filter((visit) => visit.id).map((visit) => [visit.id, visit])).values())
+
+export function getUnassignedVisitsContext(visits: AgentVisit[]) {
+  const unassigned = uniqueVisits(visits)
+    .filter((visit) => isActiveVisit(visit) && isUnassignedVisit(visit))
+    .sort((first, second) =>
+      String(first.fecha_visita || '').localeCompare(String(second.fecha_visita || '')),
+    )
+
+  return {
+    tipo: 'visitas sin técnico',
+    total: unassigned.length,
+    visitas: unassigned.slice(0, 30).map((visit) => ({
+      id: visit.id,
+      cliente: visit.nombre_cliente || visit.clientName || 'Cliente sin dato',
+      sucursal: visit.sucursal || visit.nombre_sucursal || 'Sucursal sin dato',
+      tipo: visit.tipo_visita || 'Tipo sin dato',
+      fecha: formatVisitDate(visit.fecha_visita),
+      estado: visit.estado_visita || 'Sin estado',
+      zona: visit.zona || 'Zona sin dato',
+    })),
+    limitado: unassigned.length > 30,
+  }
+}
+
+export function getTechnicianWorkloadContext(visits: AgentVisit[]) {
+  const activeVisits = uniqueVisits(visits).filter(
+    (visit) => isActiveVisit(visit) && !isUnassignedVisit(visit),
+  )
+  const workload = new Map<string, { total: number; visits: Array<Record<string, string | undefined>> }>()
+
+  activeVisits.forEach((visit) => {
+    visit.fumigadores_asignados?.forEach((technician) => {
+      const current = workload.get(technician) || { total: 0, visits: [] }
+      current.total += 1
+      current.visits.push({
+        cliente: visit.nombre_cliente || visit.clientName || 'Cliente sin dato',
+        fecha: formatVisitDate(visit.fecha_visita),
+        tipo: visit.tipo_visita || 'Tipo sin dato',
+      })
+      workload.set(technician, current)
+    })
+  })
+
+  const entries = Array.from(workload.entries())
+    .map(([tecnico, data]) => ({ tecnico, ...data }))
+    .sort((first, second) => second.total - first.total)
+  const average = entries.length
+    ? entries.reduce((total, entry) => total + entry.total, 0) / entries.length
+    : 0
+  const overloaded = entries.filter((entry) => entry.total >= 5 || entry.total > average + 2)
+
+  return {
+    tipo: 'carga de técnicos',
+    promedio: Number(average.toFixed(1)),
+    sobrecargados: overloaded.map((entry) => ({
+      ...entry,
+      visitas: entry.visits.slice(0, 10),
+    })),
+    técnicos: entries.map((entry) => ({
+      tecnico: entry.tecnico,
+      total: entry.total,
+    })),
+    nota: 'La sobrecarga es una señal operativa basada en visitas activas del conjunto consultado; debe revisarse antes de reasignar.',
+  }
+}
+
 const cleanSearchTerm = (value: string) =>
   value
     .replace(/^según los datos proporcionados[,\s]*/i, '')

@@ -2,13 +2,20 @@
 import { computed, nextTick, ref } from 'vue'
 import { useAuthStore } from '@/stores/auth'
 import { useDashboardStore } from '@/stores/dashboard'
-import { getAgentEntityContext, getPlanningConflictContext, getPlanningContext } from '@/agent/agentTools'
+import {
+  getAgentEntityContext,
+  getPlanningConflictContext,
+  getPlanningContext,
+  getTechnicianWorkloadContext,
+  getUnassignedVisitsContext,
+  type AgentVisit,
+} from '@/agent/agentTools'
 
 type ChatMessage = {
   role: 'user' | 'assistant'
   content: string
   structured?: {
-    type: 'visits' | 'services' | 'dashboard' | 'conflicts'
+    type: 'visits' | 'services' | 'dashboard' | 'conflicts' | 'unassigned' | 'workload'
     subject?: string
     sections?: Array<{ title: string; items: Array<Record<string, unknown>> }>
     branches?: Record<string, Array<Record<string, unknown>>>
@@ -78,6 +85,7 @@ const getOperationalContext = async (question: string) => {
   }
   const futurePendingVisits = dashboardStore.pendingVisits.filter(isFutureVisit)
   const overduePendingVisits = dashboardStore.pendingVisits.filter((visit) => !isFutureVisit(visit))
+  const dashboardVisits = [...dashboardStore.todaysAgenda, ...dashboardStore.pendingVisits] as AgentVisit[]
 
   const entityContext = await getAgentEntityContext(question)
   const planningContext = await getPlanningContext(question)
@@ -115,9 +123,68 @@ const getOperationalContext = async (question: string) => {
     entidadConsultada: entityContext,
     agendaConsultada: planningContext,
     conflictosAgenda: conflictContext,
+    visitasSinTecnico: /sin técnico|sin tecnico|no tienen técnico|no tienen tecnico|sin asignar/i.test(question)
+      ? getUnassignedVisitsContext(dashboardVisits)
+      : null,
+    cargaTecnicos: /sobrecarg|carga de técnicos|carga de tecnicos|técnicos disponibles|tecnicos disponibles/i.test(question)
+      ? getTechnicianWorkloadContext(dashboardVisits)
+      : null,
     nota: 'Estos datos fueron obtenidos por la aplicación usando los permisos del usuario actual. El total de visitas pendientes pertenece al conjunto devuelto por el dashboard y no debe interpretarse automáticamente como un total mensual.',
   }
+
 }
+
+const formatUnassignedVisits = (operationalContext: unknown): ChatMessage => {
+  const context = operationalContext as {
+    total?: number
+    limitado?: boolean
+    visitas?: Array<Record<string, string | undefined>>
+  }
+  return {
+    role: 'assistant',
+    content: context.total
+      ? `Encontré ${context.total} visita${context.total === 1 ? '' : 's'} activa${context.total === 1 ? '' : 's'} sin técnico asignado.`
+      : 'No encontré visitas activas sin técnico asignado en el conjunto consultado.',
+    structured: {
+      type: 'unassigned',
+      sections: [
+        {
+          title: context.limitado ? 'Primeras 30 visitas' : 'Visitas',
+          items: context.visitas || [],
+        },
+      ],
+    },
+  }
+}
+
+const formatWorkload = (operationalContext: unknown): ChatMessage => {
+  const context = operationalContext as {
+    promedio?: number
+    sobrecargados?: Array<Record<string, unknown>>
+    técnicos?: Array<Record<string, unknown>>
+  }
+  return {
+    role: 'assistant',
+    content: context.sobrecargados?.length
+      ? `Detecté ${context.sobrecargados.length} técnico${context.sobrecargados.length === 1 ? '' : 's'} con carga alta.`
+      : 'No detecté técnicos con carga alta en el conjunto consultado.',
+    structured: {
+      type: 'workload',
+      kpis: [{ label: 'Promedio de visitas activas', value: context.promedio ?? 0 }],
+      sections: [
+        {
+          title: 'Técnicos con carga alta',
+          items: context.sobrecargados || [],
+        },
+        {
+          title: 'Carga por técnico',
+          items: context.técnicos || [],
+        },
+      ],
+    },
+  }
+}
+
 const formatServicesByBranch = (entityContext: unknown) => {
   const context = entityContext as {
     cliente?: { nombre?: string }
@@ -293,6 +360,16 @@ const sendMessage = async () => {
     const entityContext = operationalContext.entidadConsultada as
       | { tipo?: string; cliente?: { nombre?: string }; serviciosPorSucursal?: Record<string, Array<{ tipo?: string; frecuencia?: string; estado?: string }>> }
       | null
+
+    if (operationalContext.visitasSinTecnico) {
+      messages.value.push(formatUnassignedVisits(operationalContext.visitasSinTecnico))
+      return
+    }
+
+    if (operationalContext.cargaTecnicos) {
+      messages.value.push(formatWorkload(operationalContext.cargaTecnicos))
+      return
+    }
 
     if (entityContext?.tipo === 'servicios por sucursal') {
       const serviceAnswer = formatServicesByBranch(entityContext)
@@ -490,6 +567,72 @@ const sendMessage = async () => {
             <p class="mt-2 text-xs text-gray-300">{{ conflict.primera }}</p>
             <p class="text-xs text-gray-400">{{ conflict.segunda }}</p>
           </article>
+        </template>
+        <template v-else-if="message.structured?.type === 'unassigned'">
+          <p class="mb-3 font-semibold text-white">Visitas sin técnico asignado</p>
+          <section
+            v-for="section in message.structured.sections"
+            :key="section.title"
+            class="mb-3 last:mb-0"
+          >
+            <h4 class="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-400">
+              {{ section.title }}
+            </h4>
+            <p v-if="section.items.length === 0" class="text-xs text-gray-500">
+              No hay registros.
+            </p>
+            <article
+              v-for="(visit, visitIndex) in section.items"
+              :key="`unassigned-${visitIndex}`"
+              class="mb-2 rounded-md border border-yellow-500/20 bg-black/20 p-2 last:mb-0"
+            >
+              <p class="font-medium text-gray-100">{{ visit.cliente || 'Cliente sin dato' }}</p>
+              <p class="mt-1 text-xs text-gray-300">{{ visit.fecha || 'Fecha sin dato' }}</p>
+              <p class="text-xs text-gray-400">
+                {{ visit.tipo || 'Tipo sin dato' }} · {{ visit.sucursal || 'Sucursal sin dato' }}
+              </p>
+              <p class="text-xs text-gray-500">
+                {{ visit.zona || 'Zona sin dato' }} · {{ visit.estado || 'Sin estado' }}
+              </p>
+            </article>
+          </section>
+        </template>
+        <template v-else-if="message.structured?.type === 'workload'">
+          <p class="mb-3 font-semibold text-white">Carga operativa de técnicos</p>
+          <div class="mb-3 grid grid-cols-2 gap-2">
+            <article
+              v-for="kpi in message.structured.kpis"
+              :key="kpi.label"
+              class="rounded-md border border-white/10 bg-black/20 p-2"
+            >
+              <p class="text-[10px] uppercase tracking-wide text-gray-500">{{ kpi.label }}</p>
+              <p class="mt-1 text-base font-semibold text-white">{{ kpi.value }}</p>
+            </article>
+          </div>
+          <section
+            v-for="section in message.structured.sections"
+            :key="section.title"
+            class="mb-3 last:mb-0"
+          >
+            <h4 class="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-400">
+              {{ section.title }}
+            </h4>
+            <p v-if="section.items.length === 0" class="text-xs text-gray-500">
+              No hay registros.
+            </p>
+            <article
+              v-for="(technician, technicianIndex) in section.items"
+              :key="`workload-${section.title}-${technicianIndex}`"
+              class="mb-2 rounded-md border border-white/10 bg-black/20 p-2 last:mb-0"
+            >
+              <p class="font-medium text-gray-100">
+                {{ technician.tecnico || 'Técnico sin dato' }}
+              </p>
+              <p class="mt-1 text-xs text-gray-400">
+                {{ technician.total || 0 }} visita(s) activa(s)
+              </p>
+            </article>
+          </section>
         </template>
         <template v-else>{{ message.content }}</template>
       </div>

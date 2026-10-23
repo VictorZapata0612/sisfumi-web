@@ -10,7 +10,6 @@ import { useNotificationStore } from '@/stores/notifications'
 const UserProfileModal = defineAsyncComponent(() => import('@/components/UserProfileModal.vue'))
 const ToastContainer = defineAsyncComponent(() => import('@/components/ToastContainer.vue'))
 const ConfirmDialog = defineAsyncComponent(() => import('@/components/ConfirmDialog.vue'))
-const AssistantChat = defineAsyncComponent(() => import('@/components/AssistantChat.vue'))
 
 const authStore = useAuthStore()
 const notificationStore = useNotificationStore()
@@ -130,7 +129,6 @@ const toggleCollapse = () => {
   <div class="flex h-screen bg-[#0a0a0a] text-gray-200">
     <ToastContainer />
     <ConfirmDialog />
-    <AssistantChat />
     <AgentPanel v-if="showAgentPanel" @close="showAgentPanel = false" />
     <button
       type="button"
