@@ -16,6 +16,9 @@ import {
   isUnassignedVisitsQuestion,
   type AgentVisit,
 } from '@/agent/agentTools'
+import { doc, getDoc, setDoc } from 'firebase/firestore'
+import { db } from '@/firebase/config'
+import { onMounted } from 'vue'
 
 type ChatMessage = {
   role: 'user' | 'assistant'
@@ -63,8 +66,51 @@ const welcomeMessage: ChatMessage = {
 const messages = ref<ChatMessage[]>([welcomeMessage])
 const selectedAssignments = ref<Record<string, string>>({})
 const selectedAssignmentLabels = ref<Record<string, string>>({})
-const reviewSelection = ref<Array<{ visit: string; technician: string }>>([])
+const reviewSelection = ref<Array<{ key: string; visit: string; technician: string }>>([])
 const isConfirmingAssignments = ref(false)
+
+const getSessionRef = () => {
+  if (!authStore.user?.uid) return null
+  return doc(db, 'users', authStore.user.uid, 'agent_session', 'current')
+}
+
+const loadConversationHistory = async () => {
+  const sessionRef = getSessionRef()
+  if (!sessionRef) return
+
+  try {
+    const docSnap = await getDoc(sessionRef)
+    if (docSnap.exists() && docSnap.data().messages) {
+      const savedMessages = docSnap.data().messages
+      if (savedMessages.length > 0) {
+        messages.value = savedMessages
+        await scrollToBottom()
+      }
+    }
+  } catch (err) {
+    console.error('Error cargando la memoria del asistente:', err)
+  }
+}
+
+const saveConversationHistory = async () => {
+  const sessionRef = getSessionRef()
+  if (!sessionRef) return
+
+  try {
+    // Guardamos un máximo de 20 mensajes para no exceder la ventana de contexto de Ollama
+    const messagesToSave = messages.value.slice(-20)
+    await setDoc(sessionRef, {
+      messages: messagesToSave,
+      updatedAt: new Date().toISOString()
+    }, { merge: true })
+  } catch (err) {
+    console.error('Error guardando la memoria del asistente:', err)
+  }
+}
+
+onMounted(() => {
+  loadConversationHistory()
+})
 
 const canSend = computed(() => input.value.trim().length > 0 && !isLoading.value)
 
@@ -98,10 +144,8 @@ const startNewConversation = async () => {
   messages.value = [{ ...welcomeMessage }]
   input.value = ''
   error.value = ''
-  selectedAssignments.value = {}
-  selectedAssignmentLabels.value = {}
-  reviewSelection.value = []
-  isConfirmingAssignments.value = false
+  cancelSelection()
+  await saveConversationHistory() // Borra la memoria en Firestore
   await scrollToBottom()
 }
 
@@ -121,9 +165,35 @@ const selectAssignmentCandidate = (
   }
 }
 
+const cancelSelection = () => {
+  selectedAssignments.value = {}
+  selectedAssignmentLabels.value = {}
+  reviewSelection.value = []
+  error.value = ''
+}
+
+const removeSelection = (proposalKey: string) => {
+  const newAssignments = { ...selectedAssignments.value }
+  delete newAssignments[proposalKey]
+  selectedAssignments.value = newAssignments
+
+  const newLabels = { ...selectedAssignmentLabels.value }
+  delete newLabels[proposalKey]
+  selectedAssignmentLabels.value = newLabels
+
+  // Actualizar la lista de revisión activa
+  reviewSelection.value = reviewSelection.value.filter(s => s.key !== proposalKey)
+
+  // Si nos quedamos sin selecciones, limpiamos todo el estado de revisión
+  if (reviewSelection.value.length === 0) {
+    cancelSelection()
+  }
+}
+
 const reviewAssignments = () => {
-  reviewSelection.value = Object.entries(selectedAssignments.value).map(([visit, technician]) => ({
-    visit: selectedAssignmentLabels.value[visit] || visit,
+  reviewSelection.value = Object.entries(selectedAssignments.value).map(([visitKey, technician]) => ({
+    key: visitKey, // Almacenamos la clave real para poder eliminarla individualmente
+    visit: selectedAssignmentLabels.value[visitKey] || visitKey,
     technician,
   }))
 }
@@ -146,15 +216,25 @@ const confirmAssignments = async () => {
     })) as { data?: { message?: string } }
     messages.value.push({
       role: 'assistant',
-      content: result.data?.message || 'Asignaciones confirmadas correctamente.',
+      content: result.data?.message || 'Asignaciones confirmadas correctamente. Te recomiendo recargar la agenda para ver los cambios.',
     })
-    selectedAssignments.value = {}
-    selectedAssignmentLabels.value = {}
-    reviewSelection.value = []
+    // Limpiamos la selección tras el éxito
+    cancelSelection()
     await scrollToBottom()
   } catch (err) {
     console.error('Error confirmando asignaciones del asistente:', err)
-    error.value = err instanceof Error ? err.message : 'No fue posible confirmar las asignaciones.'
+    const errorMessage = err instanceof Error ? err.message : 'No fue posible confirmar las asignaciones.'
+    error.value = errorMessage
+
+    // Si el error parece de concurrencia o estado inválido, forzamos la limpieza para evitar bloqueos
+    if (/ya tiene|no está activa|no existe|cruce horario/i.test(errorMessage)) {
+      messages.value.push({
+        role: 'assistant',
+        content: `⚠️ La asignación falló porque los datos cambiaron en el servidor: ${errorMessage}. Por favor, vuelve a consultar las visitas sin asignar.`
+      })
+      cancelSelection()
+      await scrollToBottom()
+    }
   } finally {
     isConfirmingAssignments.value = false
   }
@@ -188,8 +268,8 @@ const getOperationalContext = async (question: string) => {
     )
   const planningContext = asksPlanning
     ? await getPlanningContext(
-        asksAssignmentProposal && !hasExplicitDateRange ? `${question} este mes` : question,
-      )
+      asksAssignmentProposal && !hasExplicitDateRange ? `${question} este mes` : question,
+    )
     : null
   const conflictContext = asksConflict
     ? await getPlanningConflictContext(question, planningContext)
@@ -468,10 +548,10 @@ const formatVisits = (entityContext: unknown): ChatMessage => {
       subject,
       metrics: context.indicadores
         ? [
-            { label: 'Asignadas', value: context.indicadores.assigned ?? 'Sin dato' },
-            { label: 'Realizadas', value: context.indicadores.completed ?? 'Sin dato' },
-            { label: 'Cumplimiento', value: `${context.indicadores.rate ?? 'Sin dato'}%` },
-          ]
+          { label: 'Asignadas', value: context.indicadores.assigned ?? 'Sin dato' },
+          { label: 'Realizadas', value: context.indicadores.completed ?? 'Sin dato' },
+          { label: 'Cumplimiento', value: `${context.indicadores.rate ?? 'Sin dato'}%` },
+        ]
         : undefined,
       sections: [
         { title: 'Próximas visitas', items: future },
@@ -548,6 +628,7 @@ const sendMessage = async () => {
   const conversationHistory = getRecentConversation()
   const routingQuestion = getRoutingQuestion(content)
   messages.value.push({ role: 'user', content })
+  await saveConversationHistory()
   await scrollToBottom()
   isLoading.value = true
   loadingStatus.value = 'Ollama está preparando la respuesta...'
@@ -576,7 +657,7 @@ const sendMessage = async () => {
 
     if (entityContext?.tipo === 'servicios por sucursal') {
       const serviceAnswer = formatServicesByBranch(entityContext)
-        messages.value.push(serviceAnswer)
+      messages.value.push(serviceAnswer)
       return
     }
 
@@ -656,71 +737,48 @@ const sendMessage = async () => {
 <template>
   <aside
     class="fixed right-4 bottom-20 z-[60] flex h-[min(680px,calc(100vh-7rem))] w-[min(420px,calc(100vw-2rem))] flex-col overflow-hidden rounded-xl border border-white/10 bg-[#151515] shadow-2xl"
-    aria-label="Asistente SISFUMI"
-  >
+    aria-label="Asistente SISFUMI">
     <header class="flex items-center justify-between border-b border-white/10 px-4 py-3">
       <div>
         <p class="font-semibold text-white">Asistente SISFUMI</p>
         <p class="text-xs text-gray-400">Modelo local · solo lectura</p>
       </div>
       <div class="flex items-center gap-1">
-        <button
-          type="button"
+        <button type="button"
           class="rounded p-2 text-gray-400 transition hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
-          title="Nueva conversación"
-          aria-label="Iniciar nueva conversación"
-          :disabled="isLoading"
-          @click="startNewConversation"
-        >
+          title="Nueva conversación" aria-label="Iniciar nueva conversación" :disabled="isLoading"
+          @click="startNewConversation">
           <i class="fas fa-rotate-right"></i>
         </button>
-        <button
-          type="button"
-          class="rounded p-2 text-gray-400 transition hover:bg-white/10 hover:text-white"
-          title="Cerrar asistente"
-          aria-label="Cerrar asistente"
-          @click="emit('close')"
-        >
+        <button type="button" class="rounded p-2 text-gray-400 transition hover:bg-white/10 hover:text-white"
+          title="Cerrar asistente" aria-label="Cerrar asistente" @click="emit('close')">
           <i class="fas fa-times"></i>
         </button>
       </div>
     </header>
 
     <div ref="messagesContainer" class="flex-1 space-y-3 overflow-y-auto p-4">
-      <div
-        v-for="(message, index) in messages"
-        :key="`${message.role}-${index}`"
+      <div v-for="(message, index) in messages" :key="`${message.role}-${index}`"
         class="max-w-[90%] rounded-lg px-3 py-2 text-sm whitespace-pre-wrap"
-        :class="message.role === 'user' ? 'ml-auto bg-red-700 text-white' : 'bg-white/10 text-gray-200'"
-      >
+        :class="message.role === 'user' ? 'ml-auto bg-red-700 text-white' : 'bg-white/10 text-gray-200'">
         <template v-if="message.structured?.type === 'visits'">
           <p class="mb-3 font-semibold text-white">Visitas de {{ message.structured.subject }}</p>
           <div v-if="message.structured.metrics" class="mb-3 grid grid-cols-3 gap-2">
-            <article
-              v-for="metric in message.structured.metrics"
-              :key="metric.label"
-              class="rounded-md border border-white/10 bg-black/20 p-2"
-            >
+            <article v-for="metric in message.structured.metrics" :key="metric.label"
+              class="rounded-md border border-white/10 bg-black/20 p-2">
               <p class="text-[10px] uppercase tracking-wide text-gray-500">{{ metric.label }}</p>
               <p class="mt-1 text-sm font-semibold text-white">{{ metric.value }}</p>
             </article>
           </div>
-          <section
-            v-for="section in message.structured.sections"
-            :key="section.title"
-            class="mb-3 last:mb-0"
-          >
+          <section v-for="section in message.structured.sections" :key="section.title" class="mb-3 last:mb-0">
             <h4 class="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-400">
               {{ section.title }}
             </h4>
             <p v-if="section.items.length === 0" class="text-xs text-gray-500">
               No hay registros.
             </p>
-            <article
-              v-for="(visit, visitIndex) in section.items"
-              :key="`${section.title}-${visitIndex}`"
-              class="mb-2 rounded-md border border-white/10 bg-black/20 p-2 last:mb-0"
-            >
+            <article v-for="(visit, visitIndex) in section.items" :key="`${section.title}-${visitIndex}`"
+              class="mb-2 rounded-md border border-white/10 bg-black/20 p-2 last:mb-0">
               <div class="flex items-start justify-between gap-2">
                 <p class="font-medium text-gray-100">{{ visit.tipo || 'Tipo sin dato' }}</p>
                 <span class="shrink-0 rounded-full bg-yellow-500/15 px-2 py-0.5 text-[10px] text-yellow-300">
@@ -742,19 +800,12 @@ const sendMessage = async () => {
           <p class="mb-3 font-semibold text-white">
             Servicios de {{ message.structured.subject }}
           </p>
-          <section
-            v-for="(services, branch) in message.structured.branches"
-            :key="branch"
-            class="mb-3 last:mb-0"
-          >
+          <section v-for="(services, branch) in message.structured.branches" :key="branch" class="mb-3 last:mb-0">
             <h4 class="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-400">
               {{ branch }}
             </h4>
-            <article
-              v-for="(service, serviceIndex) in services"
-              :key="`${branch}-${serviceIndex}`"
-              class="mb-2 rounded-md border border-white/10 bg-black/20 p-2 last:mb-0"
-            >
+            <article v-for="(service, serviceIndex) in services" :key="`${branch}-${serviceIndex}`"
+              class="mb-2 rounded-md border border-white/10 bg-black/20 p-2 last:mb-0">
               <p class="font-medium text-gray-100">{{ service.tipo || 'Servicio sin dato' }}</p>
               <p class="mt-1 text-xs text-gray-400">
                 {{ service.frecuencia || 'Frecuencia sin dato' }} ·
@@ -766,11 +817,8 @@ const sendMessage = async () => {
         <template v-else-if="message.structured?.type === 'dashboard'">
           <p class="mb-3 font-semibold text-white">Indicadores operativos</p>
           <div class="grid grid-cols-2 gap-2">
-            <article
-              v-for="kpi in message.structured.kpis"
-              :key="kpi.label"
-              class="rounded-md border border-white/10 bg-black/20 p-2"
-            >
+            <article v-for="kpi in message.structured.kpis" :key="kpi.label"
+              class="rounded-md border border-white/10 bg-black/20 p-2">
               <p class="text-[10px] uppercase tracking-wide text-gray-500">{{ kpi.label }}</p>
               <p class="mt-1 text-base font-semibold text-white">{{ kpi.value }}</p>
             </article>
@@ -781,11 +829,8 @@ const sendMessage = async () => {
           <p v-if="message.structured.conflicts?.length === 0" class="text-sm text-gray-400">
             No se detectaron conflictos en el rango consultado.
           </p>
-          <article
-            v-for="(conflict, conflictIndex) in message.structured.conflicts"
-            :key="`conflict-${conflictIndex}`"
-            class="mb-2 rounded-md border border-red-500/30 bg-red-950/20 p-3 last:mb-0"
-          >
+          <article v-for="(conflict, conflictIndex) in message.structured.conflicts" :key="`conflict-${conflictIndex}`"
+            class="mb-2 rounded-md border border-red-500/30 bg-red-950/20 p-3 last:mb-0">
             <p class="font-medium text-red-200">
               Técnico: {{ conflict.técnicos }}
             </p>
@@ -795,22 +840,15 @@ const sendMessage = async () => {
         </template>
         <template v-else-if="message.structured?.type === 'unassigned'">
           <p class="mb-3 font-semibold text-white">Visitas sin técnico asignado</p>
-          <section
-            v-for="section in message.structured.sections"
-            :key="section.title"
-            class="mb-3 last:mb-0"
-          >
+          <section v-for="section in message.structured.sections" :key="section.title" class="mb-3 last:mb-0">
             <h4 class="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-400">
               {{ section.title }}
             </h4>
             <p v-if="section.items.length === 0" class="text-xs text-gray-500">
               No hay registros.
             </p>
-            <article
-              v-for="(visit, visitIndex) in section.items"
-              :key="`unassigned-${visitIndex}`"
-              class="mb-2 rounded-md border border-yellow-500/20 bg-black/20 p-2 last:mb-0"
-            >
+            <article v-for="(visit, visitIndex) in section.items" :key="`unassigned-${visitIndex}`"
+              class="mb-2 rounded-md border border-yellow-500/20 bg-black/20 p-2 last:mb-0">
               <p class="font-medium text-gray-100">{{ visit.cliente || 'Cliente sin dato' }}</p>
               <p class="mt-1 text-xs text-gray-300">{{ visit.fecha || 'Fecha sin dato' }}</p>
               <p class="text-xs text-gray-400">
@@ -825,31 +863,22 @@ const sendMessage = async () => {
         <template v-else-if="message.structured?.type === 'workload'">
           <p class="mb-3 font-semibold text-white">Carga operativa de técnicos</p>
           <div class="mb-3 grid grid-cols-2 gap-2">
-            <article
-              v-for="kpi in message.structured.kpis"
-              :key="kpi.label"
-              class="rounded-md border border-white/10 bg-black/20 p-2"
-            >
+            <article v-for="kpi in message.structured.kpis" :key="kpi.label"
+              class="rounded-md border border-white/10 bg-black/20 p-2">
               <p class="text-[10px] uppercase tracking-wide text-gray-500">{{ kpi.label }}</p>
               <p class="mt-1 text-base font-semibold text-white">{{ kpi.value }}</p>
             </article>
           </div>
-          <section
-            v-for="section in message.structured.sections"
-            :key="section.title"
-            class="mb-3 last:mb-0"
-          >
+          <section v-for="section in message.structured.sections" :key="section.title" class="mb-3 last:mb-0">
             <h4 class="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-400">
               {{ section.title }}
             </h4>
             <p v-if="section.items.length === 0" class="text-xs text-gray-500">
               No hay registros.
             </p>
-            <article
-              v-for="(technician, technicianIndex) in section.items"
+            <article v-for="(technician, technicianIndex) in section.items"
               :key="`workload-${section.title}-${technicianIndex}`"
-              class="mb-2 rounded-md border border-white/10 bg-black/20 p-2 last:mb-0"
-            >
+              class="mb-2 rounded-md border border-white/10 bg-black/20 p-2 last:mb-0">
               <p class="font-medium text-gray-100">
                 {{ technician.tecnico || 'Técnico sin dato' }}
               </p>
@@ -864,81 +893,87 @@ const sendMessage = async () => {
           <p class="mb-3 text-xs text-yellow-200">
             Selecciona un técnico disponible por visita. La selección todavía no modifica ninguna visita.
           </p>
-          <div v-if="Object.keys(selectedAssignments).length" class="mb-3 rounded-md border border-blue-400/30 bg-blue-400/10 p-3">
+
+          <div v-if="Object.keys(selectedAssignments).length"
+            class="mb-3 rounded-md border border-blue-400/30 bg-blue-400/10 p-3">
             <p class="text-xs font-semibold text-blue-200">
               {{ Object.keys(selectedAssignments).length }} selección(es) preparada(s)
             </p>
-            <button
-              type="button"
-              class="mt-2 rounded bg-blue-500 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-blue-400"
-              @click="reviewAssignments"
-            >
-              Revisar selección
-            </button>
+            <div class="mt-2 flex gap-2">
+              <button type="button"
+                class="rounded bg-blue-500 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-blue-400"
+                @click="reviewAssignments">
+                Revisar selección
+              </button>
+              <button type="button"
+                class="rounded border border-blue-500/50 bg-transparent px-3 py-1.5 text-xs font-semibold text-blue-300 transition hover:bg-blue-500/20"
+                @click="cancelSelection">
+                Cancelar
+              </button>
+            </div>
           </div>
+
           <div v-if="reviewSelection.length" class="mb-3 rounded-md border border-yellow-400/30 bg-yellow-400/10 p-3">
             <p class="text-xs font-semibold text-yellow-100">Revisión antes de confirmar</p>
             <ul class="mt-2 space-y-1 text-xs text-yellow-100">
-              <li v-for="selection in reviewSelection" :key="selection.visit">
-                {{ selection.visit }} → {{ selection.technician }}
+              <li v-for="selection in reviewSelection" :key="selection.key"
+                class="flex justify-between items-center group rounded px-1 hover:bg-yellow-400/10 transition-colors">
+                <span>
+                  <i class="fas fa-arrow-right text-[10px] mr-1 opacity-70"></i>
+                  {{ selection.visit }} → <span class="font-bold">{{ selection.technician }}</span>
+                </span>
+                <button type="button" @click="removeSelection(selection.key)"
+                  class="text-red-400 opacity-50 hover:opacity-100 hover:text-red-300 transition-opacity p-1"
+                  title="Quitar esta asignación">
+                  <i class="fas fa-times"></i>
+                </button>
               </li>
             </ul>
             <p class="mt-2 text-xs text-yellow-200">
-              Revisa cuidadosamente la selección. La confirmación validará nuevamente permisos, estado y cruces horarios en el backend.
+              Revisa cuidadosamente la selección. La confirmación validará nuevamente permisos, estado y cruces horarios
+              en el backend.
             </p>
-            <button
-              type="button"
-              class="mt-3 rounded bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-50"
-              :disabled="isConfirmingAssignments"
-              @click="confirmAssignments"
-            >
-              {{ isConfirmingAssignments ? 'Confirmando...' : 'Confirmar asignaciones' }}
-            </button>
+            <div class="mt-3 flex gap-2">
+              <button type="button"
+                class="rounded bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-50"
+                :disabled="isConfirmingAssignments" @click="confirmAssignments">
+                {{ isConfirmingAssignments ? 'Confirmando...' : 'Confirmar asignaciones' }}
+              </button>
+              <button type="button"
+                class="rounded border border-yellow-500/50 bg-transparent px-3 py-1.5 text-xs font-semibold text-yellow-300 transition hover:bg-yellow-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+                :disabled="isConfirmingAssignments" @click="cancelSelection">
+                Descartar
+              </button>
+            </div>
           </div>
-          <section
-            v-for="section in message.structured.sections"
-            :key="section.title"
-            class="mb-3 last:mb-0"
-          >
+
+          <section v-for="section in message.structured.sections" :key="section.title" class="mb-3 last:mb-0">
             <h4 class="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-400">
               {{ section.title }}
             </h4>
-            <article
-              v-for="(candidate, candidateIndex) in section.items"
+            <article v-for="(candidate, candidateIndex) in section.items"
               :key="`proposal-${section.title}-${candidateIndex}`"
-              class="mb-2 rounded-md border border-white/10 bg-black/20 p-2 last:mb-0"
-            >
+              class="mb-2 rounded-md border border-white/10 bg-black/20 p-2 last:mb-0">
               <template v-if="candidate.tecnico">
                 <p class="font-medium text-gray-100">{{ candidate.tecnico }}</p>
                 <p class="mt-1 text-xs text-gray-400">
                   Zona: {{ candidate.zona || 'Sin zona' }} ·
                   {{ candidate.visitasActivas || 0 }} visita(s) activa(s)
                 </p>
-                <p
-                  class="mt-1 text-xs"
-                  :class="candidate.tieneConflicto ? 'text-red-300' : 'text-emerald-300'"
-                >
+                <p class="mt-1 text-xs" :class="candidate.tieneConflicto ? 'text-red-300' : 'text-emerald-300'">
                   {{ candidate.tieneConflicto ? 'Tiene cruce horario' : 'Sin cruce horario detectado' }}
                 </p>
-                <p
-                  v-if="candidate.tieneConflicto && formatCandidateConflicts(candidate.conflictos)"
-                  class="mt-1 text-xs text-red-200"
-                >
+                <p v-if="candidate.tieneConflicto && formatCandidateConflicts(candidate.conflictos)"
+                  class="mt-1 text-xs text-red-200">
                   {{ formatCandidateConflicts(candidate.conflictos) }}
                 </p>
-                <button
-                  type="button"
-                  class="mt-2 rounded px-2 py-1 text-xs font-semibold transition"
-                  :class="
-                    selectedAssignments[section.key || section.title] === candidate.tecnico
-                      ? 'bg-emerald-500 text-white'
-                      : candidate.tieneConflicto
-                        ? 'cursor-not-allowed bg-gray-700 text-gray-400'
-                        : 'bg-white/10 text-gray-200 hover:bg-white/20'
-                  "
-                  :disabled="Boolean(candidate.tieneConflicto)"
-                  @click="selectAssignmentCandidate(section.key || section.title, section.title, candidate)"
-                >
+                <button type="button" class="mt-2 rounded px-2 py-1 text-xs font-semibold transition" :class="selectedAssignments[section.key || section.title] === candidate.tecnico
+                  ? 'bg-emerald-500 text-white'
+                  : candidate.tieneConflicto
+                    ? 'cursor-not-allowed bg-gray-700 text-gray-400'
+                    : 'bg-white/10 text-gray-200 hover:bg-white/20'
+                  " :disabled="Boolean(candidate.tieneConflicto)"
+                  @click="selectAssignmentCandidate(section.key || section.title, section.title, candidate)">
                   {{
                     selectedAssignments[section.key || section.title] === candidate.tecnico
                       ? 'Técnico seleccionado'
@@ -956,11 +991,9 @@ const sendMessage = async () => {
         </template>
         <template v-else>{{ message.content }}</template>
       </div>
-      <div
-        v-if="isLoading"
+      <div v-if="isLoading"
         class="flex max-w-[90%] items-center gap-2 rounded-lg bg-white/10 px-3 py-2 text-sm text-gray-400"
-        aria-live="polite"
-      >
+        aria-live="polite">
         <span class="typing-dots" aria-hidden="true">
           <span class="typing-dot"></span>
           <span class="typing-dot"></span>
@@ -976,21 +1009,13 @@ const sendMessage = async () => {
 
     <form class="border-t border-white/10 p-3" @submit.prevent="sendMessage">
       <div class="flex items-end gap-2">
-        <textarea
-          v-model="input"
-          rows="2"
+        <textarea v-model="input" rows="2"
           class="min-w-0 flex-1 resize-none rounded-lg border border-white/10 bg-black/20 px-3 py-2 text-sm text-white outline-none placeholder:text-gray-500 focus:border-red-500"
-          placeholder="Escribe una pregunta..."
-          :disabled="isLoading"
-          @keydown.enter.exact.prevent="sendMessage"
-        ></textarea>
-        <button
-          type="submit"
+          placeholder="Escribe una pregunta..." :disabled="isLoading"
+          @keydown.enter.exact.prevent="sendMessage"></textarea>
+        <button type="submit"
           class="rounded-lg bg-red-700 p-3 text-white transition hover:bg-red-600 disabled:cursor-not-allowed disabled:opacity-50"
-          title="Enviar pregunta"
-          aria-label="Enviar pregunta"
-          :disabled="!canSend"
-        >
+          title="Enviar pregunta" aria-label="Enviar pregunta" :disabled="!canSend">
           <i class="fas fa-paper-plane"></i>
         </button>
       </div>
@@ -1023,6 +1048,7 @@ const sendMessage = async () => {
 }
 
 @keyframes typing-bounce {
+
   0%,
   60%,
   100% {

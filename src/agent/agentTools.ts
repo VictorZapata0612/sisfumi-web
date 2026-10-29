@@ -11,25 +11,34 @@ type SearchResult = {
   sucursales?: Array<{ id?: string; nombre?: string }>
 }
 
-export const isUnassignedVisitsQuestion = (question: string) =>
-  /sin técnico|sin tecnico|no tienen técnico|no tienen tecnico|sin asignar/i.test(question)
+export const isUnassignedVisitsQuestion = (question: string) => {
+  const asksForUnassigned = /sin técnico|sin tecnico|no tienen|sin asignar|no asignad[oa]s?/i.test(question)
+  // Si pide proponer o asignar explícitamente, gana la intención de propuesta
+  return asksForUnassigned && !isAssignmentProposalQuestion(question)
+}
 
-export const isTechnicianWorkloadQuestion = (question: string) =>
-  /sobrecarg|carga de técnicos|carga de tecnicos|técnicos disponibles|tecnicos disponibles/i.test(question)
+export const isTechnicianWorkloadQuestion = (question: string) => {
+  const asksForWorkload = /sobrecarg|carga de técnicos|carga de tecnicos|técnicos disponibles|tecnicos disponibles|qu[eé] técnicos hay|que tecnicos hay|menos carga/i.test(question)
+  return asksForWorkload && !isAssignmentProposalQuestion(question)
+}
 
 export const isAssignmentProposalQuestion = (question: string) => {
-  const hasProposalVerb = /proponer|prop[oó]n|sugerir|sugiere|recomendar|recomienda/i.test(question)
-  const hasAssignmentVerb =
-    /asignar|asigna|asignación|asignacion/i.test(question) &&
-    !isUnassignedVisitsQuestion(question)
+  // Limpiamos frases de estado para no confundir verbos (ej. quitamos "sin asignar" para que no detecte "asignar")
+  const cleanQ = question.replace(/sin asignar|no asignad[oa]s?/gi, '')
 
-  return (hasProposalVerb || hasAssignmentVerb) && /técnic|tecnic|visita|visitas/i.test(question)
+  // Verbos explícitos de acción / propuesta
+  const hasProposalVerb = /\b(proponer|prop[oó]n|sugerir|sugiere|recomendar|recomienda|asignar|asigna|asígnale|c[uú]brela|cubrir|cambia|quita|cancela)\b/i.test(cleanQ)
+
+  // Sujetos de la acción
+  const targetsAssignment = /\b(técnic[oa]s?|tecnic[oa]s?|visitas?|primera|segunda|esta|esa|selección|seleccion|propuesta)\b/i.test(cleanQ)
+
+  return hasProposalVerb && targetsAssignment
 }
 
 export const isPlanningQuestion = (question: string) =>
   /agenda|visitas?|planeación|planeacion|hoy|mañana|manana|esta semana|próxima semana|proxima semana|este mes|\d{1,2}\s+de\s+/i.test(
     question,
-  )
+  ) || isUnassignedVisitsQuestion(question) || isTechnicianWorkloadQuestion(question) || isAssignmentProposalQuestion(question)
 
 type ClientProfile = {
   client?: SearchResult
@@ -131,6 +140,9 @@ export function getUnassignedVisitsContext(visits: AgentVisit[]) {
       zona: visit.zona || 'Zona sin dato',
     })),
     limitado: unassigned.length > 30,
+    nota: unassigned.length > 30
+      ? 'NOTA PARA EL LLM: Has recibido solo las primeras 30 visitas. Informa al usuario que hay más registros pero no se muestran todos para no saturar la vista.'
+      : 'Lista completa de visitas sin asignar obtenidas en el contexto actual.',
   }
 }
 
@@ -242,13 +254,13 @@ export function getAssignmentProposalContext(
       }
     })
 
-    return {
+return {
       tipo: 'propuesta de asignación',
       totalVisitas: unassigned.length,
       propuestas: proposals,
       limitado: unassigned.length > 20,
-      nota: 'Esto es una propuesta de solo lectura. No se ha asignado ninguna visita.',
-  }
+      nota: 'Esto es una propuesta de solo lectura. No se ha ejecutado ninguna escritura en base de datos. Pide al usuario que use los botones de la interfaz para seleccionar a los técnicos.',
+    }
 }
 
 const cleanSearchTerm = (value: string) =>
