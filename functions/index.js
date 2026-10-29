@@ -1219,12 +1219,12 @@ async function sendVisitNotificationViaGmailAPI(visitData, visitId, organizerUid
  */
 function buildEventResource(visitData, attendeeEmails = [], colorId = '8') {
   const visitDate = visitData.fecha_visita.toDate()
-  const endTime = new Date(visitDate.getTime() + 60 * 60 * 1000)
+  const endTime = new Date(visitDate.getTime() + (visitData.duracion_minutos || 60) * 60 * 1000)
 
-const allAttendeeEmails = [
+  const allAttendeeEmails = [
     ...attendeeEmails,
     ...(Array.isArray(visitData.client_emails) ? visitData.client_emails : [])
-  ];
+  ]
 
   const attendees = allAttendeeEmails.map((email) => ({ email }))
 
@@ -1261,8 +1261,16 @@ const allAttendeeEmails = [
     `\n<i>Este es un evento automático de SISFUMI.</i>`,
   )
 
+  // Determinar la sucursal o ubicación asignada
+  const sucursalInfo = visitData.sucursal || visitData.ubicacion || ''
+  const sucursalPart = sucursalInfo ? ` - ${sucursalInfo}` : ''
+  const tipoServicioPart = visitData.tipo_visita ? ` - ${visitData.tipo_visita}` : ''
+
+  // Formato: "MCCORMICK - ZONA INDUSTRIAL - GPP"
+  const newSummary = `${visitData.nombre_cliente}${sucursalPart}${tipoServicioPart}`
+
   return {
-    summary: `Visita: ${visitData.nombre_cliente}${visitData.sucursal ? ` - ${visitData.sucursal}` : ''}`,
+    summary: newSummary,
     description: descriptionParts.join('\n'),
     start: { dateTime: visitDate.toISOString(), timeZone: 'America/Bogota' },
     end: { dateTime: endTime.toISOString(), timeZone: 'America/Bogota' },
