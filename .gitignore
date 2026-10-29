@@ -38,3 +38,5 @@ __screenshots__/
 functions/googleConfig.js
 functions/.env.*
 !functions/.env.example
+functions/node_modules
+functions/serviceAccountKey.json

@@ -29,13 +29,11 @@ const normalizeSearchText = (value: string) =>
 
 // Filtro local de clientes
 const filteredClients = computed(() => {
-  // Si no hay término de búsqueda, mostrar los primeros 10 para no saturar la lista
   if (!searchTerm.value) {
     return servicesStore.clientList.slice(0, 10)
   }
   const normalizedSearch = normalizeSearchText(searchTerm.value)
 
-  // Permitir coincidencias parciales, sin distinguir mayúsculas ni tildes.
   return servicesStore.clientList.filter((client) =>
     normalizeSearchText(client.nombreComercial).includes(normalizedSearch),
   )
@@ -45,32 +43,25 @@ const canApprovePrices = computed(() => {
   return (
     authStore.userRole === 'Administrador' ||
     authStore.userRole === 'Jefe' ||
-    authStore.userRole === 'Coordinador Nacional' ||
-    authStore.userRole === 'Administrador' ||
-    authStore.userRole === 'Jefe'
+    authStore.userRole === 'Coordinador Nacionales' ||
+    authStore.userRole === 'Gerente'
   )
 })
 
 onMounted(async () => {
-  // Cargar los datos maestros (tipos de servicio, zonas, etc.) para que el modal los tenga disponibles
   await settingsStore.fetchBusinessData()
-
-  // Aseguramos cargar la lista completa para el buscador local
   servicesStore.fetchClients()
-  // Si el usuario tiene permisos, cargamos las solicitudes pendientes
   if (canApprovePrices.value) {
     servicesStore.fetchPendingPriceRequests()
   }
 })
 
-// Cerrar dropdown al hacer click fuera
 onClickOutside(searchResultsContainer, () => {
   showClientResults.value = false
 })
 
 const handleSelectClient = async (clientId: string) => {
   await servicesStore.fetchServiceSheet(clientId)
-  // Actualizar el input con el nombre seleccionado
   const client = servicesStore.clientList.find((c) => c.id === clientId)
   if (client) {
     searchTerm.value = client.nombreComercial
@@ -78,7 +69,6 @@ const handleSelectClient = async (clientId: string) => {
   showClientResults.value = false
 }
 
-// Al enfocar, mostramos resultados (o los top 10 si está vacío)
 const handleFocus = () => {
   showClientResults.value = true
   if (servicesStore.selectedClient && !searchTerm.value) {
@@ -99,10 +89,7 @@ const openEditModal = (service: Service, index: number) => {
 }
 
 const handlePriceRequest = async (request: any) => {
-  // 1. Seleccionar el cliente
   await handleSelectClient(request.clientId)
-
-  // 2. Abrir el modal únicamente después de cargar la ficha real.
   openEditModal(request.service, request.serviceIndex)
 }
 
@@ -131,19 +118,34 @@ const handleSaveSheet = async () => {
   }
 }
 
-// Función auxiliar para obtener los nombres de las sucursales a partir de sus IDs
+// Función auxiliar para obtener los nombres de las sucursales a partir de sus IDs (Ficha seleccionada)
 const getBranchNames = (branchIds: string[]) => {
   if (!branchIds || branchIds.length === 0) return 'Todas'
   if (!servicesStore.selectedClient || !servicesStore.selectedClient.sucursales) return branchIds.join(', ')
 
   const branchNames = branchIds.map(id => {
     const branch = servicesStore.selectedClient!.sucursales.find((b: any) => b.id === id)
-    return branch ? branch.nombre : id // Si no encuentra el nombre, muestra el ID como fallback
+    return branch ? branch.nombre : id
   })
 
   return branchNames.join(', ')
 }
 
+// Función auxiliar para obtener nombres de sucursales en la bandeja de solicitudes pendientes
+const getBranchNamesForRequest = (branchIds?: string[], clientId?: string) => {
+  if (!branchIds || branchIds.length === 0) return 'Todas las sucursales'
+
+  const client = servicesStore.clientList.find((c: any) => c.id === clientId)
+  if (!client || !client.sucursales) return branchIds.join(', ')
+
+  const branchNames = branchIds.map((id: string) => {
+    if (id === 'Principal') return 'Principal'
+    const branch = client.sucursales?.find((b: any) => b.id === id || b.nombre === id)
+    return branch ? branch.nombre : id
+  })
+
+  return branchNames.join(', ')
+}
 </script>
 
 <template>
@@ -156,7 +158,6 @@ const getBranchNames = (branchIds: string[]) => {
       </div>
 
       <!-- Buscador de Clientes -->
-      <!-- Corrección Z-Index: Bajamos a z-10 para no tapar el menú lateral -->
       <div class="relative w-full md:w-96 z-10" ref="searchResultsContainer">
         <div class="relative">
           <input v-model="searchTerm" @focus="handleFocus" type="text" id="clientSearchInput"
@@ -164,7 +165,6 @@ const getBranchNames = (branchIds: string[]) => {
             placeholder="Buscar cliente..." autocomplete="off" />
           <i class="fas fa-search absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"></i>
 
-          <!-- Botón X para limpiar búsqueda -->
           <button v-if="searchTerm" @click="
             searchTerm = '',
             showClientResults = true
@@ -173,8 +173,6 @@ const getBranchNames = (branchIds: string[]) => {
           </button>
         </div>
 
-        <!-- Dropdown de Resultados -->
-        <!-- Corrección Z-Index: z-20 es suficiente para estar sobre el contenido pero bajo el menú -->
         <div v-if="showClientResults"
           class="absolute top-full mt-2 w-full bg-[#151515] border border-white/10 rounded-lg shadow-2xl max-h-60 overflow-y-auto custom-scrollbar z-20">
           <div v-if="filteredClients.length > 0">
@@ -185,7 +183,6 @@ const getBranchNames = (branchIds: string[]) => {
             </div>
           </div>
 
-          <!-- Estado vacío explícito -->
           <div v-else class="px-4 py-6 text-center text-gray-500">
             <i class="fas fa-search mb-2 text-xl block opacity-50"></i>
             <p class="text-sm">No se encontraron clientes.</p>
@@ -194,7 +191,7 @@ const getBranchNames = (branchIds: string[]) => {
       </div>
     </header>
 
-    <!-- BANDEJA DE SOLICITUDES DE PRECIO (Solo para Admins/Jefes) -->
+    <!-- BANDEJA DE SOLICITUDES DE PRECIO (Solo para Admins/Jefes/Nacionales) -->
     <section v-if="canApprovePrices && servicesStore.pendingPriceRequests.length > 0" class="mb-6">
       <div class="bg-yellow-900/10 border border-yellow-700/50 rounded-xl shadow-lg">
         <div class="p-4 border-b border-yellow-700/50 flex items-center gap-3">
@@ -212,7 +209,9 @@ const getBranchNames = (branchIds: string[]) => {
             class="flex justify-between items-center p-2 hover:bg-yellow-900/20 rounded-lg">
             <div class="min-w-0">
               <p class="text-sm font-semibold text-white truncate">{{ request.clientName }}</p>
-              <p class="text-xs text-gray-400 truncate">{{ request.service.tipo_servicio }}</p>
+              <p class="text-xs text-gray-400 truncate">
+                {{ request.service.tipo_servicio }} - {{ getBranchNamesForRequest(request.service.sucursales_asignadas, request.clientId) }}
+              </p>
             </div>
             <button @click="handlePriceRequest(request)"
               class="btn btn-secondary !py-1 !px-3 text-xs bg-yellow-600 hover:bg-yellow-700 text-white shrink-0 ml-2">
@@ -257,12 +256,10 @@ const getBranchNames = (branchIds: string[]) => {
 
       <!-- Área de Contenido con Scroll -->
       <div class="flex-grow overflow-y-auto custom-scrollbar pr-2">
-        <!-- Loading State -->
         <div v-if="servicesStore.loadingSheet" class="h-full flex items-center justify-center">
           <i class="fas fa-spinner fa-spin text-4xl text-cyan-400"></i>
         </div>
 
-        <!-- Empty State -->
         <div v-else-if="!servicesStore.serviceSheet?.services.length"
           class="h-full flex flex-col items-center justify-center text-gray-500">
           <i class="fas fa-clipboard-list text-6xl mb-4 opacity-20"></i>
@@ -273,13 +270,10 @@ const getBranchNames = (branchIds: string[]) => {
         </div>
 
         <div v-else>
-          <!-- ========================================== -->
-          <!-- VISTA MÓVIL (Cards) - Visible < md -->
-          <!-- ========================================== -->
+          <!-- VISTA MÓVIL (Cards) -->
           <div class="md:hidden grid grid-cols-1 gap-4">
             <div v-for="(service, index) in servicesStore.serviceSheet.services" :key="index"
               class="bg-[#151515] p-4 rounded-lg shadow-md border border-white/10 relative">
-              <!-- Botones flotantes en la card -->
               <div class="absolute top-3 right-3 flex gap-2">
                 <button @click="openEditModal(service, index)"
                   class="p-2 bg-white/5 rounded-full text-gray-400 hover:text-white">
@@ -302,6 +296,10 @@ const getBranchNames = (branchIds: string[]) => {
                       : 'bg-red-900/50 text-red-400'
                     ">
                     {{ service.estado_servicio }}
+                  </span>
+                  <span v-if="service.estado_servicio === 'Activo' && service.frecuencia !== 'UNICA'"
+                        class="text-[10px] bg-yellow-900/50 text-yellow-400 px-2 py-1 rounded flex items-center gap-1 font-bold">
+                    <i class="fas fa-exclamation-triangle"></i> Revisar Agenda
                   </span>
                 </div>
               </div>
@@ -332,9 +330,7 @@ const getBranchNames = (branchIds: string[]) => {
             </div>
           </div>
 
-          <!-- ========================================== -->
-          <!-- VISTA ESCRITORIO (Tabla) - Visible >= md -->
-          <!-- ========================================== -->
+          <!-- VISTA ESCRITORIO (Tabla) -->
           <div class="hidden md:block bg-[#151515] rounded-lg shadow-lg border border-white/10 overflow-hidden">
             <table class="min-w-full divide-y divide-white/5">
               <thead class="bg-[#0a0a0a]/50">
@@ -353,6 +349,9 @@ const getBranchNames = (branchIds: string[]) => {
                   </th>
                   <th class="px-6 py-3 text-right text-xs font-medium text-gray-400 uppercase tracking-wider">
                     Valor
+                  </th>
+                  <th class="px-6 py-3 text-center text-xs font-medium text-gray-400 uppercase tracking-wider">
+                    Estado Agenda
                   </th>
                   <th class="px-6 py-3 text-center text-xs font-medium text-gray-400 uppercase tracking-wider">
                     Acciones
@@ -396,6 +395,16 @@ const getBranchNames = (branchIds: string[]) => {
                     </div>
                   </td>
                   <td class="px-6 py-4 whitespace-nowrap text-center text-sm font-medium">
+                    <div v-if="service.estado_servicio === 'Activo' && service.frecuencia !== 'UNICA'"
+                         class="flex flex-col items-center justify-center">
+                      <span class="text-[10px] bg-yellow-900/50 text-yellow-400 px-2 py-1 rounded-full flex items-center gap-1 cursor-help"
+                            title="Asegúrate de que este servicio tenga su próxima visita programada en Planeación.">
+                        <i class="fas fa-exclamation-triangle"></i> Revisar Agenda
+                      </span>
+                    </div>
+                    <div v-else class="text-xs text-gray-500">-</div>
+                  </td>
+                  <td class="px-6 py-4 whitespace-nowrap text-center text-sm font-medium">
                     <div class="flex justify-center space-x-3">
                       <button @click="openEditModal(service, index)"
                         class="text-gray-400 hover:text-white transition-colors" title="Editar">
@@ -414,7 +423,7 @@ const getBranchNames = (branchIds: string[]) => {
         </div>
       </div>
 
-      <!-- Botón de Guardado (Sticky Bottom) -->
+      <!-- Botón de Guardado -->
       <div class="flex-shrink-0 mt-4 pt-4 border-t border-white/10 flex justify-end">
         <button @click="handleSaveSheet" :disabled="!servicesStore.hasUnsavedChanges || servicesStore.savingSheet"
           class="btn btn-primary bg-[#d60000] hover:bg-red-700 w-full md:w-auto py-3 px-6 shadow-xl text-lg md:text-base flex items-center justify-center"
@@ -429,7 +438,7 @@ const getBranchNames = (branchIds: string[]) => {
       </div>
     </section>
 
-    <!-- Modal -->
+    <!-- Modal Formulario de Servicio -->
     <ServiceFormModal :show="showModal" :service="editingService" :service-index="editingServiceIndex"
       @close="showModal = false" @save="handleSaveService" />
   </main>
