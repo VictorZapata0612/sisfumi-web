@@ -102,7 +102,6 @@ const roles = [
   'Coordinador Nacional',
   'Coordinador Valle',
   'Coordinador Norte de Santander',
-  'Técnico',
   'Invitado',
 ]
 const zonas = computed(() => settingsStore.businessData.businessZones?.map((z) => z.name) || [])

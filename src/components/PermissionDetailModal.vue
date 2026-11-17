@@ -154,12 +154,22 @@ const formatDate = (dateString: string | null) => {
   })
 }
 
-const openPreview = (file: { url: string; name: string }) => {
-  const ext = file.name.split('.').pop()?.toLowerCase()
-  if (['jpg', 'jpeg', 'png', 'webp', 'pdf'].includes(ext || '')) {
-    previewFile.value = { url: file.url, type: ext === 'pdf' ? 'pdf' : 'image' }
-  } else {
-    window.open(file.url, '_blank')
+const openPreview = async (file: { path: string; name: string }) => {
+  if (!props.visit) return
+  try {
+    const signedUrl = await permissionsStore.getSignedSupportReadUrl(props.visit.id, file.path)
+    const ext = file.name.split('.').pop()?.toLowerCase()
+    if (['jpg', 'jpeg', 'png', 'webp', 'pdf'].includes(ext || '')) {
+      previewFile.value = { url: signedUrl, type: ext === 'pdf' ? 'pdf' : 'image' }
+    } else {
+      window.open(signedUrl, '_blank', 'noopener,noreferrer')
+    }
+  } catch (error: any) {
+    showToast({
+      title: 'Error de acceso',
+      message: `No se pudo abrir el soporte: ${error.message}`,
+      type: 'error',
+    })
   }
 }
 </script>

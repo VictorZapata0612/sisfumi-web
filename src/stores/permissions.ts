@@ -16,7 +16,7 @@ export interface PermissionVisit {
     estado?: 'rechazado'
     notificado?: boolean
     aprobado: boolean
-    soportes: { name: string; url: string; path: string }[]
+    soportes: { name: string; path: string; url?: string }[]
   }
 }
 
@@ -70,11 +70,24 @@ export const usePermissionsStore = defineStore('permissions', () => {
     file: File,
     onProgress: (progress: number) => void,
   ) {
+    const allowedContentTypes = new Set([
+      'application/pdf',
+      'application/msword',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'image/jpeg',
+      'image/png',
+      'image/webp',
+      'image/gif',
+    ])
+    if (!allowedContentTypes.has(file.type) || file.size > 15 * 1024 * 1024) {
+      throw new Error('El archivo debe ser PDF, Word o imagen y pesar máximo 15 MB.')
+    }
+
     const filePath = `soportes_permisos/${visitId}/${Date.now()}-${file.name}`
 
     // 1. Obtener URL firmada
-    const getSignedUrlFn = httpsCallable(functions, 'getSignedUploadUrl')
-    const result = (await getSignedUrlFn({ filePath, contentType: file.type })) as {
+    const getSignedUrlFn = httpsCallable(functions, 'getSignedSupportUploadUrl')
+    const result = (await getSignedUrlFn({ visitId, filePath, contentType: file.type })) as {
       data: { signedUrl: string }
     }
     const { signedUrl } = result.data
@@ -95,14 +108,8 @@ export const usePermissionsStore = defineStore('permissions', () => {
       xhr.send(file)
     })
 
-    // 3. Hacer público y obtener URL
-    const makePublicFn = httpsCallable(functions, 'makeSupportFilePublic')
-    await makePublicFn({ filePath })
-    const getUrlFn = httpsCallable(functions, 'getPublicFileUrl')
-    const urlResult = (await getUrlFn({ filePath })) as { data: { publicUrl: string } }
-
-    // 4. Guardar referencia en Firestore
-    const fileData = { name: file.name, url: urlResult.data.publicUrl, path: filePath }
+    // 3. Guardar solo la referencia; el acceso se entrega mediante URL firmada temporal.
+    const fileData = { name: file.name, path: filePath }
     const addSupportFn = httpsCallable(functions, 'addSupportFileToVisit')
     await addSupportFn({ visitId, fileData })
 
@@ -119,12 +126,20 @@ export const usePermissionsStore = defineStore('permissions', () => {
     }
   }
 
+  async function getSignedSupportReadUrl(visitId: string, filePath: string) {
+    const getUrlFn = httpsCallable(functions, 'getPublicFileUrl')
+    const result = (await getUrlFn({ visitId, filePath })) as {
+      data: { signedUrl: string; expiresInSeconds: number }
+    }
+    return result.data.signedUrl
+  }
+
   async function deleteSupportFile(
     visitId: string,
-    fileData: { name: string; url: string; path: string },
+    fileData: { name: string; url?: string; path: string },
   ) {
     const deleteFn = httpsCallable(functions, 'deleteSupportFile')
-    await deleteFn({ visitId, filePath: fileData.path })
+    await deleteFn({ visitId, fileData })
 
     // Actualizar estado local para reflejar el cambio instantáneamente
     const visit = pendingVisits.value.find((v) => v.id === visitId)
@@ -156,7 +171,7 @@ export const usePermissionsStore = defineStore('permissions', () => {
 
   async function updateSupportFileOrder(
     visitId: string,
-    newOrder: { name: string; url: string; path: string }[],
+    newOrder: { name: string; url?: string; path: string }[],
   ) {
     const visit = pendingVisits.value.find((v) => v.id === visitId)
     if (!visit) return
@@ -181,6 +196,7 @@ export const usePermissionsStore = defineStore('permissions', () => {
     approvePermission,
     rejectPermission,
     uploadSupportFile,
+    getSignedSupportReadUrl,
     deleteSupportFile,
     updateSupportFileName,
     updateSupportFileOrder,

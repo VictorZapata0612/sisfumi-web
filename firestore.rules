@@ -31,8 +31,12 @@ service cloud.firestore {
 
     function isCoordinadorForZone() {
       return signedIn() &&
-        request.auth.token.role.matches('Coordinador.*') &&
-        request.auth.token.zona != null;
+        request.auth.token.role in [
+          'Coordinador Valle',
+          'Coordinador Norte de Santander'
+        ] &&
+        request.auth.token.zona is string &&
+        request.auth.token.zona.size() > 0;
     }
 
     function isOwnZoneResource() {
@@ -95,8 +99,8 @@ service cloud.firestore {
     }
 
     match /calendar_integrations/{userId} {
-      allow read, write: if signedIn() &&
-        (isAdminOrJefe() || request.auth.uid == userId);
+      allow read: if signedIn() && request.auth.uid == userId;
+      allow write: if false;
     }
 
     match /users/{userId}/{documents=**} {

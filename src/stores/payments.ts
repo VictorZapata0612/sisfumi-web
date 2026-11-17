@@ -119,7 +119,7 @@ export const usePaymentsStore = defineStore('payments', () => {
     loading.value = true
     try {
       const exportFn = httpsCallable(functions, 'exportPaymentDataToExcel')
-      const result = (await exportFn({ paymentGroups: allGroups.value })) as {
+      const result = (await exportFn({ invoiceGroupIds: allGroups.value.map((group) => group.id) })) as {
         data: { fileData: string } // La Cloud Function debe devolver el base64 directamente
       }
 

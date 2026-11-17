@@ -78,6 +78,13 @@ const storageBucketName =
 const MAX_PROFILE_IMAGE_SIZE = 5 * 1024 * 1024
 const PROFILE_IMAGE_PATH = /^profile_pictures\/([^/]+)\/([^/]+)$/
 const PROFILE_IMAGE_CONTENT_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif'])
+const MAX_SUPPORT_FILE_SIZE = 15 * 1024 * 1024
+const SUPPORT_FILE_CONTENT_TYPES = new Set([
+  'application/pdf',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  ...PROFILE_IMAGE_CONTENT_TYPES,
+])
 
 function getProfileImagePath(filePath, uid) {
   if (typeof filePath !== 'string') return null
@@ -201,6 +208,61 @@ const BUSINESS_DATA_MANAGER_ROLES = [
 const APPROVER_ROLES = [
   ...GLOBAL_CLIENT_ROLES,
 ]
+
+const FINANCIAL_ROLES = [...GLOBAL_CLIENT_ROLES]
+const ASSIGNABLE_USER_ROLES = [
+  ...GLOBAL_CLIENT_ROLES,
+  'Coordinador Valle',
+  'Coordinador Norte de Santander',
+  'Invitado',
+]
+const REQUIRED_COORDINATOR_ZONES = {
+  'Coordinador Valle': 'Valle del Cauca',
+  'Coordinador Norte de Santander': 'Norte de Santander',
+}
+
+function assertAssignableUserRole(role, zona) {
+  if (typeof role !== 'string' || !ASSIGNABLE_USER_ROLES.includes(role)) {
+    throw new HttpsError('invalid-argument', 'El rol seleccionado no está permitido.')
+  }
+  const requiredZone = REQUIRED_COORDINATOR_ZONES[role]
+  if (requiredZone && zona !== requiredZone) {
+    throw new HttpsError('invalid-argument', `El rol ${role} debe estar asignado a ${requiredZone}.`)
+  }
+}
+
+function assertVisitManager(request) {
+  assertRole(request, CLIENT_MANAGER_ROLES)
+  const { role, zona } = request.auth.token
+  const isGlobal = GLOBAL_CLIENT_ROLES.includes(role)
+  if (!isGlobal && !zona) {
+    throw new HttpsError('permission-denied', 'El usuario no tiene una zona asignada.')
+  }
+  return { role, zona, isGlobal }
+}
+
+function assertVisitZoneAccess(request, visitData) {
+  const { zona, isGlobal } = assertVisitManager(request)
+  if (!visitData || !visitData.zona) {
+    throw new HttpsError('failed-precondition', 'La visita no tiene una zona válida.')
+  }
+  if (!isGlobal && visitData.zona !== zona) {
+    throw new HttpsError('permission-denied', 'No tienes permiso para operar visitas de otra zona.')
+  }
+}
+
+async function getAuthorizedVisit(request, visitId) {
+  assertVisitManager(request)
+  if (typeof visitId !== 'string' || !visitId.trim()) {
+    throw new HttpsError('invalid-argument', 'Se requiere un ID de visita válido.')
+  }
+  const ref = db.collection('visitas').doc(visitId)
+  const snapshot = await ref.get()
+  if (!snapshot.exists) throw new HttpsError('not-found', 'La visita no existe.')
+  const data = snapshot.data()
+  assertVisitZoneAccess(request, data)
+  return { ref, data }
+}
 
 const AI_READ_ROLES = CLIENT_MANAGER_ROLES
 const AI_CONTEXT_COLLECTIONS = ['clientes', 'visitas', 'servicios', 'fumigadores']
@@ -348,7 +410,7 @@ function clientBelongsToUserZone(client, request) {
 }
 
 async function getAuthorizedClient(request, clientId) {
-  assertAuth(request)
+  assertClientManager(request)
   if (!clientId) {
     throw new HttpsError('invalid-argument', 'El ID de cliente es obligatorio.')
   }
@@ -420,7 +482,7 @@ function getStorageBucket() {
  * Esta función es segura y se basa en los permisos del usuario que la llama.
  */
 exports.getClientsPage = onCall({ cors: true }, async (request) => {
-  assertAuth(request)
+  const { zona: userZone, isGlobal } = assertVisitManager(request)
 
   const {
     status,
@@ -431,7 +493,6 @@ exports.getClientsPage = onCall({ cors: true }, async (request) => {
     pageSize = 12,
     zone, // ✅ NUEVO: Recibir filtro de zona desde el frontend
   } = request.data
-  const { role: userRole, zona: userZone } = request.auth.token
 
   logger.info('Solicitando página de clientes', {
     userRole,
@@ -454,11 +515,7 @@ exports.getClientsPage = onCall({ cors: true }, async (request) => {
 
     // Filtros de Seguridad por Zona (Row Level Security manual)
     // ✅ CORRECCIÓN: Mantener Coordinador Nacional como rol global
-    const hasGlobalAccess = [
-      'Administrador',
-      'Jefe',
-      'Coordinador Nacional',
-    ].includes(userRole)
+    const hasGlobalAccess = isGlobal
 
     if (!hasGlobalAccess && userZone) {
       // Si es coordinador regional, solo ve clientes de su zona
@@ -601,16 +658,12 @@ exports.sendVisitReminders = onSchedule(
  * Útil para exportaciones y validaciones de duplicados.
  */
 exports.getAllClients = onCall({ cors: true }, async (request) => {
-  assertAuth(request)
+  const { zona: userZone, isGlobal } = assertVisitManager(request)
 
   try {
     let clientsQuery = db.collection('clientes')
-    if (!hasGlobalClientAccess(request) && request.auth.token.zona) {
-      clientsQuery = clientsQuery.where(
-        'zonasDeSucursales',
-        'array-contains',
-        request.auth.token.zona,
-      )
+    if (!isGlobal) {
+      clientsQuery = clientsQuery.where('zonasDeSucursales', 'array-contains', userZone)
     }
     const snapshot = await clientsQuery.get()
     const clients = snapshot.docs.map((doc) => {
@@ -743,24 +796,18 @@ exports.updateClient = onCall({ cors: true }, async (request) => {
  * Obtiene una lista paginada de técnicos (fumigadores).
  */
 exports.getFumigadoresPage = onCall({ cors: true }, async (request) => {
-  assertAuth(request)
+  const { zona: userZone, isGlobal } = assertVisitManager(request)
   const { searchTerm, startAfterDocId, zone } = request.data
-  const { role: userRole, zona: userZone } = request.auth.token
   const PAGE_SIZE = 20
 
   try {
     // Validar que el usuario tenga permiso para ver esa zona
-    const isAdmin = [
-      'Administrador',
-      'Jefe',
-      'Coordinador Nacional',
-    ].includes(userRole)
     let requestedZone = zone
-    if (!isAdmin && userZone && zone && zone !== userZone) {
+    if (!isGlobal && zone && zone !== userZone) {
       throw new HttpsError('permission-denied', 'No tienes permiso para ver técnicos de otra zona.')
     }
     // Coordinadores de zona solo ven su zona
-    if (!isAdmin && userZone && !requestedZone) {
+    if (!isGlobal) {
       requestedZone = userZone
     }
 
@@ -1633,8 +1680,6 @@ exports.listCalendarIntegrations = onCall({ cors: true }, async (request) => {
  * =================================================================================
  */
 exports.getVisitHistory = onCall({ cors: true }, async (request) => {
-  assertAuth(request)
-
   const { visitId } = request.data
   if (!visitId) {
     throw new HttpsError('invalid-argument', "Se requiere un 'visitId' para obtener el historial.")
@@ -1642,21 +1687,9 @@ exports.getVisitHistory = onCall({ cors: true }, async (request) => {
 
   try {
     // Verificar que el usuario tiene acceso a la visita
-    const visitDoc = await db.collection('visitas').doc(visitId).get()
-    if (!visitDoc.exists) {
-      throw new HttpsError('not-found', 'La visita no existe.')
-    }
+    const { ref: visitRef } = await getAuthorizedVisit(request, visitId)
 
-    const { zona: userZone, role: userRole } = request.auth.token
-    const isGlobal = GLOBAL_CLIENT_ROLES.includes(userRole)
-
-    if (!isGlobal && userZone && visitDoc.data().zona !== userZone) {
-      throw new HttpsError('permission-denied', 'No tienes permiso para ver esta visita.')
-    }
-
-    const historySnapshot = await db
-      .collection('visitas')
-      .doc(visitId)
+    const historySnapshot = await visitRef
       .collection('history')
       .orderBy('timestamp', 'desc')
       .get()
@@ -1699,6 +1732,7 @@ exports.updateUserConfiguration = onCall({ cors: true }, async (request) => {
   if (!uid || !role) {
     throw new HttpsError('invalid-argument', 'Se requieren UID y rol.')
   }
+  assertAssignableUserRole(role, zona)
 
   try {
     const user = await admin.auth().getUser(uid)
@@ -1764,7 +1798,7 @@ exports.updateUserConfiguration = onCall({ cors: true }, async (request) => {
  * Obtiene todas las plantillas de visita disponibles.
  */
 exports.getVisitTemplates = onCall({ cors: true }, async (request) => {
-  assertAuth(request)
+  assertVisitManager(request)
   try {
     const snapshot = await db.collection('visit_templates').orderBy('templateName').get()
     const templates = snapshot.docs.map((doc) => ({
@@ -1861,10 +1895,7 @@ exports.deleteVisitAndCalendarEvent = onCall(
     cors: true,
   },
   async (request) => {
-    // 1. Validar autenticación con HttpsError
-    if (!request.auth) {
-      throw new HttpsError('unauthenticated', 'El usuario no está autenticado.')
-    }
+    assertVisitManager(request)
 
     const { visitId } = request.data
     if (!visitId) {
@@ -1880,6 +1911,7 @@ exports.deleteVisitAndCalendarEvent = onCall(
       }
 
       const visitData = visitDoc.data()
+      assertVisitZoneAccess(request, visitData)
       const organizerUid = await resolveDeletionOwnerUid(visitData)
 
       if (visitData.googleEventId && organizerUid && organizerUid !== 'SYSTEM') {
@@ -1930,6 +1962,33 @@ exports.getSignedUploadUrl = onCall({ cors: true }, async (request) => {
   } catch (error) {
     logger.error(`Error al generar URL firmada para ${filePath}:`, error)
     throw new HttpsError('internal', 'No se pudo generar la URL de carga.')
+  }
+})
+
+exports.getSignedSupportUploadUrl = onCall({ cors: true }, async (request) => {
+  assertVisitManager(request)
+  const { visitId, filePath, contentType } = request.data
+  if (
+    typeof filePath !== 'string' ||
+    !visitId ||
+    !filePath.startsWith(`soportes_permisos/${visitId}/`) ||
+    !SUPPORT_FILE_CONTENT_TYPES.has(contentType)
+  ) {
+    throw new HttpsError('invalid-argument', 'La ruta o el tipo de archivo de soporte no es válido.')
+  }
+
+  try {
+    await getAuthorizedVisit(request, visitId)
+    const [signedUrl] = await getStorageBucket().file(filePath).getSignedUrl({
+      action: 'write',
+      expires: Date.now() + 15 * 60 * 1000,
+      contentType,
+    })
+    return { signedUrl, expiresInSeconds: 900 }
+  } catch (error) {
+    if (error instanceof HttpsError) throw error
+    logger.error(`Error al generar URL temporal de carga para visita ${visitId}:`, error)
+    throw new HttpsError('internal', 'No se pudo generar la URL temporal de carga.')
   }
 })
 
@@ -2103,26 +2162,35 @@ exports.getPendingPriceRequests = onCall({ cors: true }, async (request) => {
 })
 
 exports.createVisit = onCall({ cors: true }, async (request) => {
-  assertAuth(request)
+  const { zona: userZone, isGlobal } = assertVisitManager(request)
   const { visitData } = request.data
+  if (!visitData || typeof visitData !== 'object' || Array.isArray(visitData)) {
+    throw new HttpsError('invalid-argument', 'Los datos de la visita no son válidos.')
+  }
 
   if (!visitData.id_cliente) throw new HttpsError('invalid-argument', 'Cliente es requerido')
   if (!visitData.fecha_visita) throw new HttpsError('invalid-argument', 'Fecha es requerida')
 
-  const clientDoc = await db.collection('clientes').doc(visitData.id_cliente).get()
-  if (!clientDoc.exists) {
-    throw new HttpsError(
-      'not-found',
-      `El cliente con ID ${visitData.id_cliente} no fue encontrado.`,
-    )
+  const authorizedClient = await getAuthorizedClient(request, visitData.id_cliente)
+  const client = authorizedClient.data
+  const clientZones = Array.isArray(client.zonasDeSucursales)
+    ? client.zonasDeSucursales
+    : [client.zona].filter(Boolean)
+  const visitZone = isGlobal ? visitData.zona : userZone
+  if (!visitZone || !clientZones.includes(visitZone)) {
+    throw new HttpsError('permission-denied', 'No puedes crear visitas fuera de la zona del cliente.')
   }
-  const clientName = clientDoc.data().nombreComercial
+  if (isGlobal && (!visitData.zona || !clientZones.includes(visitData.zona))) {
+    throw new HttpsError('invalid-argument', 'La zona de la visita no corresponde al cliente.')
+  }
+  const clientName = client.nombreComercial
 
   try {
     const dataToSave = {
       ...visitData,
+      zona: visitZone,
       fecha_visita: admin.firestore.Timestamp.fromDate(new Date(visitData.fecha_visita)),
-      estado_visita: visitData.estado_visita || 'Programada',
+      estado_visita: 'Programada',
       estado_facturacion: 'Pendiente',
       nombre_cliente: clientName,
       gestionPermiso: { aprobado: false, estado: 'pendiente' },
@@ -2150,7 +2218,7 @@ exports.createVisit = onCall({ cors: true }, async (request) => {
  * Actualiza una visita existente en Firestore.
  */
 exports.updateVisit = onCall({ cors: true }, async (request) => {
-  assertRole(request, CLIENT_MANAGER_ROLES)
+  const { zona: userZone, isGlobal } = assertVisitManager(request)
   const { visitId, visitData } = request.data
   if (!visitId) throw new HttpsError('invalid-argument', 'Se requiere el ID de la visita.')
 
@@ -2159,14 +2227,18 @@ exports.updateVisit = onCall({ cors: true }, async (request) => {
   logger.info(`[updateVisit] Datos crudos recibidos del frontend:`, visitData)
 
   try {
-    const visitDoc = await db.collection('visitas').doc(visitId).get()
-    if (!visitDoc.exists) throw new HttpsError('not-found', 'La visita no existe.')
-
-    const { zona: userZone, role: userRole } = request.auth.token
-    const isGlobal = GLOBAL_CLIENT_ROLES.includes(userRole)
-
-    if (!isGlobal && userZone && visitDoc.data().zona !== userZone) {
-      throw new HttpsError('permission-denied', 'No tienes permiso para actualizar esta visita.')
+    const { ref, data: existingVisit } = await getAuthorizedVisit(request, visitId)
+    if (!isGlobal && visitData.zona !== undefined && visitData.zona !== userZone) {
+      throw new HttpsError('permission-denied', 'No puedes mover la visita fuera de tu zona.')
+    }
+    if (isGlobal && visitData.zona && visitData.zona !== existingVisit.zona) {
+      const client = await getAuthorizedClient(request, existingVisit.id_cliente)
+      const clientZones = Array.isArray(client.data.zonasDeSucursales)
+        ? client.data.zonasDeSucursales
+        : [client.data.zona]
+      if (!clientZones.includes(visitData.zona)) {
+        throw new HttpsError('invalid-argument', 'La zona no corresponde al cliente de la visita.')
+      }
     }
 
     const updatePayload = { ...visitData }
@@ -2178,6 +2250,14 @@ exports.updateVisit = onCall({ cors: true }, async (request) => {
     delete updatePayload.googleEventId
     delete updatePayload.activeOrganizerUid
     delete updatePayload.calendarEventMissing
+    delete updatePayload.estado_facturacion
+    delete updatePayload.billingData
+    delete updatePayload.gestionPermiso
+    delete updatePayload.completedAt
+    delete updatePayload.completedBy
+    delete updatePayload.createdAt
+    delete updatePayload.createdBy
+    delete updatePayload.id
 
     if (visitData.fecha_visita) {
       updatePayload.fecha_visita = admin.firestore.Timestamp.fromDate(
@@ -2191,7 +2271,7 @@ exports.updateVisit = onCall({ cors: true }, async (request) => {
     // --- LOG ANTES DE GUARDAR ---
     logger.info(`[updateVisit] Payload final limpio para Firestore:`, updatePayload)
 
-    await db.collection('visitas').doc(visitId).update(updatePayload)
+    await ref.update(updatePayload)
 
     // --- LOG ÉXITO ---
     logger.info(`[updateVisit] ÉXITO: Visita ${visitId} actualizada en Firestore.`)
@@ -2341,26 +2421,38 @@ exports.rejectVisitPermission = onCall({ cors: true }, async (request) => {
  * Añade una referencia de un archivo de soporte a una visita existente.
  */
 exports.addSupportFileToVisit = onCall({ cors: true }, async (request) => {
-  const { auth, data } = request
-  if (!auth) {
-    throw new HttpsError('unauthenticated', 'El usuario debe estar autenticado.')
-  }
+  assertVisitManager(request)
 
-  const { visitId, fileData } = data
-  if (!visitId || !fileData || !fileData.name || !fileData.url || !fileData.path) {
+  const { visitId, fileData } = request.data
+  if (!visitId || !fileData || typeof fileData.name !== 'string' || !fileData.path) {
     throw new HttpsError('invalid-argument', 'Faltan datos del archivo o de la visita.')
   }
 
   const visitRef = db.collection('visitas').doc(visitId)
 
   try {
+    await getAuthorizedVisit(request, visitId)
+    if (!fileData.path.startsWith(`soportes_permisos/${visitId}/`)) {
+      throw new HttpsError('invalid-argument', 'La ruta del soporte no corresponde a la visita.')
+    }
+    const bucketFile = getStorageBucket().file(fileData.path)
+    const [metadata] = await bucketFile.getMetadata()
+    if (
+      !SUPPORT_FILE_CONTENT_TYPES.has(metadata.contentType) ||
+      Number(metadata.size) > MAX_SUPPORT_FILE_SIZE
+    ) {
+      await bucketFile.delete().catch(() => {})
+      throw new HttpsError('invalid-argument', 'El archivo debe ser PDF, Word o imagen y pesar máximo 15 MB.')
+    }
+    const safeFileData = { name: fileData.name.slice(0, 180), path: fileData.path }
     await visitRef.update({
-      'gestionPermiso.soportes': admin.firestore.FieldValue.arrayUnion(fileData),
+      'gestionPermiso.soportes': admin.firestore.FieldValue.arrayUnion(safeFileData),
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     })
     return { success: true, message: 'Soporte añadido correctamente.' }
   } catch (error) {
     logger.error(`Error al añadir soporte a la visita ${visitId}:`, error)
+    if (error instanceof HttpsError) throw error
     throw new HttpsError('internal', 'No se pudo añadir el archivo de soporte.')
   }
 })
@@ -2382,6 +2474,8 @@ exports.updatePermissionNotes = onCall({ cors: true }, async (request) => {
   const visitRef = db.collection('visitas').doc(visitId)
 
   try {
+    assertRole(request, APPROVER_ROLES)
+    await getAuthorizedVisit(request, visitId)
     const updateData = {}
     if (isApproval) {
       updateData['gestionPermiso.notasAprobacion'] = notes || ''
@@ -2406,6 +2500,7 @@ exports.updatePermissionNotes = onCall({ cors: true }, async (request) => {
     return { success: true, message: 'Notas actualizadas.' }
   } catch (error) {
     logger.error(`Error al actualizar notas para visita ${visitId}:`, error)
+    if (error instanceof HttpsError) throw error
     throw new HttpsError('internal', 'No se pudieron guardar las notas.')
   }
 })
@@ -2414,27 +2509,26 @@ exports.updatePermissionNotes = onCall({ cors: true }, async (request) => {
  * Obtiene la URL pública de un archivo en Storage.
  */
 exports.getPublicFileUrl = onCall({ cors: true }, async (request) => {
-  const { auth, data } = request
-  if (!auth) {
-    throw new HttpsError('unauthenticated', 'El usuario debe estar autenticado.')
-  }
-
-  const { filePath } = data
-  if (!filePath) {
-    throw new HttpsError('invalid-argument', 'Se requiere la ruta del archivo (filePath).')
+  assertVisitManager(request)
+  const { visitId, filePath } = request.data
+  if (!visitId || typeof filePath !== 'string') {
+    throw new HttpsError('invalid-argument', 'Se requieren visitId y filePath.')
   }
 
   try {
-    if (!storageBucketName) {
-      throw new HttpsError(
-        'failed-precondition',
-        'El bucket de almacenamiento no está configurado en el servidor.',
-      )
+    const { data: visit } = await getAuthorizedVisit(request, visitId)
+    const isAttachedFile = (visit.gestionPermiso?.soportes || []).some((file) => file.path === filePath)
+    if (!isAttachedFile || !filePath.startsWith(`soportes_permisos/${visitId}/`)) {
+      throw new HttpsError('permission-denied', 'El archivo no está asociado a esta visita.')
     }
-    const publicUrl = `https://storage.googleapis.com/${storageBucketName}/${filePath}`
-    return { publicUrl }
+    const [signedUrl] = await getStorageBucket().file(filePath).getSignedUrl({
+      action: 'read',
+      expires: Date.now() + 15 * 60 * 1000,
+    })
+    return { signedUrl, expiresInSeconds: 900 }
   } catch (error) {
-    logger.error(`Error al obtener la URL pública para ${filePath}:`, error)
+    if (error instanceof HttpsError) throw error
+    logger.error(`Error al firmar el acceso temporal al archivo ${filePath}:`, error)
     throw new HttpsError('internal', 'No se pudo obtener la URL del archivo.')
   }
 })
@@ -2512,31 +2606,27 @@ exports.deleteSupportFile = onCall({ cors: true }, async (request) => {
   }
 
   try {
-    // 1. Eliminar el archivo de Firebase Storage
-    const bucket = getStorageBucket()
-    await bucket.file(filePath).delete()
-
-    logger.log(`[deleteSupportFile] Archivo eliminado de Storage: ${filePath}`)
-
-    // 2. Obtener el documento de la visita para encontrar el objeto de soporte completo
-    const visitRef = db.collection('visitas').doc(visitId)
-    const visitDoc = await visitRef.get()
-    if (!visitDoc.exists) {
-      throw new HttpsError('not-found', 'La visita no fue encontrada.')
+    const { ref: visitRef, data: visitData } = await getAuthorizedVisit(request, visitId)
+    if (!filePath.startsWith(`soportes_permisos/${visitId}/`)) {
+      throw new HttpsError('invalid-argument', 'La ruta del soporte no corresponde a la visita.')
     }
-
-    const currentSoportes = visitDoc.data().gestionPermiso?.soportes || []
+    const currentSoportes = visitData.gestionPermiso?.soportes || []
     const supportObjectToRemove = currentSoportes.find((s) => s.path === filePath)
 
     if (!supportObjectToRemove) {
+      await getStorageBucket().file(filePath).delete({ ignoreNotFound: true })
       logger.warn(
-        `[deleteSupportFile] No se encontró el objeto de soporte con path ${filePath} en la visita ${visitId}. La referencia podría haber sido eliminada previamente.`,
+        `[deleteSupportFile] Se limpió el archivo sin referencia ${filePath} de la visita ${visitId}.`,
       )
       return {
         success: true,
-        message: 'El archivo ya no existía en la base de datos, pero fue eliminado de Storage.',
+        message: 'Se eliminó el archivo de soporte.',
       }
     }
+
+    const bucket = getStorageBucket()
+    await bucket.file(filePath).delete()
+    logger.log(`[deleteSupportFile] Archivo eliminado de Storage: ${filePath}`)
 
     // 2. Eliminar la referencia del documento de Firestore usando arrayRemove
     await visitRef.update({
@@ -2560,6 +2650,7 @@ exports.deleteSupportFile = onCall({ cors: true }, async (request) => {
     return { success: true, message: 'Soporte eliminado con éxito.' }
   } catch (error) {
     logger.error(`[deleteSupportFile] Error al eliminar soporte:`, error)
+    if (error instanceof HttpsError) throw error
     throw new HttpsError('internal', `Error al eliminar el soporte: ${error.message}`)
   }
 })
@@ -2568,39 +2659,26 @@ exports.deleteSupportFile = onCall({ cors: true }, async (request) => {
  * Elimina una visita de Firestore.
  */
 exports.deleteVisit = onCall({ cors: true }, async (request) => {
-  assertRole(request, [
-    'Administrador',
-    'Jefe',
-    'Coordinador Valle',
-    'Coordinador Norte de Santander',
-  ])
+  assertVisitManager(request)
   try {
-    await db.collection('visitas').doc(request.data.visitId).delete()
+    const { ref } = await getAuthorizedVisit(request, request.data.visitId)
+    await ref.delete()
     await createAuditLog('DELETE_VISIT', `Visita eliminada ID: ${request.data.visitId}`, request)
     return { success: true }
   } catch (e) {
+    if (e instanceof HttpsError) throw e
     throw new HttpsError('internal', e.message)
   }
 })
 
 exports.quickCompleteVisit = onCall({ cors: true }, async (request) => {
-  assertRole(request, CLIENT_MANAGER_ROLES)
+  assertVisitManager(request)
   const { visitId } = request.data
   if (!visitId) throw new HttpsError('invalid-argument', 'Se requiere el ID de la visita.')
 
   try {
-    const visitDoc = await db.collection('visitas').doc(visitId).get()
-    if (!visitDoc.exists) throw new HttpsError('not-found', 'La visita no existe.')
-
-    const visitData = visitDoc.data()
-    const { zona: userZone, role: userRole } = request.auth.token
-    const isGlobal = GLOBAL_CLIENT_ROLES.includes(userRole)
-
-    if (!isGlobal && userZone && visitData.zona !== userZone) {
-      throw new HttpsError('permission-denied', 'No tienes permiso para completar esta visita.')
-    }
-
-    await db.collection('visitas').doc(visitId).update({
+    const { ref } = await getAuthorizedVisit(request, visitId)
+    await ref.update({
       estado_visita: 'Realizada',
       estado_facturacion: 'Pendiente',
       completedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -2622,12 +2700,10 @@ exports.quickCompleteVisit = onCall({ cors: true }, async (request) => {
 // deploy). Si más adelante se aumenta la cuota, se puede volver a agregar
 // minInstances: 1 aquí para eliminar el cold-start ocasional.
 exports.checkForConflicts = onCall({ cors: true }, async (request) => {
-  if (!request.auth) {
-    throw new HttpsError('unauthenticated', 'La solicitud debe estar autenticada.')
-  }
+  const { zona: userZone, isGlobal } = assertVisitManager(request)
 
   const { technicians, startTimeISO, visitIdToIgnore, durationMinutes = 60 } = request.data
-  if (!technicians || !Array.isArray(technicians) || !startTimeISO) {
+  if (!Array.isArray(technicians) || technicians.length > 30 || !startTimeISO) {
     throw new HttpsError('invalid-argument', 'Faltan parámetros para la verificación.')
   }
 
@@ -2651,11 +2727,12 @@ exports.checkForConflicts = onCall({ cors: true }, async (request) => {
 
   try {
     const visitsRef = db.collection('visitas')
-    const snapshot = await visitsRef
+    let visitsQuery = visitsRef
       .where('fumigadores_asignados', 'array-contains-any', technicians)
       .where('fecha_visita', '>=', conflictWindowStart)
       .where('fecha_visita', '<=', conflictWindowEnd)
-      .get()
+    if (!isGlobal) visitsQuery = visitsQuery.where('zona', '==', userZone)
+    const snapshot = await visitsQuery.get()
 
     if (snapshot.empty) {
       return { hasConflict: false }
@@ -2693,10 +2770,8 @@ exports.checkForConflicts = onCall({ cors: true }, async (request) => {
 })
 
 exports.globalSearch = onCall({ cors: true }, async (request) => {
-  const { auth, data } = request
-  if (!auth) {
-    throw new HttpsError('unauthenticated', 'El usuario no está autenticado.')
-  }
+  const { zona: userZone, isGlobal } = assertVisitManager(request)
+  const { data } = request
   const { term } = data
   if (!term || term.length < 2) {
     return { clients: [], fumigadores: [] }
@@ -2707,14 +2782,10 @@ exports.globalSearch = onCall({ cors: true }, async (request) => {
 
   try {
     const db = admin.firestore()
-    const userZone = auth.token.zona
-    // ✅ FIX: Usar GLOBAL_CLIENT_ROLES en lugar de solo Administrador/Jefe
-    const isAdminOrJefe = GLOBAL_CLIENT_ROLES.includes(auth.token.role)
-
     let clientQuery = db.collection('clientes')
     let fumigadorQuery = db.collection('fumigadores')
 
-    if (userZone && !isAdminOrJefe) {
+    if (!isGlobal) {
       clientQuery = clientQuery.where('zona', '==', userZone)
       fumigadorQuery = fumigadorQuery.where('zona', '==', userZone)
     }
@@ -2755,6 +2826,8 @@ exports.globalSearch = onCall({ cors: true }, async (request) => {
 exports.setUserRole = onCall({ cors: true }, async (request) => {
   assertRole(request, ['Administrador', 'Jefe'])
   const { uid, role, zona } = request.data
+  if (!uid) throw new HttpsError('invalid-argument', 'Se requiere el UID del usuario.')
+  assertAssignableUserRole(role, zona)
 
   const user = await admin.auth().getUser(uid)
 
@@ -2862,7 +2935,7 @@ exports.disconnectGoogleAccount = onCall({ cors: true }, async (request) => {
   const { auth, data } = request
   // 1. Verificar permisos
   const isOwner = auth && auth.uid === data.uid
-  if (!auth || (!isOwner && auth.token.role !== 'Administrador' && auth.token.role !== 'Jefe')) {
+  if (!auth || (!isOwner && !GLOBAL_CLIENT_ROLES.includes(auth.token.role))) {
     throw new HttpsError(
       'permission-denied',
       'Solo los administradores o jefes pueden desconectar una cuenta.',
@@ -2982,8 +3055,13 @@ exports.exchangeAuthCodeForTokens = onCall(async (request) => {
   const { clientId, clientSecret } = googleConfig
   const { code, targetUid, redirect_uri } = request.data
 
+  assertAuth(request)
+
   if (!code || !targetUid)
     throw new HttpsError('invalid-argument', 'Faltan parámetros code o targetUid')
+  if (targetUid !== request.auth.uid) {
+    throw new HttpsError('permission-denied', 'Solo puedes vincular tu propia cuenta de Google.')
+  }
 
   const rUri = redirect_uri || 'postmessage'
 
@@ -3143,8 +3221,12 @@ exports.exchangeAuthCodeForTokens = onCall(async (request) => {
   }
 })
 exports.getGoogleCalendarEvents = onCall({ cors: true }, async (request) => {
-  if (!request.auth) throw new HttpsError('unauthenticated', 'Auth requerida')
+  assertAuth(request)
   const { targetUid, startDate, endDate } = request.data
+  const isGlobal = GLOBAL_CLIENT_ROLES.includes(request.auth.token.role)
+  if (!targetUid || (targetUid !== request.auth.uid && !isGlobal)) {
+    throw new HttpsError('permission-denied', 'No tienes permiso para consultar ese calendario.')
+  }
 
   const doc = await admin.firestore().collection('calendar_integrations').doc(targetUid).get()
   if (!doc.exists) throw new HttpsError('not-found', 'No conectado.')
@@ -3181,18 +3263,13 @@ exports.getGoogleCalendarEvents = onCall({ cors: true }, async (request) => {
 
 exports.getConsolidatedPlanningData = onCall({ cors: callableCorsOrigins }, async (request) => {
   const { auth, data } = request
-  if (!auth) {
-    // ✅ MEJORA: Lanzar error si no hay autenticación.
-    // Esto es crucial para la seguridad y para que el frontend pueda reaccionar adecuadamente.
-    throw new HttpsError('unauthenticated', 'El usuario no está autenticado.')
-  }
+  const { zona: userZone, isGlobal } = assertVisitManager(request)
 
-  const userZone = auth.token.zona
   const requestedZone = data.zone
   // ✅ NUEVO: Se añade el UID del calendario de Google a consultar.
   const calendarTargetUid = data.calendarTargetUid
 
-  const hasGlobalAccess = ['Administrador', 'Jefe', 'Coordinador Nacional'].includes(auth.token.role)
+  const hasGlobalAccess = isGlobal
 
   if (
     calendarTargetUid &&
@@ -3410,7 +3487,7 @@ exports.getConsolidatedPlanningData = onCall({ cors: callableCorsOrigins }, asyn
 })
 
 exports.getBillingDataForMonth = onCall({ cors: true }, async (request) => {
-  if (!request.auth) throw new HttpsError('unauthenticated', 'Debe estar autenticado.')
+  assertRole(request, FINANCIAL_ROLES)
 
   const { month, year } = request.data
   const { zona: userZone, role: userRole } = request.auth.token
@@ -3418,19 +3495,13 @@ exports.getBillingDataForMonth = onCall({ cors: true }, async (request) => {
 
   try {
     // Validar que usuario tenga permiso para ver datos de billing
-    const isAdmin = ['Administrador', 'Jefe', 'Coordinador Nacional'].includes(userRole)
-    if (!isAdmin && !userZone) {
-      throw new HttpsError(
-        'permission-denied',
-        'No tienes zona asignada para acceder a facturación.',
-      )
-    }
+    const hasGlobalFinancialAccess = FINANCIAL_ROLES.includes(userRole)
 
     const startDate = new Date(year, month, 1)
     const endDate = new Date(year, month + 1, 0, 23, 59, 59)
 
     let visitasRef = db.collection('visitas')
-    if (!isAdmin && userZone) {
+    if (!hasGlobalFinancialAccess && userZone) {
       visitasRef = visitasRef.where('zona', '==', userZone)
     }
 
@@ -3678,13 +3749,14 @@ exports.listAllCoordinatorsForAdmin = onCall({ cors: true }, async (request) => 
 // ✅ minInstances retirado: ver nota en checkForConflicts (cuota de CPU
 // regional agotada).
 exports.getCoordinatorForZone = onCall({ cors: true }, async (request) => {
-  if (!request.auth) {
-    throw new HttpsError('unauthenticated', 'El usuario no está autenticado.')
-  }
+  const { zona: userZone, isGlobal } = assertVisitManager(request)
 
   const { zone } = request.data
   if (!zone) {
     throw new HttpsError('invalid-argument', 'Se requiere una zona.')
+  }
+  if (!isGlobal && zone !== userZone) {
+    throw new HttpsError('permission-denied', 'No puedes consultar coordinadores de otra zona.')
   }
 
   // ✅ FIX: Usa el mapa global ZONES_TO_ROLES_MAP en lugar de duplicarlo
@@ -3975,26 +4047,7 @@ exports.getConsolidatedDashboardStats = onCall(
   },
   async (request) => {
     const { auth, data } = request
-
-    if (!auth) {
-      throw new HttpsError(
-        'unauthenticated',
-        'El usuario debe estar autenticado para ver las estadísticas.',
-      )
-    }
-
-    const userZone = auth.token.zona
-    const userRole = auth.token.role
-    const isAdminOrJefe = userRole === 'Administrador' || userRole === 'Jefe'
-
-    const hasGlobalAccess = ['Administrador', 'Jefe', 'Coordinador Nacional'].includes(userRole)
-
-    if (!userZone && !hasGlobalAccess && !isAdminOrJefe) {
-      throw new HttpsError(
-        'permission-denied',
-        'No tienes los permisos o la zona asignada para ver estas estadísticas.',
-      )
-    }
+    const { zona: userZone, isGlobal: hasGlobalAccess } = assertVisitManager(request)
 
     const { clientDate, zone: requestedZone, range = 'month' } = data || {}
     if (!clientDate) {
@@ -4273,24 +4326,18 @@ exports.getConsolidatedDashboardStats = onCall(
  * Se activa cuando un coordinador guarda un servicio con valor 0.
  */
 exports.requestPriceForService = onCall({ cors: true }, async (request) => {
-  const { auth, data } = request
-  if (!auth) {
-    throw new HttpsError('unauthenticated', 'El usuario debe estar autenticado.')
-  }
+  assertClientManager(request)
+  const { data } = request
 
   const { clientId, clientName, serviceName } = data
-  if (!clientId || !clientName || !serviceName) {
+  if (typeof serviceName !== 'string' || !serviceName.trim() || serviceName.length > 180 || !clientId) {
     throw new HttpsError('invalid-argument', 'Faltan datos para crear la notificación de precio.')
   }
 
-  const clientDoc = await admin.firestore().collection('clientes').doc(clientId).get()
-  if (!clientDoc.exists) {
-    throw new HttpsError('not-found', `No se encontró el cliente con ID: ${clientId}`)
-  }
-  const clientData = clientDoc.data()
-  const finalClientName = clientData.nombreComercial || clientName // Usar el nombre de la BD, con fallback.
+  const { data: clientData } = await getAuthorizedClient(request, clientId)
+  const finalClientName = clientData.nombreComercial || clientName || 'Cliente'
 
-  const requesterName = auth.token.name || auth.token.email
+  const requesterName = request.auth.token.name || request.auth.token.email || request.auth.uid
 
   const notificationPayload = {
     title: 'Solicitud de Precio',
@@ -4490,7 +4537,7 @@ exports.getTechnicianProfileData = onCall({ cors: true }, async (request) => {
 })
 
 exports.markVisitsAsBilled = onCall({ cors: true }, async (request) => {
-  assertRole(request, ADMIN_ROLES)
+  assertRole(request, FINANCIAL_ROLES)
 
   const { visitIds } = request.data
   const db = admin.firestore()
@@ -4516,7 +4563,7 @@ exports.markVisitsAsBilled = onCall({ cors: true }, async (request) => {
 })
 
 exports.registerPartialPayment = onCall({ cors: true }, async (request) => {
-  assertAuth(request)
+  assertRole(request, FINANCIAL_ROLES)
   const { invoiceNumber, paymentDetails } = request.data
   const { zona: userZone, role: userRole } = request.auth.token
 
@@ -4549,8 +4596,8 @@ exports.registerPartialPayment = onCall({ cors: true }, async (request) => {
     const data = freshDoc.data()
 
     // Validar zona del usuario
-    const isAdmin = ['Administrador', 'Jefe', 'Coordinador Nacional'].includes(userRole)
-    if (!isAdmin && userZone && data.zona && data.zona !== userZone) {
+    const isGlobalFinancialRole = FINANCIAL_ROLES.includes(userRole)
+    if (!isGlobalFinancialRole && (!userZone || data.zona !== userZone)) {
       throw new HttpsError(
         'permission-denied',
         'No tienes permiso para registrar pagos en esta factura.',
@@ -4597,23 +4644,13 @@ exports.registerPartialPayment = onCall({ cors: true }, async (request) => {
 })
 
 exports.getPaymentDataForMonth = onCall({ cors: true }, async (request) => {
-  const { auth, data } = request
-  if (!auth) {
-    throw new HttpsError('unauthenticated', 'El usuario no está autenticado.')
-  }
-
-  const userRole = auth.token.role
-  const userZone = auth.token.zona
-  const allowedRoles = ['Jefe', 'Administrador', 'Coordinador Nacional']
-  if (!allowedRoles.includes(userRole)) {
-    throw new HttpsError('permission-denied', 'No tienes permiso para acceder a esta información.')
-  }
+  assertRole(request, FINANCIAL_ROLES)
+  const { data } = request
+  const userRole = request.auth.token.role
+  const userZone = request.auth.token.zona
 
   // Validar que usuario tenga zona si no es admin/jefe
-  const isAdmin = ADMIN_ROLES.includes(userRole)
-  if (!isAdmin && !userZone) {
-    throw new HttpsError('permission-denied', 'No tienes zona asignada para ver pagos.')
-  }
+  const hasGlobalFinancialAccess = FINANCIAL_ROLES.includes(userRole)
 
   // ✅ CORRECCIÓN: Se usan 'month' y 'year' para consistencia con 'getBillingDataForMonth'.
   const { month, year } = data
@@ -4638,7 +4675,7 @@ exports.getPaymentDataForMonth = onCall({ cors: true }, async (request) => {
       .collection('grupos_facturacion')
       .where('month', '==', month)
       .where('year', '==', year)
-    if (!isAdmin && userZone) {
+    if (!hasGlobalFinancialAccess && userZone) {
       groupsQuery = groupsQuery.where('zona', '==', userZone)
     }
     const groupsSnapshot = await groupsQuery.get()
@@ -4693,13 +4730,7 @@ exports.getPaymentDataForMonth = onCall({ cors: true }, async (request) => {
 })
 
 exports.generateInvoiceReport = onCall({ cors: true }, async (request) => {
-  assertRole(request, [
-    'Administrador',
-    'Jefe',
-    'Coordinador Nacional',
-    'Coordinador Valle',
-    'Coordinador Norte de Santander',
-  ])
+  assertRole(request, FINANCIAL_ROLES)
   const {
     servicesToInvoice,
     groupName,
@@ -4715,10 +4746,7 @@ exports.generateInvoiceReport = onCall({ cors: true }, async (request) => {
     throw new HttpsError('invalid-argument', 'El vencimiento debe ser un número válido.')
   }
 
-  const isAdmin = ADMIN_ROLES.includes(userRole)
-  if (!isAdmin && !userZone) {
-    throw new HttpsError('permission-denied', 'No tienes zona asignada para facturar.')
-  }
+  const hasGlobalFinancialAccess = FINANCIAL_ROLES.includes(userRole)
 
   // ✅ MEJORA: Hacer todas las lecturas ANTES de la transacción
   // Las transacciones de Firestore no deben tener reads dentro de loops
@@ -4810,7 +4838,7 @@ exports.generateInvoiceReport = onCall({ cors: true }, async (request) => {
   const clientName = clientData.nombreComercial || groupName
   const clientBaseRate = Number(clientData.valor_servicio_base) || 0
 
-  if (!isAdmin && userZone && !clientZones.includes(userZone) && firstVisitData.zona !== userZone) {
+  if (!hasGlobalFinancialAccess && userZone && !clientZones.includes(userZone) && firstVisitData.zona !== userZone) {
     throw new HttpsError(
       'permission-denied',
       `No puedes facturar clientes de la zona ${clientZone}.`,
@@ -4958,7 +4986,7 @@ exports.generateInvoiceReport = onCall({ cors: true }, async (request) => {
 })
 
 exports.getInvoiceExcel = onCall({ cors: true, maxInstances: 1 }, async (request) => {
-  if (!request.auth) throw new HttpsError('unauthenticated', 'Autenticación requerida')
+  assertRole(request, FINANCIAL_ROLES)
   const { invoiceNumber } = request.data
   const XLSX = require('xlsx')
 
@@ -5018,20 +5046,55 @@ exports.exportPaymentDataToExcel = onCall(
   async (request) => {
     const XLSX = require('xlsx')
 
-    const { auth, data } = request
-    if (!auth) {
-      throw new HttpsError('unauthenticated', 'El usuario no está autenticado.')
+    assertRole(request, FINANCIAL_ROLES)
+    const { invoiceGroupIds } = request.data
+    if (
+      !Array.isArray(invoiceGroupIds) ||
+      invoiceGroupIds.length === 0 ||
+      invoiceGroupIds.length > 450 ||
+      invoiceGroupIds.some((id) => typeof id !== 'string' || !id.trim()) ||
+      new Set(invoiceGroupIds).size !== invoiceGroupIds.length
+    ) {
+      throw new HttpsError('invalid-argument', 'Se requieren IDs válidos de grupos de facturación.')
     }
 
-    const { paymentGroups } = data
-    if (!paymentGroups || paymentGroups.length === 0) {
-      throw new HttpsError('invalid-argument', 'No hay datos de grupos de pagos para exportar.')
-    }
+    const groups = await Promise.all(
+      invoiceGroupIds.map(async (id) => {
+        const ref = db.collection('grupos_facturacion').doc(id)
+        const snapshot = await ref.get()
+        if (!snapshot.exists) throw new HttpsError('not-found', 'No se encontró un grupo de facturación.')
+        const group = snapshot.data()
+        const paymentsSnapshot = await ref.collection('payments').orderBy('registeredAt', 'desc').get()
+        const paymentHistory = paymentsSnapshot.docs.map((paymentDoc) => ({
+          id: paymentDoc.id,
+          ...paymentDoc.data(),
+          paymentDate: paymentDoc.data().paymentDate?.toDate
+            ? paymentDoc.data().paymentDate.toDate().toISOString()
+            : paymentDoc.data().paymentDate || null,
+          registeredAt: paymentDoc.data().registeredAt?.toDate
+            ? paymentDoc.data().registeredAt.toDate().toISOString()
+            : paymentDoc.data().registeredAt || null,
+        }))
+        const totalPaid = paymentHistory.reduce((sum, payment) => sum + (Number(payment.amount) || 0), 0)
+        const totalBilled = Number(group.totalValue) || 0
+        return {
+          ...group,
+          groupName: group.groupName || group.invoiceNumber || id,
+          dueDate: group.dueDate?.toDate ? group.dueDate.toDate().toISOString() : group.dueDate || null,
+          totalBilled,
+          totalPaid,
+          currentBalance: Number.isFinite(Number(group.currentBalance))
+            ? Number(group.currentBalance)
+            : Math.max(0, totalBilled - totalPaid),
+          paymentHistory,
+        }
+      }),
+    )
 
     const wb = XLSX.utils.book_new()
 
     // --- HOJA 1: RESUMEN DE FACTURAS ---
-    const summaryData = paymentGroups.map((group) => {
+    const summaryData = groups.map((group) => {
       const currency = group.paymentHistory[0]?.currency || 'COP'
       return {
         'N° Factura/Grupo': group.groupName,
@@ -5057,7 +5120,7 @@ exports.exportPaymentDataToExcel = onCall(
     XLSX.utils.book_append_sheet(wb, wsSummary, 'Resumen Facturas')
 
     const detailedPayments = []
-    paymentGroups.forEach((group) => {
+    groups.forEach((group) => {
       group.paymentHistory.forEach((p) => {
         detailedPayments.push({
           'N° Factura/Grupo': group.groupName,
@@ -5067,7 +5130,7 @@ exports.exportPaymentDataToExcel = onCall(
           'Método Pago': p.method,
           'Fecha Pago': p.paymentDate ? new Date(p.paymentDate).toISOString().split('T')[0] : 'N/A',
           Referencia: p.reference || 'N/A',
-          'Registrado Por (UID)': p.registeredByUid || 'Sistema',
+          'Registrado Por (UID)': p.registeredBy || p.registeredByUid || 'Sistema',
           'Fecha Registro Sistema': p.registeredAt
             ? new Date(p.registeredAt).toLocaleString('es-CO')
             : 'N/A',
@@ -5502,7 +5565,8 @@ exports.getAnnualBillingReport = onCall(
 
     const userZone = auth.token.zona
     const userRole = auth.token.role
-    const hasGlobalAccess = ['Administrador', 'Jefe', 'Coordinador Nacional'].includes(userRole)
+    assertRole(request, FINANCIAL_ROLES)
+    const hasGlobalAccess = FINANCIAL_ROLES.includes(userRole)
 
     const { year, zone: requestedZone } = data
     if (typeof year !== 'number') throw new HttpsError('invalid-argument', 'Se requiere el año.')
@@ -5652,12 +5716,7 @@ exports.completeVisit = onCall({ cors: true }, async (request) => {
   const visitRef = db.collection('visitas').doc(visitId)
 
   try {
-    const visitDoc = await visitRef.get()
-    if (!visitDoc.exists) {
-      throw new HttpsError('not-found', 'La visita no fue encontrada.')
-    }
-
-    const existingData = visitDoc.data()
+    const { ref, data: existingData } = await getAuthorizedVisit(request, visitId)
 
     const dataToUpdate = {
       estado_visita: 'Realizada',
@@ -5667,7 +5726,7 @@ exports.completeVisit = onCall({ cors: true }, async (request) => {
       completedAt: admin.firestore.FieldValue.serverTimestamp(),
     }
 
-    await visitRef.update(dataToUpdate)
+    await ref.update(dataToUpdate)
 
     const adminEmail = auth.token.email || 'Desconocido'
     const logEntry = {
@@ -5686,6 +5745,7 @@ exports.completeVisit = onCall({ cors: true }, async (request) => {
     return { message: 'Visita completada exitosamente.' }
   } catch (error) {
     logger.error(`Error al completar la visita ${visitId}:`, error)
+    if (error instanceof HttpsError) throw error
     throw new HttpsError('internal', 'Ocurrió un error al completar la visita.')
   }
 })
@@ -5788,14 +5848,15 @@ exports.logClientUpdate = onDocumentUpdated('clientes/{clientId}', async (event)
 })
 
 exports.getClientVisitHistoryPage = onCall({ cors: true }, async (request) => {
-  const { auth, data } = request
-  if (!auth) {
-    throw new HttpsError('unauthenticated', 'El usuario no está autenticado.')
-  }
+  assertRole(request, CLIENT_MANAGER_ROLES)
+  const { data } = request
 
   const { clientId, limit = 20, startAfterTimestamp } = data
   if (!clientId) {
     throw new HttpsError('invalid-argument', 'Se requiere el ID del cliente.')
+  }
+  if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+    throw new HttpsError('invalid-argument', 'El límite de resultados debe estar entre 1 y 100.')
   }
 
   const db = admin.firestore()
@@ -5811,6 +5872,7 @@ exports.getClientVisitHistoryPage = onCall({ cors: true }, async (request) => {
   }
 
   try {
+    await getAuthorizedClient(request, clientId)
     const snapshot = await query.get()
     const visits = snapshot.docs.map((doc) => {
       const visitData = doc.data()
@@ -5828,20 +5890,22 @@ exports.getClientVisitHistoryPage = onCall({ cors: true }, async (request) => {
     })
     return { visits }
   } catch (error) {
+    if (error instanceof HttpsError) throw error
     logger.error(`ERROR FATAL en getClientVisitHistoryPage para cliente ${clientId}:`, error)
     throw new HttpsError('internal', 'Ocurrió un error al obtener el historial de visitas.')
   }
 })
 
 exports.getClientServicesPage = onCall({ cors: true }, async (request) => {
-  const { auth, data } = request
-  if (!auth) {
-    throw new HttpsError('unauthenticated', 'El usuario no está autenticado.')
-  }
+  assertRole(request, CLIENT_MANAGER_ROLES)
+  const { data } = request
 
   const { clientId, limit = 10, startAfterTimestamp } = data
   if (!clientId) {
     throw new HttpsError('invalid-argument', 'Se requiere el ID del cliente.')
+  }
+  if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+    throw new HttpsError('invalid-argument', 'El límite de resultados debe estar entre 1 y 100.')
   }
 
   const db = admin.firestore()
@@ -5857,6 +5921,7 @@ exports.getClientServicesPage = onCall({ cors: true }, async (request) => {
   }
 
   try {
+    await getAuthorizedClient(request, clientId)
     const snapshot = await query.get()
     const services = snapshot.docs.flatMap((doc) => {
       const sheetData = doc.data()
@@ -5867,20 +5932,22 @@ exports.getClientServicesPage = onCall({ cors: true }, async (request) => {
     })
     return { services }
   } catch (error) {
+    if (error instanceof HttpsError) throw error
     logger.error(`Error al obtener servicios para el cliente ${clientId}:`, error)
     throw new HttpsError('internal', 'Ocurrió un error al obtener los servicios.')
   }
 })
 
 exports.getTechnicianVisitHistoryPage = onCall({ cors: true }, async (request) => {
-  const { auth, data } = request
-  if (!auth) {
-    throw new HttpsError('unauthenticated', 'El usuario no está autenticado.')
-  }
+  const { zona: userZone, isGlobal } = assertVisitManager(request)
+  const { data } = request
 
   const { technicianName, limit = 20, startAfterTimestamp } = data
   if (!technicianName) {
     throw new HttpsError('invalid-argument', 'Se requiere el nombre del técnico.')
+  }
+  if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+    throw new HttpsError('invalid-argument', 'El límite de resultados debe estar entre 1 y 100.')
   }
 
   const db = admin.firestore()
@@ -5896,6 +5963,17 @@ exports.getTechnicianVisitHistoryPage = onCall({ cors: true }, async (request) =
   }
 
   try {
+    const technicianSnapshot = await db
+      .collection('fumigadores')
+      .where('nombreCompleto', '==', technicianName)
+      .limit(1)
+      .get()
+    if (technicianSnapshot.empty) throw new HttpsError('not-found', 'El técnico no existe.')
+    const technician = technicianSnapshot.docs[0].data()
+    if (!isGlobal && technician.zona !== userZone) {
+      throw new HttpsError('permission-denied', 'No tienes permiso para ver técnicos de otra zona.')
+    }
+    if (!isGlobal) query = query.where('zona', '==', userZone)
     const snapshot = await query.get()
     const visits = snapshot.docs.map((doc) => {
       const visitData = doc.data()
@@ -5913,6 +5991,7 @@ exports.getTechnicianVisitHistoryPage = onCall({ cors: true }, async (request) =
     })
     return { visits }
   } catch (error) {
+    if (error instanceof HttpsError) throw error
     logger.error(
       `ERROR FATAL en getTechnicianVisitHistoryPage para técnico ${technicianName}:`,
       error,
@@ -6074,9 +6153,7 @@ exports.sendContactEmail = onCall({ cors: true }, async (request) => {
 })
 
 exports.updateSupportFileName = onCall({ cors: true }, async (request) => {
-  if (!request.auth) {
-    throw new HttpsError('unauthenticated', 'La solicitud debe estar autenticada.')
-  }
+  assertVisitManager(request)
 
   const { visitId, filePath, newName } = request.data
 
@@ -6086,20 +6163,22 @@ exports.updateSupportFileName = onCall({ cors: true }, async (request) => {
       'Los parámetros visitId, filePath y newName son obligatorios.',
     )
   }
+  if (newName.trim().length > 180) {
+    throw new HttpsError('invalid-argument', 'El nombre del archivo no puede superar 180 caracteres.')
+  }
 
   try {
-    const visitRef = db.collection('visitas').doc(visitId)
-    const visitDoc = await visitRef.get()
-
-    if (visitDoc.exists) {
-      const visitData = visitDoc.data()
+    const { ref: visitRef, data: visitData } = await getAuthorizedVisit(request, visitId)
+    if (!filePath.startsWith(`soportes_permisos/${visitId}/`)) {
+      throw new HttpsError('invalid-argument', 'La ruta del soporte no corresponde a la visita.')
+    }
       const currentSoportes = visitData.gestionPermiso?.soportes || []
 
       let found = false
       const updatedSoportes = currentSoportes.map((s) => {
         if (s.path === filePath) {
           found = true
-          return { ...s, name: newName }
+          return { ...s, name: newName.trim() }
         }
         return s
       })
@@ -6114,23 +6193,19 @@ exports.updateSupportFileName = onCall({ cors: true }, async (request) => {
       } else {
         throw new HttpsError('not-found', 'Referencia del soporte no encontrada en la visita.')
       }
-    } else {
-      throw new HttpsError('not-found', 'Visita no encontrada.')
-    }
   } catch (error) {
     logger.error(
       `[updateSupportFileName] Error al actualizar nombre para visita ${visitId} y path ${filePath}:`,
       error,
     )
+    if (error instanceof HttpsError) throw error
     throw new HttpsError('internal', `Error al actualizar el nombre del soporte: ${error.message}`)
   }
 })
 
 exports.updateSupportFileOrder = onCall({ cors: true }, async (request) => {
   const { auth, data } = request
-  if (!auth) {
-    throw new HttpsError('unauthenticated', 'El usuario debe estar autenticado.')
-  }
+  assertVisitManager(request)
 
   const { visitId, newOrderPaths } = data
   if (!visitId || !Array.isArray(newOrderPaths)) {
@@ -6140,28 +6215,32 @@ exports.updateSupportFileOrder = onCall({ cors: true }, async (request) => {
     )
   }
 
-  const db = admin.firestore()
-  const visitRef = db.collection('visitas').doc(visitId)
-
   try {
-    const visitDoc = await visitRef.get()
-    if (!visitDoc.exists) {
-      throw new HttpsError('not-found', 'La visita no fue encontrada.')
-    }
-
-    const visitData = visitDoc.data()
+    const { ref: authorizedRef, data: visitData } = await getAuthorizedVisit(request, visitId)
     const currentSoportes = visitData.gestionPermiso?.soportes || []
+    if (newOrderPaths.some((path) => !path.startsWith(`soportes_permisos/${visitId}/`))) {
+      throw new HttpsError('invalid-argument', 'El orden incluye rutas que no pertenecen a la visita.')
+    }
+    const currentPaths = currentSoportes.map((file) => file.path).sort()
+    const requestedPaths = [...newOrderPaths].sort()
+    if (
+      new Set(requestedPaths).size !== requestedPaths.length ||
+      currentPaths.length !== requestedPaths.length ||
+      currentPaths.some((path, index) => path !== requestedPaths[index])
+    ) {
+      throw new HttpsError('invalid-argument', 'El nuevo orden debe incluir todos los soportes una sola vez.')
+    }
 
     const reorderedSoportes = newOrderPaths
       .map((path) => currentSoportes.find((s) => s.path === path))
       .filter(Boolean)
 
-    await visitRef.update({ 'gestionPermiso.soportes': reorderedSoportes })
+    await authorizedRef.update({ 'gestionPermiso.soportes': reorderedSoportes })
 
     return { success: true, message: 'Orden de archivos actualizado.' }
   } catch (error) {
     logger.error(`Error al reordenar los soportes para la visita ${visitId}:`, error)
-    if (error.code) throw error
+    if (error instanceof HttpsError) throw error
     throw new HttpsError('internal', 'Ocurrió un error al reordenar los archivos.')
   }
 })
@@ -6411,10 +6490,8 @@ exports.saveServiceSheet = onCall(
 )
 
 exports.getInvoicePaymentHistory = onCall(async (request) => {
-  const { auth, data } = request
-  if (!auth) {
-    throw new HttpsError('unauthenticated', 'El usuario debe estar autenticado.')
-  }
+  assertRole(request, FINANCIAL_ROLES)
+  const { data } = request
 
   const { invoiceId } = data
   if (!invoiceId) {
