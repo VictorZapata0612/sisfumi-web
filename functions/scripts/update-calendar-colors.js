@@ -1,28 +1,25 @@
 /**
- * Script de migración: Actualiza el título (summary) de todos los eventos
- * existentes en Google Calendar creados previamente por SISFUMI.
+ * Script de migración: Actualiza el colorId de los eventos en Google Calendar
+ * asignando el color '11' (Tomate / Rojo) a las visitas grupales (>1 técnico).
  *
  * Ejecución desde la carpeta functions:
- * node scripts/update-calendar-titles.js
+ * node scripts/update-calendar-colors.js
  */
 
 const admin = require('firebase-admin')
 const { google } = require('googleapis')
 const path = require('path')
 
-// Cargar credenciales de la cuenta de servicio local
 const serviceAccountPath = path.join(__dirname, '../serviceAccountKey.json')
 let serviceAccount
 
 try {
   serviceAccount = require(serviceAccountPath)
 } catch (e) {
-  console.error('❌ Error: No se encontró el archivo serviceAccountKey.json en la carpeta functions/.')
-  console.error('Descárgalo desde Firebase Console -> Configuración del proyecto -> Cuentas de servicio.')
+  console.error('❌ Error: No se encontró serviceAccountKey.json en functions/.')
   process.exit(1)
 }
 
-// Inicializar Firebase Admin con las credenciales
 if (!admin.apps.length) {
   admin.initializeApp({
     credential: admin.credential.cert(serviceAccount),
@@ -31,12 +28,12 @@ if (!admin.apps.length) {
 
 const db = admin.firestore()
 
-// Opcional: Si tienes el CLIENT_ID y CLIENT_SECRET configurados
-const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID ||
-const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET ||
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || ''
+const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || ''
+const GROUP_COLOR_ID = '11' // Color Tomate (Rojo)
 
-async function updateExistingCalendarEvents() {
-  console.log('🚀 Iniciando actualización de títulos en Google Calendar...')
+async function updateCalendarColorsToTomato() {
+  console.log('🚀 Actualizando eventos grupales al color Tomate (11)...')
 
   try {
     const visitsSnapshot = await db
@@ -45,14 +42,13 @@ async function updateExistingCalendarEvents() {
       .get()
 
     if (visitsSnapshot.empty) {
-      console.log('⚠️ No se encontraron visitas con eventos de Google Calendar.')
+      console.log('⚠️ No se encontraron visitas sincronizadas con Google Calendar.')
       process.exit(0)
     }
 
-    console.log(`📋 Se encontraron ${visitsSnapshot.size} visitas con eventos en Google Calendar.`)
-
     const oauthClientsCache = {}
     let updatedCount = 0
+    let skippedCount = 0
     let errorCount = 0
 
     for (const doc of visitsSnapshot.docs) {
@@ -60,6 +56,13 @@ async function updateExistingCalendarEvents() {
       const visitId = doc.id
       const googleEventId = visitData.googleEventId
       const organizerUid = visitData.organizerUid || visitData.createdBy
+      const fumigadores = visitData.fumigadores_asignados || []
+
+      // Solo procesamos eventos grupales (más de 1 técnico)
+      if (fumigadores.length <= 1) {
+        skippedCount++
+        continue
+      }
 
       if (!googleEventId || !organizerUid) {
         console.log(`⏩ Omitiendo visita ${visitId}: falta googleEventId u organizerUid.`)
@@ -74,7 +77,7 @@ async function updateExistingCalendarEvents() {
             .get()
 
           if (!integrationDoc.exists) {
-            console.log(`⚠️ Integración no encontrada para el organizador ${organizerUid}. Omitiendo...`)
+            console.log(`⚠️ Integración no encontrada para ${organizerUid}. Omitiendo...`)
             continue
           }
 
@@ -90,36 +93,32 @@ async function updateExistingCalendarEvents() {
 
         const calendar = oauthClientsCache[organizerUid]
 
-        // Formato: "CLIENTE - SUCURSAL / UBICACIÓN - TIPO DE SERVICIO"
-        const sucursalInfo = visitData.sucursal || visitData.ubicacion || ''
-        const sucursalPart = sucursalInfo ? ` - ${sucursalInfo}` : ''
-        const tipoServicioPart = visitData.tipo_visita ? ` - ${visitData.tipo_visita}` : ''
-        const newTitle = `${visitData.nombre_cliente}${sucursalPart}${tipoServicioPart}`
-
+        // Aplicar el color Tomate '11'
         await calendar.events.patch({
           calendarId: 'primary',
           eventId: googleEventId,
           requestBody: {
-            summary: newTitle,
+            colorId: GROUP_COLOR_ID,
           },
         })
 
         updatedCount++
-        console.log(`✅ [${updatedCount}/${visitsSnapshot.size}] Evento actualizado: "${newTitle}"`)
+        console.log(`✅ [${updatedCount}] Evento ${googleEventId} cambiado a Tomate (${fumigadores.length} técnicos).`)
       } catch (err) {
         errorCount++
-        console.error(`❌ Error actualizando evento para visita ${visitId}:`, err.message)
+        console.error(`❌ Error actualizando color para visita ${visitId}:`, err.message)
       }
     }
 
     console.log('\n🎉 Proceso finalizado:')
-    console.log(`- Total eventos actualizados: ${updatedCount}`)
-    console.log(`- Errores / Omitidos: ${errorCount}`)
+    console.log(`- Eventos cambiados a Tomate: ${updatedCount}`)
+    console.log(`- Eventos individuales conservados: ${skippedCount}`)
+    console.log(`- Errores: ${errorCount}`)
   } catch (error) {
-    console.error('💥 Error durante el proceso:', error)
+    console.error('💥 Error en el script:', error)
   }
 
   process.exit(0)
 }
 
-updateExistingCalendarEvents()
+updateCalendarColorsToTomato()

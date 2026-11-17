@@ -254,9 +254,7 @@ export const useServicesStore = defineStore('services', () => {
     const canView =
       authStore.userRole === 'Administrador' ||
       authStore.userRole === 'Jefe' ||
-      authStore.userRole === 'Coordinador Nacional' ||
-      authStore.userRole === 'Administrador' ||
-      authStore.userRole === 'Jefe'
+      authStore.userRole === 'Coordinador Nacional'
 
     if (!canView) return
 

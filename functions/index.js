@@ -1212,35 +1212,38 @@ async function sendVisitNotificationViaGmailAPI(visitData, visitId, organizerUid
 
 /**
  * Construye el objeto de recurso para un evento de Google Calendar.
- * @param {object} visitData - Los datos de la visita.
- * @param {Array<string>} attendeeEmails - Un array de correos de los técnicos a invitar.
- * @param {string} [colorId="8"] - El ID de color para el evento.
- * @returns {object} El recurso del evento listo para la API de Google.
+ *
+ * @param {object} visitData - Datos de la visita provenientes de Firestore.
+ * @param {Array<string>} attendeeEmails - Correos de los técnicos o invitados.
+ * @param {string} [colorId="11"] - ID de color de Google Calendar ('11' = Tomate/Rojo).
+ * @returns {object} Recurso formateado para la API de Google Calendar.
  */
-function buildEventResource(visitData, attendeeEmails = [], colorId = '8') {
+function buildEventResource(visitData, attendeeEmails = [], colorId = '11') {
   const visitDate = visitData.fecha_visita.toDate()
-  const endTime = new Date(visitDate.getTime() + (visitData.duracion_minutos || 60) * 60 * 1000)
+  const durationMinutes = visitData.duracion_minutos || 60
+  const endTime = new Date(visitDate.getTime() + durationMinutes * 60 * 1000)
 
   const allAttendeeEmails = [
     ...attendeeEmails,
-    ...(Array.isArray(visitData.client_emails) ? visitData.client_emails : [])
+    ...(Array.isArray(visitData.client_emails) ? visitData.client_emails : []),
   ]
 
   const attendees = allAttendeeEmails.map((email) => ({ email }))
 
-  const encodedAddress = encodeURIComponent(visitData.ubicacion)
+  const encodedAddress = encodeURIComponent(visitData.ubicacion || '')
   const mapsLink = `https://www.google.com/maps/search/?api=1&query=${encodedAddress}`
+
   const descriptionParts = [
     `<b>-- DETALLES DE LA VISITA --</b>`,
     `\n`,
     `<b>Cliente:</b>`,
-    escapeHTML(visitData.nombre_cliente),
+    escapeHTML(visitData.nombre_cliente || ''),
     `\n`,
     `<b>Tipo de Servicio:</b>`,
-    escapeHTML(visitData.tipo_visita),
+    escapeHTML(visitData.tipo_visita || ''),
     `\n`,
     `<b>Ubicación:</b>`,
-    `${escapeHTML(visitData.ubicacion)}`,
+    `${escapeHTML(visitData.ubicacion || '')}`,
     `(<a href="${mapsLink}">Ver en Google Maps</a>)`,
   ]
 
@@ -1261,12 +1264,10 @@ function buildEventResource(visitData, attendeeEmails = [], colorId = '8') {
     `\n<i>Este es un evento automático de SISFUMI.</i>`,
   )
 
-  // Determinar la sucursal o ubicación asignada
+  // Formato de título: "MCCORMICK - ZONA INDUSTRIAL - GPP"
   const sucursalInfo = visitData.sucursal || visitData.ubicacion || ''
   const sucursalPart = sucursalInfo ? ` - ${sucursalInfo}` : ''
   const tipoServicioPart = visitData.tipo_visita ? ` - ${visitData.tipo_visita}` : ''
-
-  // Formato: "MCCORMICK - ZONA INDUSTRIAL - GPP"
   const newSummary = `${visitData.nombre_cliente}${sucursalPart}${tipoServicioPart}`
 
   return {
@@ -1275,7 +1276,7 @@ function buildEventResource(visitData, attendeeEmails = [], colorId = '8') {
     start: { dateTime: visitDate.toISOString(), timeZone: 'America/Bogota' },
     end: { dateTime: endTime.toISOString(), timeZone: 'America/Bogota' },
     attendees: attendees,
-    colorId: colorId,
+    colorId: String(colorId), // '11' = Tomate
     extendedProperties: {
       private: { useHtml: 'true' },
     },
@@ -1322,26 +1323,47 @@ async function createOrUpdateCalendarEvent(
 
     const calendar = google.calendar({ version: 'v3', auth: oAuth2Client })
 
-    let eventColorId = '8'
+    // --- LÓGICA DE ASIGNACIÓN DE COLORES ---
+    const GROUP_COLOR_ID = '11' // Color Tomate (Rojo) para grupos de técnicos (>1)
+    const DEFAULT_TECH_COLOR_ID = '1' // Color individual por defecto (Lavanda)
+
+    let eventColorId = DEFAULT_TECH_COLOR_ID
     let attendeeEmails = []
-    if (visitData.fumigadores_asignados?.length) {
+    const fumigadores = visitData.fumigadores_asignados || []
+
+    if (fumigadores.length > 0) {
+      // 1. Obtener correos de los técnicos e identificar el color si es asignación individual
       const snap = await db
         .collection('fumigadores')
-        .where('nombreCompleto', 'in', visitData.fumigadores_asignados)
+        .where('nombreCompleto', 'in', fumigadores)
         .get()
 
-      const primaryTechnicianName = visitData.fumigadores_asignados[0]
+      const primaryTechnicianName = fumigadores[0]
       let primaryFound = false
+
       snap.forEach((doc) => {
         const t = doc.data()
         if (t.email) attendeeEmails.push(t.email)
-        if (!primaryFound && t.nombreCompleto === primaryTechnicianName && t.googleColorId) {
+
+        // Si es un solo técnico, asignamos su googleColorId si lo tiene definido
+        if (
+          fumigadores.length === 1 &&
+          !primaryFound &&
+          t.nombreCompleto === primaryTechnicianName &&
+          t.googleColorId
+        ) {
           eventColorId = t.googleColorId
           primaryFound = true
         }
       })
+
+      // 2. Si son 2 o más técnicos (Grupo), forzamos el color Tomate ('11')
+      if (fumigadores.length > 1) {
+        eventColorId = GROUP_COLOR_ID
+      }
     }
 
+    // Construir el recurso del evento con el colorId resuelto y la lista de asistentes
     const eventResource = buildEventResource(visitData, attendeeEmails, eventColorId)
 
     const safeVisitId = visitId
@@ -1377,7 +1399,7 @@ async function createOrUpdateCalendarEvent(
 
       const created = await calendar.events.insert({
         calendarId: 'primary',
-        resource: eventResource,
+        requestBody: eventResource,
         sendUpdates: 'all',
       })
 
@@ -1396,8 +1418,8 @@ async function createOrUpdateCalendarEvent(
     await calendar.events.update({
       calendarId: 'primary',
       eventId: targetEventId,
-      sendUpdates: 'all', // <-- CLAVE: Fuerza a Google a notificar y actualizar a los técnicos
-      resource: { ...eventResource, id: targetEventId },
+      sendUpdates: 'all', // Fuerza a Google a notificar y actualizar a los técnicos
+      requestBody: { ...eventResource, id: targetEventId },
     })
 
     const updates = { activeOrganizerUid: uid }
@@ -4527,7 +4549,7 @@ exports.registerPartialPayment = onCall({ cors: true }, async (request) => {
     const data = freshDoc.data()
 
     // Validar zona del usuario
-    const isAdmin = ['Administrador', 'Jefe'].includes(userRole)
+    const isAdmin = ['Administrador', 'Jefe', 'Coordinador Nacional'].includes(userRole)
     if (!isAdmin && userZone && data.zona && data.zona !== userZone) {
       throw new HttpsError(
         'permission-denied',
@@ -4674,6 +4696,7 @@ exports.generateInvoiceReport = onCall({ cors: true }, async (request) => {
   assertRole(request, [
     'Administrador',
     'Jefe',
+    'Coordinador Nacional',
     'Coordinador Valle',
     'Coordinador Norte de Santander',
   ])

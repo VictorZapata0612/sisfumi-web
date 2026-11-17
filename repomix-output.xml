@@ -44,6 +44,7 @@ functions/
   scripts/
     backfill-invoice-data.js
     backfill-recurrence.js
+    update-calendar-colors.js
   .env.example
   index.js
   package.json
@@ -186,6 +187,133 @@ vite.config.ts
 
 <files>
 This section contains the contents of the repository's files.
+
+<file path="functions/scripts/update-calendar-colors.js">
+/**
+ * Script de migración: Actualiza el colorId de los eventos en Google Calendar
+ * asignando el color '11' (Tomate / Rojo) a las visitas grupales (>1 técnico).
+ *
+ * Ejecución desde la carpeta functions:
+ * node scripts/update-calendar-colors.js
+ */
+
+const admin = require('firebase-admin')
+const { google } = require('googleapis')
+const path = require('path')
+
+const serviceAccountPath = path.join(__dirname, '../serviceAccountKey.json')
+let serviceAccount
+
+try {
+  serviceAccount = require(serviceAccountPath)
+} catch (e) {
+  console.error('❌ Error: No se encontró serviceAccountKey.json en functions/.')
+  process.exit(1)
+}
+
+if (!admin.apps.length) {
+  admin.initializeApp({
+    credential: admin.credential.cert(serviceAccount),
+  })
+}
+
+const db = admin.firestore()
+
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || ''
+const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || ''
+const GROUP_COLOR_ID = '11' // Color Tomate (Rojo)
+
+async function updateCalendarColorsToTomato() {
+  console.log('🚀 Actualizando eventos grupales al color Tomate (11)...')
+
+  try {
+    const visitsSnapshot = await db
+      .collection('visitas')
+      .where('googleEventId', '!=', null)
+      .get()
+
+    if (visitsSnapshot.empty) {
+      console.log('⚠️ No se encontraron visitas sincronizadas con Google Calendar.')
+      process.exit(0)
+    }
+
+    const oauthClientsCache = {}
+    let updatedCount = 0
+    let skippedCount = 0
+    let errorCount = 0
+
+    for (const doc of visitsSnapshot.docs) {
+      const visitData = doc.data()
+      const visitId = doc.id
+      const googleEventId = visitData.googleEventId
+      const organizerUid = visitData.organizerUid || visitData.createdBy
+      const fumigadores = visitData.fumigadores_asignados || []
+
+      // Solo procesamos eventos grupales (más de 1 técnico)
+      if (fumigadores.length <= 1) {
+        skippedCount++
+        continue
+      }
+
+      if (!googleEventId || !organizerUid) {
+        console.log(`⏩ Omitiendo visita ${visitId}: falta googleEventId u organizerUid.`)
+        continue
+      }
+
+      try {
+        if (!oauthClientsCache[organizerUid]) {
+          const integrationDoc = await db
+            .collection('calendar_integrations')
+            .doc(organizerUid)
+            .get()
+
+          if (!integrationDoc.exists) {
+            console.log(`⚠️ Integración no encontrada para ${organizerUid}. Omitiendo...`)
+            continue
+          }
+
+          const tokens = integrationDoc.data()
+          const oAuth2Client = new google.auth.OAuth2(
+            GOOGLE_CLIENT_ID || tokens.clientId,
+            GOOGLE_CLIENT_SECRET || tokens.clientSecret
+          )
+          oAuth2Client.setCredentials(tokens)
+
+          oauthClientsCache[organizerUid] = google.calendar({ version: 'v3', auth: oAuth2Client })
+        }
+
+        const calendar = oauthClientsCache[organizerUid]
+
+        // Aplicar el color Tomate '11'
+        await calendar.events.patch({
+          calendarId: 'primary',
+          eventId: googleEventId,
+          requestBody: {
+            colorId: GROUP_COLOR_ID,
+          },
+        })
+
+        updatedCount++
+        console.log(`✅ [${updatedCount}] Evento ${googleEventId} cambiado a Tomate (${fumigadores.length} técnicos).`)
+      } catch (err) {
+        errorCount++
+        console.error(`❌ Error actualizando color para visita ${visitId}:`, err.message)
+      }
+    }
+
+    console.log('\n🎉 Proceso finalizado:')
+    console.log(`- Eventos cambiados a Tomate: ${updatedCount}`)
+    console.log(`- Eventos individuales conservados: ${skippedCount}`)
+    console.log(`- Errores: ${errorCount}`)
+  } catch (error) {
+    console.error('💥 Error en el script:', error)
+  }
+
+  process.exit(0)
+}
+
+updateCalendarColorsToTomato()
+</file>
 
 <file path="functions/scripts/backfill-invoice-data.js">
 const admin = require('firebase-admin')
@@ -8142,601 +8270,6 @@ service cloud.firestore {
 }
 </file>
 
-<file path="src/agent/agentTools.ts">
-import { httpsCallable } from 'firebase/functions'
-import { functions } from '@/firebase/config'
-
-type SearchResult = {
-  id: string
-  nombreComercial?: string
-  nombreCompleto?: string
-  ciudad?: string
-  zona?: string
-  estado?: string
-  sucursales?: Array<{ id?: string; nombre?: string }>
-}
-
-export const isUnassignedVisitsQuestion = (question: string) =>
-  /sin técnico|sin tecnico|no tienen técnico|no tienen tecnico|sin asignar/i.test(question)
-
-export const isTechnicianWorkloadQuestion = (question: string) =>
-  /sobrecarg|carga de técnicos|carga de tecnicos|técnicos disponibles|tecnicos disponibles/i.test(question)
-
-export const isAssignmentProposalQuestion = (question: string) => {
-  const hasProposalVerb = /proponer|prop[oó]n|sugerir|sugiere|recomendar|recomienda/i.test(question)
-  const hasAssignmentVerb =
-    /asignar|asigna|asignación|asignacion/i.test(question) &&
-    !isUnassignedVisitsQuestion(question)
-
-  return (hasProposalVerb || hasAssignmentVerb) && /técnic|tecnic|visita|visitas/i.test(question)
-}
-
-export const isPlanningQuestion = (question: string) =>
-  /agenda|visitas?|planeación|planeacion|hoy|mañana|manana|esta semana|próxima semana|proxima semana|este mes|\d{1,2}\s+de\s+/i.test(
-    question,
-  )
-
-type ClientProfile = {
-  client?: SearchResult
-  serviceSheet?: {
-    services?: Array<{
-      tipo_servicio?: string
-      frecuencia?: string
-      estado_servicio?: string
-      sucursales_asignadas?: string[]
-    }>
-  } | null
-  upcomingVisits?: Array<Record<string, unknown>>
-  visitHistory?: Array<Record<string, unknown>>
-}
-
-type TechnicianProfile = {
-  technician?: SearchResult
-  kpis?: { assigned: number; completed: number; rate: number }
-  upcomingVisits?: Array<Record<string, unknown>>
-  recentHistory?: Array<Record<string, unknown>>
-}
-
-export type AgentVisit = {
-  id?: string
-  nombre_cliente?: string
-  clientName?: string
-  tipo_visita?: string
-  fecha_visita?: string
-  estado_visita?: string
-  fumigadores_asignados?: string[]
-  duracion_minutos?: number
-  zona?: string
-  sucursal?: string
-  nombre_sucursal?: string
-}
-
-export type AgentTechnician = {
-  id?: string
-  nombreCompleto?: string
-  nombre?: string
-  zona?: string
-}
-
-const isUnassignedVisit = (visit: AgentVisit) =>
-  !Array.isArray(visit.fumigadores_asignados) || visit.fumigadores_asignados.length === 0
-
-const isActiveVisit = (visit: AgentVisit) =>
-  visit.estado_visita !== 'Realizada' && visit.estado_visita !== 'Cancelada'
-
-const getVisitInterval = (visit: AgentVisit) => {
-  const start = new Date(String(visit.fecha_visita || ''))
-  if (Number.isNaN(start.getTime())) return null
-
-  const duration = Number(visit.duracion_minutos) || 60
-  return {
-    start,
-    end: new Date(start.getTime() + duration * 60 * 1000),
-  }
-}
-
-const visitsOverlap = (first: AgentVisit, second: AgentVisit) => {
-  const firstInterval = getVisitInterval(first)
-  const secondInterval = getVisitInterval(second)
-  if (!firstInterval || !secondInterval) return false
-
-  return firstInterval.start < secondInterval.end && secondInterval.start < firstInterval.end
-}
-
-const formatVisitDate = (value?: string) => {
-  if (!value) return 'Fecha sin dato'
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return value
-  return new Intl.DateTimeFormat('es-CO', {
-    dateStyle: 'medium',
-    timeStyle: 'short',
-  }).format(date)
-}
-
-const uniqueVisits = (visits: AgentVisit[]) =>
-  Array.from(new Map(visits.filter((visit) => visit.id).map((visit) => [visit.id, visit])).values())
-
-export function getUnassignedVisitsContext(visits: AgentVisit[]) {
-  const unassigned = uniqueVisits(visits)
-    .filter((visit) => isActiveVisit(visit) && isUnassignedVisit(visit))
-    .sort((first, second) =>
-      String(first.fecha_visita || '').localeCompare(String(second.fecha_visita || '')),
-    )
-
-  return {
-    tipo: 'visitas sin técnico',
-    total: unassigned.length,
-    visitas: unassigned.slice(0, 30).map((visit) => ({
-      id: visit.id,
-      cliente: visit.nombre_cliente || visit.clientName || 'Cliente sin dato',
-      sucursal: visit.sucursal || visit.nombre_sucursal || 'Sucursal sin dato',
-      tipo: visit.tipo_visita || 'Tipo sin dato',
-      fecha: formatVisitDate(visit.fecha_visita),
-      estado: visit.estado_visita || 'Sin estado',
-      zona: visit.zona || 'Zona sin dato',
-    })),
-    limitado: unassigned.length > 30,
-  }
-}
-
-export function getTechnicianWorkloadContext(visits: AgentVisit[]) {
-  const activeVisits = uniqueVisits(visits).filter(
-    (visit) => isActiveVisit(visit) && !isUnassignedVisit(visit),
-  )
-  const workload = new Map<string, { total: number; visits: Array<Record<string, string | undefined>> }>()
-
-  activeVisits.forEach((visit) => {
-    visit.fumigadores_asignados?.forEach((technician) => {
-      const current = workload.get(technician) || { total: 0, visits: [] }
-      current.total += 1
-      current.visits.push({
-        cliente: visit.nombre_cliente || visit.clientName || 'Cliente sin dato',
-        fecha: formatVisitDate(visit.fecha_visita),
-        tipo: visit.tipo_visita || 'Tipo sin dato',
-      })
-      workload.set(technician, current)
-    })
-  })
-
-  const entries = Array.from(workload.entries())
-    .map(([tecnico, data]) => ({ tecnico, ...data }))
-    .sort((first, second) => second.total - first.total)
-  const average = entries.length
-    ? entries.reduce((total, entry) => total + entry.total, 0) / entries.length
-    : 0
-  const overloaded = entries.filter((entry) => entry.total >= 5 || entry.total > average + 2)
-
-  return {
-    tipo: 'carga de técnicos',
-    promedio: Number(average.toFixed(1)),
-    sobrecargados: overloaded.map((entry) => ({
-      ...entry,
-      visitas: entry.visits.slice(0, 10),
-    })),
-    técnicos: entries.map((entry) => ({
-      tecnico: entry.tecnico,
-      total: entry.total,
-    })),
-    nota: 'La sobrecarga es una señal operativa basada en visitas activas del conjunto consultado; debe revisarse antes de reasignar.',
-  }
-}
-
-export function getAssignmentProposalContext(
-    visits: AgentVisit[],
-    technicians: AgentTechnician[],
-  ) {
-    const unassigned = uniqueVisits(visits).filter(
-      (visit) => isActiveVisit(visit) && isUnassignedVisit(visit),
-    )
-    const activeVisits = uniqueVisits(visits).filter(
-      (visit) => isActiveVisit(visit) && !isUnassignedVisit(visit),
-    )
-    const workload = new Map<string, number>()
-
-    activeVisits.forEach((visit) => {
-      visit.fumigadores_asignados?.forEach((technician) => {
-        workload.set(technician, (workload.get(technician) || 0) + 1)
-      })
-    })
-
-    const proposals = unassigned.slice(0, 20).map((visit) => {
-      const candidates = technicians
-        .filter((technician) => !visit.zona || !technician.zona || technician.zona === visit.zona)
-        .map((technician) => {
-          const name = technician.nombreCompleto || technician.nombre || technician.id || 'Técnico sin nombre'
-          const conflictingVisits = activeVisits
-            .filter(
-              (scheduledVisit) =>
-                scheduledVisit.fumigadores_asignados?.includes(name) &&
-                visitsOverlap(visit, scheduledVisit),
-            )
-            .slice(0, 3)
-
-          return {
-            tecnico: name,
-            zona: technician.zona || 'Zona sin dato',
-            visitasActivas: workload.get(name) || 0,
-            tieneConflicto: conflictingVisits.length > 0,
-            conflictos: conflictingVisits.map((conflictingVisit) => ({
-              cliente:
-                conflictingVisit.nombre_cliente ||
-                conflictingVisit.clientName ||
-                'Cliente sin dato',
-              fecha: formatVisitDate(conflictingVisit.fecha_visita),
-            })),
-          }
-        })
-        .sort((first, second) => {
-          if (first.tieneConflicto !== second.tieneConflicto) {
-            return first.tieneConflicto ? 1 : -1
-          }
-          return first.visitasActivas - second.visitasActivas
-        })
-
-      return {
-        visita: {
-          id: visit.id,
-          cliente: visit.nombre_cliente || visit.clientName || 'Cliente sin dato',
-          fecha: formatVisitDate(visit.fecha_visita),
-          zona: visit.zona || 'Zona sin dato',
-          tipo: visit.tipo_visita || 'Tipo sin dato',
-        },
-        candidatos: candidates.slice(0, 3),
-        advertencia:
-          candidates.length === 0 ? 'No hay técnicos candidatos en la zona.' : undefined,
-      }
-    })
-
-    return {
-      tipo: 'propuesta de asignación',
-      totalVisitas: unassigned.length,
-      propuestas: proposals,
-      limitado: unassigned.length > 20,
-      nota: 'Esto es una propuesta de solo lectura. No se ha asignado ninguna visita.',
-  }
-}
-
-const cleanSearchTerm = (value: string) =>
-  value
-    .replace(/^según los datos proporcionados[,\s]*/i, '')
-    .replace(/^segun los datos proporcionados[,\s]*/i, '')
-    .replace(/^datos proporcionados[,\s]*/i, '')
-    .replace(/[¿?¡!,:;]/g, ' ')
-    .replace(/\b(hoy|ahora|este mes|del mes|de hoy)\b/gi, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-
-const extractClientTerm = (question: string) => {
-  const afterTiene = question.match(/\btiene\s+(?:el\s+cliente\s+)?(.+)$/i)
-  if (afterTiene?.[1]) {
-    const term = cleanSearchTerm(afterTiene[1]).replace(/^el\s+técnico\s+/i, '').trim()
-    if (
-      term.length >= 3 &&
-      !/servicio|sucursal|contratad|programad/i.test(term) &&
-      !/^(en|para)$/i.test(term)
-    ) {
-      return term
-    }
-  }
-
-  const beforeTiene = question.match(/(?:^|,\s*)(.+?)\s+tiene\b/i)
-  if (beforeTiene?.[1]) {
-    const term = cleanSearchTerm(beforeTiene[1])
-      .replace(/^(qué|que)\s+(servicios?|ficha)\s+/i, '')
-      .replace(/^el\s+cliente\s+/i, '')
-      .trim()
-    if (term.length >= 3 && !/^(según|segun|los datos)$/i.test(term)) return term
-  }
-
-  const explicitClient = question.match(/\bcliente\s+(.+?)(?:\s+(?:tiene|posee|cuenta|dispone)|$)/i)
-  return explicitClient?.[1] ? cleanSearchTerm(explicitClient[1]) : null
-}
-
-const extractEntity = (question: string, kind: 'client' | 'technician') => {
-  if (kind === 'client') return extractClientTerm(question)
-
-  const pattern = /(?:técnico|tecnico|visitas de|perfil de|rendimiento de|desempeño de|carga de)\s+(?:del|de la|de|para)?\s*(.+)$/i
-  const match = question.match(pattern)
-  const term = match?.[1] ? cleanSearchTerm(match[1]) : ''
-  if (!term || term.length < 3 || /^(un cliente|un técnico|un tecnico)$/i.test(term)) return null
-  return term
-}
-
-const isServiceQuestion = (question: string) =>
-  /servicio|servicios|contratad|frecuencia|sucursal/i.test(question)
-
-const isVisitQuestion = (question: string) =>
-  /visita|visitas|agenda|pendiente|historial|programad|realizad/i.test(question)
-
-const searchEntity = async (term: string, kind: 'client' | 'technician') => {
-  const searchFn = httpsCallable(functions, 'globalSearch')
-  const candidates = Array.from(
-    new Set([term, term.replace(/[.,]+$/, ''), term.split(/\s+/)[0]]),
-  ).filter(Boolean)
-
-  for (const candidate of candidates) {
-    const result = (await searchFn({ term: candidate })) as {
-      data: { clients?: SearchResult[]; fumigadores?: SearchResult[] }
-    }
-    const results = kind === 'client' ? result.data.clients || [] : result.data.fumigadores || []
-    if (results.length > 0) {
-      const normalizedTerm = term.toLowerCase().replace(/[.,]/g, '')
-      const exact = results.find((item) => {
-        const name = (kind === 'client' ? item.nombreComercial : item.nombreCompleto) || ''
-        return name.toLowerCase().replace(/[.,]/g, '').includes(normalizedTerm)
-      })
-      return exact || results[0]
-    }
-  }
-
-  return null
-}
-
-const summarizeVisits = (
-  visits: Array<Record<string, unknown>> = [],
-  futureOnly = false,
-) =>
-  visits
-    .filter((visit) => {
-      if (!futureOnly) return true
-      const date = new Date(String(visit.fecha_visita || ''))
-      return !Number.isNaN(date.getTime()) && date >= new Date()
-    })
-    .slice(0, 10)
-    .map((visit) => ({
-    cliente: visit.nombre_cliente || visit.clientName || 'Cliente sin dato',
-    sucursal: visit.sucursal || visit.nombre_sucursal || 'Sucursal sin dato',
-    fecha: visit.fecha_visita,
-    tipo: visit.tipo_visita,
-    estado: visit.estado_visita,
-    zona: visit.zona,
-    tecnicos: visit.fumigadores_asignados,
-    }))
-
-const summarizeByStatus = (
-  visits: Array<Record<string, unknown>> = [],
-  status: string,
-) => summarizeVisits(visits.filter((visit) => visit.estado_visita === status))
-
-const summarizeOverdue = (visits: Array<Record<string, unknown>> = []) =>
-  summarizeVisits(
-    visits.filter(
-      (visit) => visit.estado_visita !== 'Realizada' && visit.estado_visita !== 'Cancelada',
-    ),
-  )
-
-const getTechnicianContext = async (technician: SearchResult) => {
-  const today = new Date()
-  const profileFn = httpsCallable(functions, 'getTechnicianProfileData')
-  const profileResult = (await profileFn({
-    technicianId: technician.id,
-    month: today.getMonth(),
-    year: today.getFullYear(),
-  })) as { data: TechnicianProfile }
-  const profile = profileResult.data
-
-  return {
-    tipo: 'visitas de técnico',
-    encontrado: true,
-    técnico: {
-      id: profile.technician?.id,
-      nombre: profile.technician?.nombreCompleto,
-      zona: profile.technician?.zona,
-    },
-    indicadores: profile.kpis,
-    visitasFuturas: summarizeVisits(profile.upcomingVisits, true),
-    visitasVencidas: summarizeOverdue(profile.recentHistory),
-    historialPasado: summarizeByStatus(profile.recentHistory, 'Realizada'),
-  }
-}
-
-export async function getAgentEntityContext(question: string) {
-  const hasTechnicianHint = /\btécnic[oa]\b|\btecnico\b|rendimiento|desempeño|carga de/i.test(question)
-  const clientTerm = hasTechnicianHint ? null : extractEntity(question, 'client')
-  const technicianTerm = extractEntity(question, 'technician')
-  if (!clientTerm && !technicianTerm) return null
-
-  if (clientTerm) {
-    const client = await searchEntity(clientTerm, 'client')
-    if (!client) {
-      const technician = await searchEntity(clientTerm, 'technician')
-      if (technician) return getTechnicianContext(technician)
-      return { tipo: 'cliente', encontrado: false, termino: clientTerm }
-    }
-
-    const profileFn = httpsCallable(functions, 'getClientProfileData')
-    const profileResult = (await profileFn({ clientId: client.id })) as { data: ClientProfile }
-    const profile = profileResult.data
-    const branchNames = new Map<string, string>([['Principal', 'Principal']])
-    ;(profile.client?.sucursales || []).forEach((branch, index) => {
-      const name = branch.nombre || `Sucursal ${index + 1}`
-      const id = branch.id || `${profile.client?.id}-branch-${index + 1}`
-      branchNames.set(id, name)
-      branchNames.set(name, name)
-    })
-    const services = (profile.serviceSheet?.services || []).map((service) => ({
-      tipo: service.tipo_servicio,
-      frecuencia: service.frecuencia,
-      estado: service.estado_servicio,
-      sucursales: (service.sucursales_asignadas || []).map(
-        (branch) => branchNames.get(branch) || branch,
-      ),
-    }))
-
-    if (isServiceQuestion(question)) {
-      const servicesByBranch = services.reduce<Record<string, typeof services>>((groups, service) => {
-        const branches = service.sucursales.length > 0 ? service.sucursales : ['Sin sucursal especificada']
-        branches.forEach((branch) => {
-          if (!groups[branch]) groups[branch] = []
-          groups[branch].push({ ...service, sucursales: [branch] })
-        })
-        return groups
-      }, {})
-
-      return {
-        tipo: 'servicios por sucursal',
-        encontrado: true,
-        cliente: {
-          id: profile.client?.id,
-          nombre: profile.client?.nombreComercial,
-        },
-        serviciosPorSucursal: servicesByBranch,
-        nota: 'Esta consulta es de servicios contratados. No incluye agenda, historial ni fechas de visitas.',
-      }
-    }
-
-    if (isVisitQuestion(question)) {
-      return {
-        tipo: 'visitas de cliente',
-        encontrado: true,
-        cliente: {
-          id: profile.client?.id,
-          nombre: profile.client?.nombreComercial,
-        },
-        visitasFuturas: summarizeVisits(profile.upcomingVisits, true),
-        historialPasado: summarizeVisits(profile.visitHistory),
-        nota: 'Esta consulta es de visitas. No incluye servicios contratados como si fueran visitas.',
-      }
-    }
-
-    return {
-      tipo: 'cliente',
-      encontrado: true,
-      cliente: {
-        id: profile.client?.id,
-        nombre: profile.client?.nombreComercial,
-        ciudad: profile.client?.ciudad,
-        zona: profile.client?.zona,
-        estado: profile.client?.estado,
-      },
-      serviciosContratados: services,
-      visitasFuturas: summarizeVisits(profile.upcomingVisits, true),
-      visitasVencidas: summarizeOverdue(profile.visitHistory),
-      historialPasado: summarizeByStatus(profile.visitHistory, 'Realizada'),
-    }
-  }
-
-  const technician = technicianTerm ? await searchEntity(technicianTerm, 'technician') : null
-  if (!technician) return { tipo: 'técnico', encontrado: false, termino: technicianTerm }
-  return getTechnicianContext(technician)
-}
-
-const addDays = (date: Date, days: number) => {
-  const result = new Date(date)
-  result.setDate(result.getDate() + days)
-  return result
-}
-
-const getPlanningDateRange = (question: string) => {
-  const now = new Date()
-  const start = new Date(now)
-  start.setHours(0, 0, 0, 0)
-  const normalized = question.toLowerCase()
-  let end: Date | null = null
-
-  if (normalized.includes('pasado mañana') || normalized.includes('pasado manana')) {
-    start.setDate(start.getDate() + 2)
-    end = addDays(start, 1)
-  } else if (normalized.includes('mañana') || normalized.includes('manana')) {
-    start.setDate(start.getDate() + 1)
-    end = addDays(start, 1)
-  } else if (normalized.includes('hoy')) {
-    end = addDays(start, 1)
-  } else if (normalized.includes('esta semana')) {
-    end = addDays(start, 7)
-  } else if (normalized.includes('próxima semana') || normalized.includes('proxima semana')) {
-    start.setDate(start.getDate() + 7)
-    end = addDays(start, 7)
-  } else if (normalized.includes('este mes')) {
-    end = new Date(start.getFullYear(), start.getMonth() + 1, 1)
-  } else {
-    const match = normalized.match(/(\d{1,2})\s+de\s+(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)/)
-    if (!match) return null
-    const months = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre']
-    start.setMonth(months.indexOf(match[2] || ''), Number(match[1]))
-    end = addDays(start, 1)
-  }
-
-  return { startDateISO: start.toISOString(), endDateISO: end.toISOString() }
-}
-
-export async function getPlanningContext(question: string) {
-  if (!isPlanningQuestion(question)) {
-    return null
-  }
-
-  const dateRange = getPlanningDateRange(question)
-  if (!dateRange) return null
-
-  const planningFn = httpsCallable(functions, 'getConsolidatedPlanningData')
-  const result = (await planningFn({
-    ...dateRange,
-    calendarTargetUid: 'internal',
-  })) as {
-    data: {
-      monthlyVisits?: Array<Record<string, unknown>>
-      technicians?: AgentTechnician[]
-    }
-  }
-
-  return {
-    rango: dateRange,
-    visitas: result.data.monthlyVisits || [],
-    técnicos: result.data.technicians || [],
-  }
-}
-
-export async function getPlanningConflictContext(
-  question: string,
-  existingPlanning?: Awaited<ReturnType<typeof getPlanningContext>>,
-) {
-  if (!/conflict|cruce|solapamiento|choque/i.test(question)) return null
-
-  const planning = existingPlanning ?? (await getPlanningContext(question))
-  if (!planning) return { conflictos: [] }
-
-  const visits = planning.visitas.filter((visit) => visit.estado_visita !== 'Cancelada')
-  const conflicts: Array<Record<string, unknown>> = []
-
-  for (let index = 0; index < visits.length; index++) {
-    const first = visits[index] as
-      | { fecha_visita?: unknown; duracion_minutos?: unknown; fumigadores_asignados?: string[] }
-      | undefined
-    if (!first) continue
-    const firstDate = new Date(String(first.fecha_visita || ''))
-    const firstEnd = new Date(
-      firstDate.getTime() + (Number(first.duracion_minutos) || 60) * 60 * 1000,
-    )
-    if (Number.isNaN(firstDate.getTime())) continue
-
-    for (let otherIndex = index + 1; otherIndex < visits.length; otherIndex++) {
-      const second = visits[otherIndex] as
-        | { fecha_visita?: unknown; duracion_minutos?: unknown; fumigadores_asignados?: string[] }
-        | undefined
-      if (!second) continue
-      const secondDate = new Date(String(second.fecha_visita || ''))
-      const secondEnd = new Date(
-        secondDate.getTime() + (Number(second.duracion_minutos) || 60) * 60 * 1000,
-      )
-      if (Number.isNaN(secondDate.getTime())) continue
-
-      const technicians = (first.fumigadores_asignados || []).filter((technician) =>
-        (second.fumigadores_asignados || []).includes(technician),
-      )
-      if (technicians.length === 0 || firstDate >= secondEnd || secondDate >= firstEnd) continue
-
-      conflicts.push({
-        técnicos: technicians,
-        primera: first,
-        segunda: second,
-      })
-    }
-  }
-
-  return { conflictos: conflicts, rango: planning.rango }
-}
-</file>
-
 <file path="src/components/InvoiceModal.vue">
 <script setup lang="ts">
 import { ref, watch } from 'vue'
@@ -11216,6 +10749,613 @@ const filteredVisits = computed(() => {
   </div>
 
 </main>
+</file>
+
+<file path="src/agent/agentTools.ts">
+import { httpsCallable } from 'firebase/functions'
+import { functions } from '@/firebase/config'
+
+type SearchResult = {
+  id: string
+  nombreComercial?: string
+  nombreCompleto?: string
+  ciudad?: string
+  zona?: string
+  estado?: string
+  sucursales?: Array<{ id?: string; nombre?: string }>
+}
+
+export const isUnassignedVisitsQuestion = (question: string) => {
+  const asksForUnassigned = /sin técnico|sin tecnico|no tienen|sin asignar|no asignad[oa]s?/i.test(question)
+  // Si pide proponer o asignar explícitamente, gana la intención de propuesta
+  return asksForUnassigned && !isAssignmentProposalQuestion(question)
+}
+
+export const isTechnicianWorkloadQuestion = (question: string) => {
+  const asksForWorkload = /sobrecarg|carga de técnicos|carga de tecnicos|técnicos disponibles|tecnicos disponibles|qu[eé] técnicos hay|que tecnicos hay|menos carga/i.test(question)
+  return asksForWorkload && !isAssignmentProposalQuestion(question)
+}
+
+export const isAssignmentProposalQuestion = (question: string) => {
+  // Limpiamos frases de estado para no confundir verbos (ej. quitamos "sin asignar" para que no detecte "asignar")
+  const cleanQ = question.replace(/sin asignar|no asignad[oa]s?/gi, '')
+
+  // Verbos explícitos de acción / propuesta
+  const hasProposalVerb = /\b(proponer|prop[oó]n|sugerir|sugiere|recomendar|recomienda|asignar|asigna|asígnale|c[uú]brela|cubrir|cambia|quita|cancela)\b/i.test(cleanQ)
+
+  // Sujetos de la acción
+  const targetsAssignment = /\b(técnic[oa]s?|tecnic[oa]s?|visitas?|primera|segunda|esta|esa|selección|seleccion|propuesta)\b/i.test(cleanQ)
+
+  return hasProposalVerb && targetsAssignment
+}
+
+export const isPlanningQuestion = (question: string) =>
+  /agenda|visitas?|planeación|planeacion|hoy|mañana|manana|esta semana|próxima semana|proxima semana|este mes|\d{1,2}\s+de\s+/i.test(
+    question,
+  ) || isUnassignedVisitsQuestion(question) || isTechnicianWorkloadQuestion(question) || isAssignmentProposalQuestion(question)
+
+type ClientProfile = {
+  client?: SearchResult
+  serviceSheet?: {
+    services?: Array<{
+      tipo_servicio?: string
+      frecuencia?: string
+      estado_servicio?: string
+      sucursales_asignadas?: string[]
+    }>
+  } | null
+  upcomingVisits?: Array<Record<string, unknown>>
+  visitHistory?: Array<Record<string, unknown>>
+}
+
+type TechnicianProfile = {
+  technician?: SearchResult
+  kpis?: { assigned: number; completed: number; rate: number }
+  upcomingVisits?: Array<Record<string, unknown>>
+  recentHistory?: Array<Record<string, unknown>>
+}
+
+export type AgentVisit = {
+  id?: string
+  nombre_cliente?: string
+  clientName?: string
+  tipo_visita?: string
+  fecha_visita?: string
+  estado_visita?: string
+  fumigadores_asignados?: string[]
+  duracion_minutos?: number
+  zona?: string
+  sucursal?: string
+  nombre_sucursal?: string
+}
+
+export type AgentTechnician = {
+  id?: string
+  nombreCompleto?: string
+  nombre?: string
+  zona?: string
+}
+
+const isUnassignedVisit = (visit: AgentVisit) =>
+  !Array.isArray(visit.fumigadores_asignados) || visit.fumigadores_asignados.length === 0
+
+const isActiveVisit = (visit: AgentVisit) =>
+  visit.estado_visita !== 'Realizada' && visit.estado_visita !== 'Cancelada'
+
+const getVisitInterval = (visit: AgentVisit) => {
+  const start = new Date(String(visit.fecha_visita || ''))
+  if (Number.isNaN(start.getTime())) return null
+
+  const duration = Number(visit.duracion_minutos) || 60
+  return {
+    start,
+    end: new Date(start.getTime() + duration * 60 * 1000),
+  }
+}
+
+const visitsOverlap = (first: AgentVisit, second: AgentVisit) => {
+  const firstInterval = getVisitInterval(first)
+  const secondInterval = getVisitInterval(second)
+  if (!firstInterval || !secondInterval) return false
+
+  return firstInterval.start < secondInterval.end && secondInterval.start < firstInterval.end
+}
+
+const formatVisitDate = (value?: string) => {
+  if (!value) return 'Fecha sin dato'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  return new Intl.DateTimeFormat('es-CO', {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  }).format(date)
+}
+
+const uniqueVisits = (visits: AgentVisit[]) =>
+  Array.from(new Map(visits.filter((visit) => visit.id).map((visit) => [visit.id, visit])).values())
+
+export function getUnassignedVisitsContext(visits: AgentVisit[]) {
+  const unassigned = uniqueVisits(visits)
+    .filter((visit) => isActiveVisit(visit) && isUnassignedVisit(visit))
+    .sort((first, second) =>
+      String(first.fecha_visita || '').localeCompare(String(second.fecha_visita || '')),
+    )
+
+  return {
+    tipo: 'visitas sin técnico',
+    total: unassigned.length,
+    visitas: unassigned.slice(0, 30).map((visit) => ({
+      id: visit.id,
+      cliente: visit.nombre_cliente || visit.clientName || 'Cliente sin dato',
+      sucursal: visit.sucursal || visit.nombre_sucursal || 'Sucursal sin dato',
+      tipo: visit.tipo_visita || 'Tipo sin dato',
+      fecha: formatVisitDate(visit.fecha_visita),
+      estado: visit.estado_visita || 'Sin estado',
+      zona: visit.zona || 'Zona sin dato',
+    })),
+    limitado: unassigned.length > 30,
+    nota: unassigned.length > 30
+      ? 'NOTA PARA EL LLM: Has recibido solo las primeras 30 visitas. Informa al usuario que hay más registros pero no se muestran todos para no saturar la vista.'
+      : 'Lista completa de visitas sin asignar obtenidas en el contexto actual.',
+  }
+}
+
+export function getTechnicianWorkloadContext(visits: AgentVisit[]) {
+  const activeVisits = uniqueVisits(visits).filter(
+    (visit) => isActiveVisit(visit) && !isUnassignedVisit(visit),
+  )
+  const workload = new Map<string, { total: number; visits: Array<Record<string, string | undefined>> }>()
+
+  activeVisits.forEach((visit) => {
+    visit.fumigadores_asignados?.forEach((technician) => {
+      const current = workload.get(technician) || { total: 0, visits: [] }
+      current.total += 1
+      current.visits.push({
+        cliente: visit.nombre_cliente || visit.clientName || 'Cliente sin dato',
+        fecha: formatVisitDate(visit.fecha_visita),
+        tipo: visit.tipo_visita || 'Tipo sin dato',
+      })
+      workload.set(technician, current)
+    })
+  })
+
+  const entries = Array.from(workload.entries())
+    .map(([tecnico, data]) => ({ tecnico, ...data }))
+    .sort((first, second) => second.total - first.total)
+  const average = entries.length
+    ? entries.reduce((total, entry) => total + entry.total, 0) / entries.length
+    : 0
+  const overloaded = entries.filter((entry) => entry.total >= 5 || entry.total > average + 2)
+
+  return {
+    tipo: 'carga de técnicos',
+    promedio: Number(average.toFixed(1)),
+    sobrecargados: overloaded.map((entry) => ({
+      ...entry,
+      visitas: entry.visits.slice(0, 10),
+    })),
+    técnicos: entries.map((entry) => ({
+      tecnico: entry.tecnico,
+      total: entry.total,
+    })),
+    nota: 'La sobrecarga es una señal operativa basada en visitas activas del conjunto consultado; debe revisarse antes de reasignar.',
+  }
+}
+
+export function getAssignmentProposalContext(
+    visits: AgentVisit[],
+    technicians: AgentTechnician[],
+  ) {
+    const unassigned = uniqueVisits(visits).filter(
+      (visit) => isActiveVisit(visit) && isUnassignedVisit(visit),
+    )
+    const activeVisits = uniqueVisits(visits).filter(
+      (visit) => isActiveVisit(visit) && !isUnassignedVisit(visit),
+    )
+    const workload = new Map<string, number>()
+
+    activeVisits.forEach((visit) => {
+      visit.fumigadores_asignados?.forEach((technician) => {
+        workload.set(technician, (workload.get(technician) || 0) + 1)
+      })
+    })
+
+    const proposals = unassigned.slice(0, 20).map((visit) => {
+      const candidates = technicians
+        .filter((technician) => !visit.zona || !technician.zona || technician.zona === visit.zona)
+        .map((technician) => {
+          const name = technician.nombreCompleto || technician.nombre || technician.id || 'Técnico sin nombre'
+          const conflictingVisits = activeVisits
+            .filter(
+              (scheduledVisit) =>
+                scheduledVisit.fumigadores_asignados?.includes(name) &&
+                visitsOverlap(visit, scheduledVisit),
+            )
+            .slice(0, 3)
+
+          return {
+            tecnico: name,
+            zona: technician.zona || 'Zona sin dato',
+            visitasActivas: workload.get(name) || 0,
+            tieneConflicto: conflictingVisits.length > 0,
+            conflictos: conflictingVisits.map((conflictingVisit) => ({
+              cliente:
+                conflictingVisit.nombre_cliente ||
+                conflictingVisit.clientName ||
+                'Cliente sin dato',
+              fecha: formatVisitDate(conflictingVisit.fecha_visita),
+            })),
+          }
+        })
+        .sort((first, second) => {
+          if (first.tieneConflicto !== second.tieneConflicto) {
+            return first.tieneConflicto ? 1 : -1
+          }
+          return first.visitasActivas - second.visitasActivas
+        })
+
+      return {
+        visita: {
+          id: visit.id,
+          cliente: visit.nombre_cliente || visit.clientName || 'Cliente sin dato',
+          fecha: formatVisitDate(visit.fecha_visita),
+          zona: visit.zona || 'Zona sin dato',
+          tipo: visit.tipo_visita || 'Tipo sin dato',
+        },
+        candidatos: candidates.slice(0, 3),
+        advertencia:
+          candidates.length === 0 ? 'No hay técnicos candidatos en la zona.' : undefined,
+      }
+    })
+
+return {
+      tipo: 'propuesta de asignación',
+      totalVisitas: unassigned.length,
+      propuestas: proposals,
+      limitado: unassigned.length > 20,
+      nota: 'Esto es una propuesta de solo lectura. No se ha ejecutado ninguna escritura en base de datos. Pide al usuario que use los botones de la interfaz para seleccionar a los técnicos.',
+    }
+}
+
+const cleanSearchTerm = (value: string) =>
+  value
+    .replace(/^según los datos proporcionados[,\s]*/i, '')
+    .replace(/^segun los datos proporcionados[,\s]*/i, '')
+    .replace(/^datos proporcionados[,\s]*/i, '')
+    .replace(/[¿?¡!,:;]/g, ' ')
+    .replace(/\b(hoy|ahora|este mes|del mes|de hoy)\b/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+
+const extractClientTerm = (question: string) => {
+  const afterTiene = question.match(/\btiene\s+(?:el\s+cliente\s+)?(.+)$/i)
+  if (afterTiene?.[1]) {
+    const term = cleanSearchTerm(afterTiene[1]).replace(/^el\s+técnico\s+/i, '').trim()
+    if (
+      term.length >= 3 &&
+      !/servicio|sucursal|contratad|programad/i.test(term) &&
+      !/^(en|para)$/i.test(term)
+    ) {
+      return term
+    }
+  }
+
+  const beforeTiene = question.match(/(?:^|,\s*)(.+?)\s+tiene\b/i)
+  if (beforeTiene?.[1]) {
+    const term = cleanSearchTerm(beforeTiene[1])
+      .replace(/^(qué|que)\s+(servicios?|ficha)\s+/i, '')
+      .replace(/^el\s+cliente\s+/i, '')
+      .trim()
+    if (term.length >= 3 && !/^(según|segun|los datos)$/i.test(term)) return term
+  }
+
+  const explicitClient = question.match(/\bcliente\s+(.+?)(?:\s+(?:tiene|posee|cuenta|dispone)|$)/i)
+  return explicitClient?.[1] ? cleanSearchTerm(explicitClient[1]) : null
+}
+
+const extractEntity = (question: string, kind: 'client' | 'technician') => {
+  if (kind === 'client') return extractClientTerm(question)
+
+  const pattern = /(?:técnico|tecnico|visitas de|perfil de|rendimiento de|desempeño de|carga de)\s+(?:del|de la|de|para)?\s*(.+)$/i
+  const match = question.match(pattern)
+  const term = match?.[1] ? cleanSearchTerm(match[1]) : ''
+  if (!term || term.length < 3 || /^(un cliente|un técnico|un tecnico)$/i.test(term)) return null
+  return term
+}
+
+const isServiceQuestion = (question: string) =>
+  /servicio|servicios|contratad|frecuencia|sucursal/i.test(question)
+
+const isVisitQuestion = (question: string) =>
+  /visita|visitas|agenda|pendiente|historial|programad|realizad/i.test(question)
+
+const searchEntity = async (term: string, kind: 'client' | 'technician') => {
+  const searchFn = httpsCallable(functions, 'globalSearch')
+  const candidates = Array.from(
+    new Set([term, term.replace(/[.,]+$/, ''), term.split(/\s+/)[0]]),
+  ).filter(Boolean)
+
+  for (const candidate of candidates) {
+    const result = (await searchFn({ term: candidate })) as {
+      data: { clients?: SearchResult[]; fumigadores?: SearchResult[] }
+    }
+    const results = kind === 'client' ? result.data.clients || [] : result.data.fumigadores || []
+    if (results.length > 0) {
+      const normalizedTerm = term.toLowerCase().replace(/[.,]/g, '')
+      const exact = results.find((item) => {
+        const name = (kind === 'client' ? item.nombreComercial : item.nombreCompleto) || ''
+        return name.toLowerCase().replace(/[.,]/g, '').includes(normalizedTerm)
+      })
+      return exact || results[0]
+    }
+  }
+
+  return null
+}
+
+const summarizeVisits = (
+  visits: Array<Record<string, unknown>> = [],
+  futureOnly = false,
+) =>
+  visits
+    .filter((visit) => {
+      if (!futureOnly) return true
+      const date = new Date(String(visit.fecha_visita || ''))
+      return !Number.isNaN(date.getTime()) && date >= new Date()
+    })
+    .slice(0, 10)
+    .map((visit) => ({
+    cliente: visit.nombre_cliente || visit.clientName || 'Cliente sin dato',
+    sucursal: visit.sucursal || visit.nombre_sucursal || 'Sucursal sin dato',
+    fecha: visit.fecha_visita,
+    tipo: visit.tipo_visita,
+    estado: visit.estado_visita,
+    zona: visit.zona,
+    tecnicos: visit.fumigadores_asignados,
+    }))
+
+const summarizeByStatus = (
+  visits: Array<Record<string, unknown>> = [],
+  status: string,
+) => summarizeVisits(visits.filter((visit) => visit.estado_visita === status))
+
+const summarizeOverdue = (visits: Array<Record<string, unknown>> = []) =>
+  summarizeVisits(
+    visits.filter(
+      (visit) => visit.estado_visita !== 'Realizada' && visit.estado_visita !== 'Cancelada',
+    ),
+  )
+
+const getTechnicianContext = async (technician: SearchResult) => {
+  const today = new Date()
+  const profileFn = httpsCallable(functions, 'getTechnicianProfileData')
+  const profileResult = (await profileFn({
+    technicianId: technician.id,
+    month: today.getMonth(),
+    year: today.getFullYear(),
+  })) as { data: TechnicianProfile }
+  const profile = profileResult.data
+
+  return {
+    tipo: 'visitas de técnico',
+    encontrado: true,
+    técnico: {
+      id: profile.technician?.id,
+      nombre: profile.technician?.nombreCompleto,
+      zona: profile.technician?.zona,
+    },
+    indicadores: profile.kpis,
+    visitasFuturas: summarizeVisits(profile.upcomingVisits, true),
+    visitasVencidas: summarizeOverdue(profile.recentHistory),
+    historialPasado: summarizeByStatus(profile.recentHistory, 'Realizada'),
+  }
+}
+
+export async function getAgentEntityContext(question: string) {
+  const hasTechnicianHint = /\btécnic[oa]\b|\btecnico\b|rendimiento|desempeño|carga de/i.test(question)
+  const clientTerm = hasTechnicianHint ? null : extractEntity(question, 'client')
+  const technicianTerm = extractEntity(question, 'technician')
+  if (!clientTerm && !technicianTerm) return null
+
+  if (clientTerm) {
+    const client = await searchEntity(clientTerm, 'client')
+    if (!client) {
+      const technician = await searchEntity(clientTerm, 'technician')
+      if (technician) return getTechnicianContext(technician)
+      return { tipo: 'cliente', encontrado: false, termino: clientTerm }
+    }
+
+    const profileFn = httpsCallable(functions, 'getClientProfileData')
+    const profileResult = (await profileFn({ clientId: client.id })) as { data: ClientProfile }
+    const profile = profileResult.data
+    const branchNames = new Map<string, string>([['Principal', 'Principal']])
+    ;(profile.client?.sucursales || []).forEach((branch, index) => {
+      const name = branch.nombre || `Sucursal ${index + 1}`
+      const id = branch.id || `${profile.client?.id}-branch-${index + 1}`
+      branchNames.set(id, name)
+      branchNames.set(name, name)
+    })
+    const services = (profile.serviceSheet?.services || []).map((service) => ({
+      tipo: service.tipo_servicio,
+      frecuencia: service.frecuencia,
+      estado: service.estado_servicio,
+      sucursales: (service.sucursales_asignadas || []).map(
+        (branch) => branchNames.get(branch) || branch,
+      ),
+    }))
+
+    if (isServiceQuestion(question)) {
+      const servicesByBranch = services.reduce<Record<string, typeof services>>((groups, service) => {
+        const branches = service.sucursales.length > 0 ? service.sucursales : ['Sin sucursal especificada']
+        branches.forEach((branch) => {
+          if (!groups[branch]) groups[branch] = []
+          groups[branch].push({ ...service, sucursales: [branch] })
+        })
+        return groups
+      }, {})
+
+      return {
+        tipo: 'servicios por sucursal',
+        encontrado: true,
+        cliente: {
+          id: profile.client?.id,
+          nombre: profile.client?.nombreComercial,
+        },
+        serviciosPorSucursal: servicesByBranch,
+        nota: 'Esta consulta es de servicios contratados. No incluye agenda, historial ni fechas de visitas.',
+      }
+    }
+
+    if (isVisitQuestion(question)) {
+      return {
+        tipo: 'visitas de cliente',
+        encontrado: true,
+        cliente: {
+          id: profile.client?.id,
+          nombre: profile.client?.nombreComercial,
+        },
+        visitasFuturas: summarizeVisits(profile.upcomingVisits, true),
+        historialPasado: summarizeVisits(profile.visitHistory),
+        nota: 'Esta consulta es de visitas. No incluye servicios contratados como si fueran visitas.',
+      }
+    }
+
+    return {
+      tipo: 'cliente',
+      encontrado: true,
+      cliente: {
+        id: profile.client?.id,
+        nombre: profile.client?.nombreComercial,
+        ciudad: profile.client?.ciudad,
+        zona: profile.client?.zona,
+        estado: profile.client?.estado,
+      },
+      serviciosContratados: services,
+      visitasFuturas: summarizeVisits(profile.upcomingVisits, true),
+      visitasVencidas: summarizeOverdue(profile.visitHistory),
+      historialPasado: summarizeByStatus(profile.visitHistory, 'Realizada'),
+    }
+  }
+
+  const technician = technicianTerm ? await searchEntity(technicianTerm, 'technician') : null
+  if (!technician) return { tipo: 'técnico', encontrado: false, termino: technicianTerm }
+  return getTechnicianContext(technician)
+}
+
+const addDays = (date: Date, days: number) => {
+  const result = new Date(date)
+  result.setDate(result.getDate() + days)
+  return result
+}
+
+const getPlanningDateRange = (question: string) => {
+  const now = new Date()
+  const start = new Date(now)
+  start.setHours(0, 0, 0, 0)
+  const normalized = question.toLowerCase()
+  let end: Date | null = null
+
+  if (normalized.includes('pasado mañana') || normalized.includes('pasado manana')) {
+    start.setDate(start.getDate() + 2)
+    end = addDays(start, 1)
+  } else if (normalized.includes('mañana') || normalized.includes('manana')) {
+    start.setDate(start.getDate() + 1)
+    end = addDays(start, 1)
+  } else if (normalized.includes('hoy')) {
+    end = addDays(start, 1)
+  } else if (normalized.includes('esta semana')) {
+    end = addDays(start, 7)
+  } else if (normalized.includes('próxima semana') || normalized.includes('proxima semana')) {
+    start.setDate(start.getDate() + 7)
+    end = addDays(start, 7)
+  } else if (normalized.includes('este mes')) {
+    end = new Date(start.getFullYear(), start.getMonth() + 1, 1)
+  } else {
+    const match = normalized.match(/(\d{1,2})\s+de\s+(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)/)
+    if (!match) return null
+    const months = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre']
+    start.setMonth(months.indexOf(match[2] || ''), Number(match[1]))
+    end = addDays(start, 1)
+  }
+
+  return { startDateISO: start.toISOString(), endDateISO: end.toISOString() }
+}
+
+export async function getPlanningContext(question: string) {
+  if (!isPlanningQuestion(question)) {
+    return null
+  }
+
+  const dateRange = getPlanningDateRange(question)
+  if (!dateRange) return null
+
+  const planningFn = httpsCallable(functions, 'getConsolidatedPlanningData')
+  const result = (await planningFn({
+    ...dateRange,
+    calendarTargetUid: 'internal',
+  })) as {
+    data: {
+      monthlyVisits?: Array<Record<string, unknown>>
+      technicians?: AgentTechnician[]
+    }
+  }
+
+  return {
+    rango: dateRange,
+    visitas: result.data.monthlyVisits || [],
+    técnicos: result.data.technicians || [],
+  }
+}
+
+export async function getPlanningConflictContext(
+  question: string,
+  existingPlanning?: Awaited<ReturnType<typeof getPlanningContext>>,
+) {
+  if (!/conflict|cruce|solapamiento|choque/i.test(question)) return null
+
+  const planning = existingPlanning ?? (await getPlanningContext(question))
+  if (!planning) return { conflictos: [] }
+
+  const visits = planning.visitas.filter((visit) => visit.estado_visita !== 'Cancelada')
+  const conflicts: Array<Record<string, unknown>> = []
+
+  for (let index = 0; index < visits.length; index++) {
+    const first = visits[index] as
+      | { fecha_visita?: unknown; duracion_minutos?: unknown; fumigadores_asignados?: string[] }
+      | undefined
+    if (!first) continue
+    const firstDate = new Date(String(first.fecha_visita || ''))
+    const firstEnd = new Date(
+      firstDate.getTime() + (Number(first.duracion_minutos) || 60) * 60 * 1000,
+    )
+    if (Number.isNaN(firstDate.getTime())) continue
+
+    for (let otherIndex = index + 1; otherIndex < visits.length; otherIndex++) {
+      const second = visits[otherIndex] as
+        | { fecha_visita?: unknown; duracion_minutos?: unknown; fumigadores_asignados?: string[] }
+        | undefined
+      if (!second) continue
+      const secondDate = new Date(String(second.fecha_visita || ''))
+      const secondEnd = new Date(
+        secondDate.getTime() + (Number(second.duracion_minutos) || 60) * 60 * 1000,
+      )
+      if (Number.isNaN(secondDate.getTime())) continue
+
+      const technicians = (first.fumigadores_asignados || []).filter((technician) =>
+        (second.fumigadores_asignados || []).includes(technician),
+      )
+      if (technicians.length === 0 || firstDate >= secondEnd || secondDate >= firstEnd) continue
+
+      conflicts.push({
+        técnicos: technicians,
+        primera: first,
+        segunda: second,
+      })
+    }
+  }
+
+  return { conflictos: conflicts, rango: planning.rango }
+}
 </file>
 
 <file path="src/components/AnnualReport.vue">
@@ -15746,1047 +15886,6 @@ const handleDelete = async (technicianId: string) => {
 </template>
 </file>
 
-<file path="src/components/AgentPanel.vue">
-<script setup lang="ts">
-import { computed, nextTick, ref } from 'vue'
-import { httpsCallable } from 'firebase/functions'
-import { useAuthStore } from '@/stores/auth'
-import { useDashboardStore } from '@/stores/dashboard'
-import { functions } from '@/firebase/config'
-import {
-  getAgentEntityContext,
-  getAssignmentProposalContext,
-  getPlanningConflictContext,
-  getPlanningContext,
-  getTechnicianWorkloadContext,
-  getUnassignedVisitsContext,
-  isAssignmentProposalQuestion,
-  isTechnicianWorkloadQuestion,
-  isUnassignedVisitsQuestion,
-  type AgentVisit,
-} from '@/agent/agentTools'
-
-type ChatMessage = {
-  role: 'user' | 'assistant'
-  content: string
-  structured?: {
-    type: 'visits' | 'services' | 'dashboard' | 'conflicts' | 'unassigned' | 'workload' | 'proposal'
-    subject?: string
-    sections?: Array<{ title: string; key?: string; items: Array<Record<string, unknown>> }>
-    branches?: Record<string, Array<Record<string, unknown>>>
-    kpis?: Array<{ label: string; value: string | number }>
-    conflicts?: Array<Record<string, unknown>>
-    metrics?: Array<{ label: string; value: string | number }>
-  }
-}
-
-type OllamaResponse = {
-  message?: {
-    content?: string
-  }
-}
-
-type OllamaMessage = {
-  role: 'system' | 'user' | 'assistant'
-  content: string
-}
-
-const emit = defineEmits<{
-  close: []
-}>()
-
-const authStore = useAuthStore()
-const dashboardStore = useDashboardStore()
-const ollamaBaseUrl = (import.meta.env.VITE_OLLAMA_URL || 'http://127.0.0.1:11434').replace(/\/$/, '')
-const ollamaModel = import.meta.env.VITE_OLLAMA_MODEL || 'sisfumi-assistant'
-const input = ref('')
-const isLoading = ref(false)
-const loadingStatus = ref('Ollama está preparando la respuesta...')
-const error = ref('')
-const messagesContainer = ref<HTMLElement | null>(null)
-const welcomeMessage: ChatMessage = {
-  role: 'assistant',
-  content:
-    'Hola. Soy el asistente local de SISFUMI. Puedo ayudarte a entender la aplicación y analizar los indicadores autorizados de tu operación.',
-}
-const messages = ref<ChatMessage[]>([welcomeMessage])
-const selectedAssignments = ref<Record<string, string>>({})
-const selectedAssignmentLabels = ref<Record<string, string>>({})
-const reviewSelection = ref<Array<{ visit: string; technician: string }>>([])
-const isConfirmingAssignments = ref(false)
-
-const canSend = computed(() => input.value.trim().length > 0 && !isLoading.value)
-
-const getRecentConversation = (): OllamaMessage[] =>
-  messages.value
-    .slice(-6)
-    .map((message) => ({
-      role: message.role,
-      content: message.content.slice(0, 800),
-    }))
-
-const getRoutingQuestion = (currentQuestion: string) => {
-  const previousUserMessage = [...messages.value]
-    .reverse()
-    .find((message) => message.role === 'user')?.content
-
-  return previousUserMessage
-    ? `Contexto de la pregunta anterior: ${previousUserMessage}\nPregunta actual: ${currentQuestion}`
-    : currentQuestion
-}
-
-const scrollToBottom = async () => {
-  await nextTick()
-  if (messagesContainer.value) {
-    messagesContainer.value.scrollTop = messagesContainer.value.scrollHeight
-  }
-}
-
-const startNewConversation = async () => {
-  if (isLoading.value) return
-  messages.value = [{ ...welcomeMessage }]
-  input.value = ''
-  error.value = ''
-  selectedAssignments.value = {}
-  selectedAssignmentLabels.value = {}
-  reviewSelection.value = []
-  isConfirmingAssignments.value = false
-  await scrollToBottom()
-}
-
-const selectAssignmentCandidate = (
-  proposalKey: string,
-  proposalLabel: string,
-  candidate: Record<string, unknown>,
-) => {
-  if (candidate.tieneConflicto || typeof candidate.tecnico !== 'string') return
-  selectedAssignments.value = {
-    ...selectedAssignments.value,
-    [proposalKey]: candidate.tecnico,
-  }
-  selectedAssignmentLabels.value = {
-    ...selectedAssignmentLabels.value,
-    [proposalKey]: proposalLabel,
-  }
-}
-
-const reviewAssignments = () => {
-  reviewSelection.value = Object.entries(selectedAssignments.value).map(([visit, technician]) => ({
-    visit: selectedAssignmentLabels.value[visit] || visit,
-    technician,
-  }))
-}
-
-const confirmAssignments = async () => {
-  if (reviewSelection.value.length === 0 || isConfirmingAssignments.value) return
-  if (!window.confirm('¿Confirmas las asignaciones seleccionadas? Esta acción modificará las visitas.')) {
-    return
-  }
-
-  isConfirmingAssignments.value = true
-  error.value = ''
-  try {
-    const confirmFn = httpsCallable(functions, 'confirmAssistantAssignments')
-    const result = (await confirmFn({
-      assignments: Object.entries(selectedAssignments.value).map(([visitId, technician]) => ({
-        visitId,
-        technician,
-      })),
-    })) as { data?: { message?: string } }
-    messages.value.push({
-      role: 'assistant',
-      content: result.data?.message || 'Asignaciones confirmadas correctamente.',
-    })
-    selectedAssignments.value = {}
-    selectedAssignmentLabels.value = {}
-    reviewSelection.value = []
-    await scrollToBottom()
-  } catch (err) {
-    console.error('Error confirmando asignaciones del asistente:', err)
-    error.value = err instanceof Error ? err.message : 'No fue posible confirmar las asignaciones.'
-  } finally {
-    isConfirmingAssignments.value = false
-  }
-}
-
-const getOperationalContext = async (question: string) => {
-  const asksUnassigned = isUnassignedVisitsQuestion(question)
-  const asksWorkload = isTechnicianWorkloadQuestion(question)
-  const asksAssignmentProposal = isAssignmentProposalQuestion(question)
-  const asksConflict = /conflict|cruce|solapamiento|choque/i.test(question)
-  const asksPlanning =
-    asksUnassigned ||
-    asksWorkload ||
-    asksAssignmentProposal ||
-    asksConflict ||
-    /agenda|hoy|mañana|manana|esta semana|próxima semana|proxima semana|este mes|\d{1,2}\s+de\s+/i.test(
-      question,
-    )
-  const asksEntity = /cliente|técnic|tecnico|servicio|sucursal|rendimiento|desempeño/i.test(question)
-
-  loadingStatus.value = asksPlanning
-    ? 'Consultando agenda autorizada...'
-    : asksEntity
-      ? 'Consultando entidad autorizada...'
-      : 'Consultando indicadores autorizados...'
-
-  const entityContext = asksEntity ? await getAgentEntityContext(question) : null
-  const hasExplicitDateRange =
-    /hoy|mañana|manana|pasado mañana|pasado manana|esta semana|próxima semana|proxima semana|este mes|\d{1,2}\s+de\s+/i.test(
-      question,
-    )
-  const planningContext = asksPlanning
-    ? await getPlanningContext(
-        asksAssignmentProposal && !hasExplicitDateRange ? `${question} este mes` : question,
-      )
-    : null
-  const conflictContext = asksConflict
-    ? await getPlanningConflictContext(question, planningContext)
-    : null
-  const planningVisits = (planningContext?.visitas || []) as AgentVisit[]
-
-  if (asksUnassigned || asksWorkload) {
-    let visits = planningVisits
-    if (visits.length === 0) {
-      await dashboardStore.fetchDashboardData()
-      visits = [...dashboardStore.todaysAgenda, ...dashboardStore.pendingVisits] as AgentVisit[]
-    }
-    return {
-      entidadConsultada: null,
-      agendaConsultada: planningContext,
-      conflictosAgenda: conflictContext,
-      visitasSinTecnico: asksUnassigned ? getUnassignedVisitsContext(visits) : null,
-      cargaTecnicos: asksWorkload ? getTechnicianWorkloadContext(visits) : null,
-      propuestaAsignacion: asksAssignmentProposal
-        ? getAssignmentProposalContext(visits, planningContext?.técnicos || [])
-        : null,
-    }
-  }
-
-  if (entityContext || planningContext || conflictContext) {
-    return {
-      entidadConsultada: entityContext,
-      agendaConsultada: planningContext,
-      conflictosAgenda: conflictContext,
-      visitasSinTecnico: null,
-      cargaTecnicos: null,
-      propuestaAsignacion: null,
-    }
-  }
-
-  loadingStatus.value = 'Consultando indicadores autorizados...'
-  await dashboardStore.fetchDashboardData()
-  if (!dashboardStore.kpis) {
-    throw new Error(dashboardStore.error || 'No se pudieron cargar los indicadores operativos.')
-  }
-
-  const summarizeVisit = (visit: (typeof dashboardStore.todaysAgenda)[number]) => ({
-    id: visit.id,
-    cliente: visit.nombre_cliente,
-    tipo: visit.tipo_visita,
-    fecha: visit.fecha_visita,
-    estado: visit.estado_visita || 'Programada',
-    tecnicos: visit.fumigadores_asignados || [],
-    zona: visit.zona,
-  })
-  const today = new Date()
-  today.setHours(0, 0, 0, 0)
-  const isFutureVisit = (visit: (typeof dashboardStore.pendingVisits)[number]) => {
-    const date = new Date(visit.fecha_visita)
-    return !Number.isNaN(date.getTime()) && date >= today
-  }
-  const futurePendingVisits = dashboardStore.pendingVisits.filter(isFutureVisit)
-  const overduePendingVisits = dashboardStore.pendingVisits.filter((visit) => !isFutureVisit(visit))
-
-  return {
-    fechaConsulta: new Date().toISOString().slice(0, 10),
-    alcance: {
-      rol: authStore.userRole || 'Sin rol',
-      zona: authStore.userZone || 'Sin zona',
-    },
-    indicadores: {
-      sucursales: dashboardStore.kpis.totalBranches,
-      serviciosActivos: dashboardStore.kpis.activeServices,
-      visitasDelMes: dashboardStore.kpis.visitsThisMonth,
-      porcentajeCumplimientoDelMes: dashboardStore.kpis.completionRateThisMonth,
-      ingresosDelMes: dashboardStore.kpis.revenueThisMonth,
-    },
-    agendaDeHoy: {
-      total: dashboardStore.todaysAgenda.length,
-      registros: dashboardStore.todaysAgenda.slice(0, 30).map(summarizeVisit),
-    },
-    visitasPendientes: {
-      total: dashboardStore.pendingVisits.length,
-      registros: dashboardStore.pendingVisits.slice(0, 30).map(summarizeVisit),
-    },
-    visitasPendientesFuturas: {
-      total: futurePendingVisits.length,
-      registros: futurePendingVisits.slice(0, 30).map(summarizeVisit),
-    },
-    visitasVencidas: {
-      total: overduePendingVisits.length,
-      registros: overduePendingVisits.slice(0, 30).map(summarizeVisit),
-    },
-    entidadConsultada: entityContext,
-    agendaConsultada: planningContext,
-    conflictosAgenda: conflictContext,
-    visitasSinTecnico: null,
-    cargaTecnicos: null,
-    propuestaAsignacion: null,
-    nota: 'Estos datos fueron obtenidos por la aplicación usando los permisos del usuario actual. El total de visitas pendientes pertenece al conjunto devuelto por el dashboard y no debe interpretarse automáticamente como un total mensual.',
-  }
-
-}
-
-const formatUnassignedVisits = (operationalContext: unknown): ChatMessage => {
-  const context = operationalContext as {
-    total?: number
-    limitado?: boolean
-    visitas?: Array<Record<string, string | undefined>>
-  }
-  return {
-    role: 'assistant',
-    content: context.total
-      ? `Encontré ${context.total} visita${context.total === 1 ? '' : 's'} activa${context.total === 1 ? '' : 's'} sin técnico asignado.`
-      : 'No encontré visitas activas sin técnico asignado en el conjunto consultado.',
-    structured: {
-      type: 'unassigned',
-      sections: [
-        {
-          title: context.limitado ? 'Primeras 30 visitas' : 'Visitas',
-          items: context.visitas || [],
-        },
-      ],
-    },
-  }
-}
-
-const formatWorkload = (operationalContext: unknown): ChatMessage => {
-  const context = operationalContext as {
-    promedio?: number
-    sobrecargados?: Array<Record<string, unknown>>
-    técnicos?: Array<Record<string, unknown>>
-  }
-  return {
-    role: 'assistant',
-    content: context.sobrecargados?.length
-      ? `Detecté ${context.sobrecargados.length} técnico${context.sobrecargados.length === 1 ? '' : 's'} con carga alta.`
-      : 'No detecté técnicos con carga alta en el conjunto consultado.',
-    structured: {
-      type: 'workload',
-      kpis: [{ label: 'Promedio de visitas activas', value: context.promedio ?? 0 }],
-      sections: [
-        {
-          title: 'Técnicos con carga alta',
-          items: context.sobrecargados || [],
-        },
-        {
-          title: 'Carga por técnico',
-          items: context.técnicos || [],
-        },
-      ],
-    },
-  }
-}
-
-const formatAssignmentProposal = (operationalContext: unknown): ChatMessage => {
-  const context = operationalContext as {
-    totalVisitas?: number
-    propuestas?: Array<{
-      visita?: Record<string, unknown>
-      candidatos?: Array<Record<string, unknown>>
-      advertencia?: string
-    }>
-  }
-
-  return {
-    role: 'assistant',
-    content: context.totalVisitas
-      ? `Preparé propuestas para ${context.totalVisitas} visita${context.totalVisitas === 1 ? '' : 's'} sin técnico. No se ha ejecutado ninguna asignación.`
-      : 'No encontré visitas sin técnico para proponer asignaciones.',
-    structured: {
-      type: 'proposal',
-      sections: (context.propuestas || []).map((proposal, index) => ({
-        title: `${proposal.visita?.cliente || 'Cliente sin dato'} · ${proposal.visita?.fecha || 'Fecha sin dato'}`,
-        key: String(proposal.visita?.id || `proposal-${index}`),
-        items: proposal.candidatos?.length
-          ? proposal.candidatos
-          : [{ advertencia: proposal.advertencia || 'Sin candidatos disponibles.' }],
-      })),
-    },
-  }
-}
-
-const formatCandidateConflicts = (value: unknown) => {
-  if (!Array.isArray(value)) return ''
-  return value
-    .map((conflict) => {
-      if (!conflict || typeof conflict !== 'object') return ''
-      const item = conflict as { cliente?: string; fecha?: string }
-      return `${item.cliente || 'Cliente sin dato'} · ${item.fecha || 'Fecha sin dato'}`
-    })
-    .filter(Boolean)
-    .join('; ')
-}
-
-const formatServicesByBranch = (entityContext: unknown) => {
-  const context = entityContext as {
-    cliente?: { nombre?: string }
-    serviciosPorSucursal?: Record<string, Array<{ tipo?: string; frecuencia?: string; estado?: string }>>
-  }
-  const groups = context.serviciosPorSucursal || {}
-  const branches = Object.entries(groups)
-
-  if (branches.length === 0) {
-    return {
-      role: 'assistant' as const,
-      content: `No encontré servicios contratados con una sucursal asociada para ${context.cliente?.nombre || 'este cliente'}.`,
-    }
-  }
-
-  return {
-    role: 'assistant' as const,
-    content: `Servicios contratados de ${context.cliente?.nombre || 'este cliente'} por sucursal:`,
-    structured: {
-      type: 'services' as const,
-      subject: context.cliente?.nombre || 'este cliente',
-      branches: Object.fromEntries(branches),
-    },
-  }
-}
-
-const formatDashboard = (operationalContext: unknown, question: string): ChatMessage => {
-  const context = operationalContext as {
-    indicadores?: Record<string, string | number>
-    visitasPendientes?: { total?: number }
-  }
-  const indicators = context.indicadores || {}
-  const availableKpis = [
-    { key: 'clientes', label: 'Clientes', value: indicators.clientes ?? 'Sin dato', match: /clientes?/i },
-    { key: 'sucursales', label: 'Sucursales', value: indicators.sucursales ?? 'Sin dato', match: /sucursales?/i },
-    { key: 'serviciosActivos', label: 'Servicios activos', value: indicators.serviciosActivos ?? 'Sin dato', match: /servicios? activos?/i },
-    { key: 'visitasDelMes', label: 'Visitas del mes', value: indicators.visitasDelMes ?? 'Sin dato', match: /visitas? del mes/i },
-    { key: 'visitasPendientes', label: 'Visitas pendientes', value: context.visitasPendientes?.total ?? 'Sin dato', match: /visitas? pendientes?/i },
-    { key: 'cumplimiento', label: 'Cumplimiento del mes', value: `${indicators.porcentajeCumplimientoDelMes ?? 'Sin dato'}%`, match: /cumplimiento/i },
-    { key: 'ingresos', label: 'Ingresos del mes', value: indicators.ingresosDelMes ?? 'Sin dato', match: /ingresos?|facturación|facturacion/i },
-  ]
-  const requested = availableKpis.filter((kpi) => kpi.match.test(question))
-  const kpis = (requested.length > 0 ? requested : availableKpis).map((kpi) => ({
-    label: kpi.label,
-    value: kpi.value,
-  }))
-
-  return {
-    role: 'assistant',
-    content: requested.length === 1 ? requested[0]!.label : 'Indicadores operativos actualizados',
-    structured: { type: 'dashboard', kpis },
-  }
-}
-
-const formatVisits = (entityContext: unknown): ChatMessage => {
-  const context = entityContext as {
-    tipo?: string
-    cliente?: { nombre?: string }
-    técnico?: { nombre?: string }
-    indicadores?: { assigned?: number; completed?: number; rate?: number }
-    visitasFuturas?: Array<Record<string, unknown>>
-    visitasVencidas?: Array<Record<string, unknown>>
-    historialPasado?: Array<Record<string, unknown>>
-  }
-  const subject = context.cliente?.nombre || context.técnico?.nombre || 'la entidad consultada'
-  const future = context.visitasFuturas || []
-  const overdue = context.visitasVencidas || []
-  const history = context.historialPasado || []
-  const formatDate = (value: unknown) => {
-    const date = new Date(String(value || ''))
-    if (Number.isNaN(date.getTime())) return 'Fecha sin dato'
-    return new Intl.DateTimeFormat('es-CO', {
-      day: '2-digit',
-      month: 'short',
-      year: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-    }).format(date)
-  }
-
-  return {
-    role: 'assistant',
-    content: `Visitas de ${subject}`,
-    structured: {
-      type: 'visits',
-      subject,
-      metrics: context.indicadores
-        ? [
-            { label: 'Asignadas', value: context.indicadores.assigned ?? 'Sin dato' },
-            { label: 'Realizadas', value: context.indicadores.completed ?? 'Sin dato' },
-            { label: 'Cumplimiento', value: `${context.indicadores.rate ?? 'Sin dato'}%` },
-          ]
-        : undefined,
-      sections: [
-        { title: 'Próximas visitas', items: future },
-        { title: 'Pendientes vencidas', items: overdue },
-        { title: 'Historial realizado', items: history },
-      ].map((section) => ({
-        ...section,
-        items: section.items.map((visit) => ({
-          ...visit,
-          fechaLegible: formatDate(visit.fecha),
-        })),
-      })),
-    },
-  }
-}
-
-const formatPlanning = (planningContext: unknown): ChatMessage => {
-  const context = planningContext as { visitas?: Array<Record<string, unknown>> }
-  const visits = context.visitas || []
-  const formatDate = (value: unknown) => {
-    const date = new Date(String(value || ''))
-    if (Number.isNaN(date.getTime())) return 'Fecha sin dato'
-    return new Intl.DateTimeFormat('es-CO', {
-      day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit',
-    }).format(date)
-  }
-
-  return {
-    role: 'assistant',
-    content: 'Agenda consultada',
-    structured: {
-      type: 'visits',
-      subject: 'la agenda solicitada',
-      sections: [{
-        title: 'Visitas encontradas',
-        items: visits.map((visit) => ({
-          ...visit,
-          fechaLegible: formatDate(visit.fecha_visita),
-          tipo: visit.tipo_visita,
-          cliente: visit.nombre_cliente,
-          sucursal: visit.sucursal || visit.nombre_sucursal || 'Sucursal sin dato',
-          estado: visit.estado_visita || 'Sin estado',
-        })),
-      }],
-    },
-  }
-}
-
-const formatConflicts = (conflictContext: unknown): ChatMessage => {
-  const context = conflictContext as { conflictos?: Array<Record<string, unknown>> }
-  const conflicts = context.conflictos || []
-  const cards = conflicts.map((conflict) => {
-    const first = (conflict.primera || {}) as Record<string, unknown>
-    const second = (conflict.segunda || {}) as Record<string, unknown>
-    return {
-      técnicos: Array.isArray(conflict.técnicos) ? conflict.técnicos.join(', ') : 'Sin técnico',
-      primera: `${first.nombre_cliente || 'Cliente sin dato'} · ${first.fecha_visita || 'Fecha sin dato'}`,
-      segunda: `${second.nombre_cliente || 'Cliente sin dato'} · ${second.fecha_visita || 'Fecha sin dato'}`,
-    }
-  })
-  return {
-    role: 'assistant',
-    content: cards.length ? 'Conflictos de agenda detectados' : 'No se detectaron conflictos de agenda',
-    structured: { type: 'conflicts', conflicts: cards },
-  }
-}
-
-const sendMessage = async () => {
-  const content = input.value.trim()
-  if (!content || isLoading.value) return
-
-  error.value = ''
-  input.value = ''
-  const conversationHistory = getRecentConversation()
-  const routingQuestion = getRoutingQuestion(content)
-  messages.value.push({ role: 'user', content })
-  await scrollToBottom()
-  isLoading.value = true
-  loadingStatus.value = 'Ollama está preparando la respuesta...'
-  let timeoutId: number | undefined
-
-  try {
-    const operationalContext = await getOperationalContext(routingQuestion)
-    const entityContext = operationalContext.entidadConsultada as
-      | { tipo?: string; cliente?: { nombre?: string }; serviciosPorSucursal?: Record<string, Array<{ tipo?: string; frecuencia?: string; estado?: string }>> }
-      | null
-
-    if (operationalContext.propuestaAsignacion) {
-      messages.value.push(formatAssignmentProposal(operationalContext.propuestaAsignacion))
-      return
-    }
-
-    if (operationalContext.visitasSinTecnico) {
-      messages.value.push(formatUnassignedVisits(operationalContext.visitasSinTecnico))
-      return
-    }
-
-    if (operationalContext.cargaTecnicos) {
-      messages.value.push(formatWorkload(operationalContext.cargaTecnicos))
-      return
-    }
-
-    if (entityContext?.tipo === 'servicios por sucursal') {
-      const serviceAnswer = formatServicesByBranch(entityContext)
-        messages.value.push(serviceAnswer)
-      return
-    }
-
-    if (entityContext?.tipo === 'visitas de cliente' || entityContext?.tipo === 'visitas de técnico') {
-      messages.value.push(formatVisits(entityContext))
-      return
-    }
-
-    if (operationalContext.conflictosAgenda) {
-      messages.value.push(formatConflicts(operationalContext.conflictosAgenda))
-      return
-    }
-
-    if (operationalContext.agendaConsultada) {
-      messages.value.push(formatPlanning(operationalContext.agendaConsultada))
-      return
-    }
-
-    if (/cuántos clientes|cuántas visitas|cumplimiento|ingresos|indicadores|dashboard|servicios activos|visitas pendientes/i.test(routingQuestion)) {
-      messages.value.push(formatDashboard(operationalContext, routingQuestion))
-      return
-    }
-
-    const context = `Contexto operativo autorizado de SISFUMI:\n${JSON.stringify(operationalContext)}\n\nReglas de interpretación: si existe serviciosPorSucursal, responde agrupando cada servicio bajo su sucursal y no enumeres fechas ni menciones agenda o historial. Usa serviciosContratados solo para describir servicios contratados. Usa visitasFuturas para preguntas sobre próximas visitas. Usa historialPasado solo para visitas anteriores. Nunca presentes una fecha de historial como pendiente, futura o programada. Usa visitasDelMes únicamente para el indicador mensual, agendaDeHoy para la fecha actual y visitasPendientesFuturas para pendientes futuros.`
-    const apiMessages: OllamaMessage[] = [
-      {
-        role: 'system',
-        content:
-          'Eres el asistente interno de SISFUMI. Usa la conversación reciente para entender preguntas de seguimiento. Responde únicamente con el contexto operativo entregado y no inventes datos. Este asistente es de solo lectura.',
-      },
-      ...conversationHistory,
-      {
-        role: 'user' as const,
-        content: `${context}\n\nPregunta del usuario:\n${content}`,
-      },
-    ]
-    loadingStatus.value = 'Ollama está generando la respuesta...'
-    const controller = new AbortController()
-    timeoutId = window.setTimeout(() => controller.abort(), 300000)
-    const response = await fetch(`${ollamaBaseUrl}/api/chat`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      signal: controller.signal,
-      body: JSON.stringify({
-        model: ollamaModel,
-        stream: false,
-        keep_alive: '10m',
-        options: { temperature: 0.2, num_predict: 192 },
-        messages: apiMessages,
-      }),
-    })
-
-    if (!response.ok) {
-      throw new Error(`Ollama respondió con HTTP ${response.status}.`)
-    }
-
-    loadingStatus.value = 'Ollama está escribiendo...'
-    const data = (await response.json()) as OllamaResponse
-    const answer = data.message?.content?.trim()
-    if (!answer) throw new Error('Ollama no devolvió una respuesta.')
-
-    messages.value.push({ role: 'assistant', content: answer })
-
-  } catch (requestError) {
-    console.error('Error conectando con Ollama:', requestError)
-    error.value = requestError instanceof DOMException && requestError.name === 'AbortError'
-      ? `Ollama tardó más de 5 minutos en responder. Verifica el modelo ${ollamaModel} o reduce el volumen de datos de la consulta.`
-      : `No se pudo conectar con el asistente local (${ollamaBaseUrl}). Verifica que Ollama esté ejecutándose con el modelo ${ollamaModel}.`
-  } finally {
-    if (timeoutId !== undefined) window.clearTimeout(timeoutId)
-    isLoading.value = false
-    await scrollToBottom()
-  }
-}
-</script>
-
-<template>
-  <aside
-    class="fixed right-4 bottom-20 z-[60] flex h-[min(680px,calc(100vh-7rem))] w-[min(420px,calc(100vw-2rem))] flex-col overflow-hidden rounded-xl border border-white/10 bg-[#151515] shadow-2xl"
-    aria-label="Asistente SISFUMI"
-  >
-    <header class="flex items-center justify-between border-b border-white/10 px-4 py-3">
-      <div>
-        <p class="font-semibold text-white">Asistente SISFUMI</p>
-        <p class="text-xs text-gray-400">Modelo local · solo lectura</p>
-      </div>
-      <div class="flex items-center gap-1">
-        <button
-          type="button"
-          class="rounded p-2 text-gray-400 transition hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
-          title="Nueva conversación"
-          aria-label="Iniciar nueva conversación"
-          :disabled="isLoading"
-          @click="startNewConversation"
-        >
-          <i class="fas fa-rotate-right"></i>
-        </button>
-        <button
-          type="button"
-          class="rounded p-2 text-gray-400 transition hover:bg-white/10 hover:text-white"
-          title="Cerrar asistente"
-          aria-label="Cerrar asistente"
-          @click="emit('close')"
-        >
-          <i class="fas fa-times"></i>
-        </button>
-      </div>
-    </header>
-
-    <div ref="messagesContainer" class="flex-1 space-y-3 overflow-y-auto p-4">
-      <div
-        v-for="(message, index) in messages"
-        :key="`${message.role}-${index}`"
-        class="max-w-[90%] rounded-lg px-3 py-2 text-sm whitespace-pre-wrap"
-        :class="message.role === 'user' ? 'ml-auto bg-red-700 text-white' : 'bg-white/10 text-gray-200'"
-      >
-        <template v-if="message.structured?.type === 'visits'">
-          <p class="mb-3 font-semibold text-white">Visitas de {{ message.structured.subject }}</p>
-          <div v-if="message.structured.metrics" class="mb-3 grid grid-cols-3 gap-2">
-            <article
-              v-for="metric in message.structured.metrics"
-              :key="metric.label"
-              class="rounded-md border border-white/10 bg-black/20 p-2"
-            >
-              <p class="text-[10px] uppercase tracking-wide text-gray-500">{{ metric.label }}</p>
-              <p class="mt-1 text-sm font-semibold text-white">{{ metric.value }}</p>
-            </article>
-          </div>
-          <section
-            v-for="section in message.structured.sections"
-            :key="section.title"
-            class="mb-3 last:mb-0"
-          >
-            <h4 class="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-400">
-              {{ section.title }}
-            </h4>
-            <p v-if="section.items.length === 0" class="text-xs text-gray-500">
-              No hay registros.
-            </p>
-            <article
-              v-for="(visit, visitIndex) in section.items"
-              :key="`${section.title}-${visitIndex}`"
-              class="mb-2 rounded-md border border-white/10 bg-black/20 p-2 last:mb-0"
-            >
-              <div class="flex items-start justify-between gap-2">
-                <p class="font-medium text-gray-100">{{ visit.tipo || 'Tipo sin dato' }}</p>
-                <span class="shrink-0 rounded-full bg-yellow-500/15 px-2 py-0.5 text-[10px] text-yellow-300">
-                  {{ visit.estado || 'Sin estado' }}
-                </span>
-              </div>
-              <p class="mt-1 text-xs text-gray-300">{{ visit.fechaLegible }}</p>
-              <p class="mt-1 text-xs text-gray-400">
-                Cliente: {{ visit.cliente || 'Cliente sin dato' }}
-              </p>
-              <p class="text-xs text-gray-400">
-                Sucursal: {{ visit.sucursal || 'Sucursal sin dato' }}
-              </p>
-              <p v-if="visit.zona" class="text-xs text-gray-500">{{ visit.zona }}</p>
-            </article>
-          </section>
-        </template>
-        <template v-else-if="message.structured?.type === 'services'">
-          <p class="mb-3 font-semibold text-white">
-            Servicios de {{ message.structured.subject }}
-          </p>
-          <section
-            v-for="(services, branch) in message.structured.branches"
-            :key="branch"
-            class="mb-3 last:mb-0"
-          >
-            <h4 class="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-400">
-              {{ branch }}
-            </h4>
-            <article
-              v-for="(service, serviceIndex) in services"
-              :key="`${branch}-${serviceIndex}`"
-              class="mb-2 rounded-md border border-white/10 bg-black/20 p-2 last:mb-0"
-            >
-              <p class="font-medium text-gray-100">{{ service.tipo || 'Servicio sin dato' }}</p>
-              <p class="mt-1 text-xs text-gray-400">
-                {{ service.frecuencia || 'Frecuencia sin dato' }} ·
-                {{ service.estado || 'Estado sin dato' }}
-              </p>
-            </article>
-          </section>
-        </template>
-        <template v-else-if="message.structured?.type === 'dashboard'">
-          <p class="mb-3 font-semibold text-white">Indicadores operativos</p>
-          <div class="grid grid-cols-2 gap-2">
-            <article
-              v-for="kpi in message.structured.kpis"
-              :key="kpi.label"
-              class="rounded-md border border-white/10 bg-black/20 p-2"
-            >
-              <p class="text-[10px] uppercase tracking-wide text-gray-500">{{ kpi.label }}</p>
-              <p class="mt-1 text-base font-semibold text-white">{{ kpi.value }}</p>
-            </article>
-          </div>
-        </template>
-        <template v-else-if="message.structured?.type === 'conflicts'">
-          <p class="mb-3 font-semibold text-white">Conflictos de agenda</p>
-          <p v-if="message.structured.conflicts?.length === 0" class="text-sm text-gray-400">
-            No se detectaron conflictos en el rango consultado.
-          </p>
-          <article
-            v-for="(conflict, conflictIndex) in message.structured.conflicts"
-            :key="`conflict-${conflictIndex}`"
-            class="mb-2 rounded-md border border-red-500/30 bg-red-950/20 p-3 last:mb-0"
-          >
-            <p class="font-medium text-red-200">
-              Técnico: {{ conflict.técnicos }}
-            </p>
-            <p class="mt-2 text-xs text-gray-300">{{ conflict.primera }}</p>
-            <p class="text-xs text-gray-400">{{ conflict.segunda }}</p>
-          </article>
-        </template>
-        <template v-else-if="message.structured?.type === 'unassigned'">
-          <p class="mb-3 font-semibold text-white">Visitas sin técnico asignado</p>
-          <section
-            v-for="section in message.structured.sections"
-            :key="section.title"
-            class="mb-3 last:mb-0"
-          >
-            <h4 class="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-400">
-              {{ section.title }}
-            </h4>
-            <p v-if="section.items.length === 0" class="text-xs text-gray-500">
-              No hay registros.
-            </p>
-            <article
-              v-for="(visit, visitIndex) in section.items"
-              :key="`unassigned-${visitIndex}`"
-              class="mb-2 rounded-md border border-yellow-500/20 bg-black/20 p-2 last:mb-0"
-            >
-              <p class="font-medium text-gray-100">{{ visit.cliente || 'Cliente sin dato' }}</p>
-              <p class="mt-1 text-xs text-gray-300">{{ visit.fecha || 'Fecha sin dato' }}</p>
-              <p class="text-xs text-gray-400">
-                {{ visit.tipo || 'Tipo sin dato' }} · {{ visit.sucursal || 'Sucursal sin dato' }}
-              </p>
-              <p class="text-xs text-gray-500">
-                {{ visit.zona || 'Zona sin dato' }} · {{ visit.estado || 'Sin estado' }}
-              </p>
-            </article>
-          </section>
-        </template>
-        <template v-else-if="message.structured?.type === 'workload'">
-          <p class="mb-3 font-semibold text-white">Carga operativa de técnicos</p>
-          <div class="mb-3 grid grid-cols-2 gap-2">
-            <article
-              v-for="kpi in message.structured.kpis"
-              :key="kpi.label"
-              class="rounded-md border border-white/10 bg-black/20 p-2"
-            >
-              <p class="text-[10px] uppercase tracking-wide text-gray-500">{{ kpi.label }}</p>
-              <p class="mt-1 text-base font-semibold text-white">{{ kpi.value }}</p>
-            </article>
-          </div>
-          <section
-            v-for="section in message.structured.sections"
-            :key="section.title"
-            class="mb-3 last:mb-0"
-          >
-            <h4 class="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-400">
-              {{ section.title }}
-            </h4>
-            <p v-if="section.items.length === 0" class="text-xs text-gray-500">
-              No hay registros.
-            </p>
-            <article
-              v-for="(technician, technicianIndex) in section.items"
-              :key="`workload-${section.title}-${technicianIndex}`"
-              class="mb-2 rounded-md border border-white/10 bg-black/20 p-2 last:mb-0"
-            >
-              <p class="font-medium text-gray-100">
-                {{ technician.tecnico || 'Técnico sin dato' }}
-              </p>
-              <p class="mt-1 text-xs text-gray-400">
-                {{ technician.total || 0 }} visita(s) activa(s)
-              </p>
-            </article>
-          </section>
-        </template>
-        <template v-else-if="message.structured?.type === 'proposal'">
-          <p class="mb-3 font-semibold text-white">Propuestas de asignación</p>
-          <p class="mb-3 text-xs text-yellow-200">
-            Selecciona un técnico disponible por visita. La selección todavía no modifica ninguna visita.
-          </p>
-          <div v-if="Object.keys(selectedAssignments).length" class="mb-3 rounded-md border border-blue-400/30 bg-blue-400/10 p-3">
-            <p class="text-xs font-semibold text-blue-200">
-              {{ Object.keys(selectedAssignments).length }} selección(es) preparada(s)
-            </p>
-            <button
-              type="button"
-              class="mt-2 rounded bg-blue-500 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-blue-400"
-              @click="reviewAssignments"
-            >
-              Revisar selección
-            </button>
-          </div>
-          <div v-if="reviewSelection.length" class="mb-3 rounded-md border border-yellow-400/30 bg-yellow-400/10 p-3">
-            <p class="text-xs font-semibold text-yellow-100">Revisión antes de confirmar</p>
-            <ul class="mt-2 space-y-1 text-xs text-yellow-100">
-              <li v-for="selection in reviewSelection" :key="selection.visit">
-                {{ selection.visit }} → {{ selection.technician }}
-              </li>
-            </ul>
-            <p class="mt-2 text-xs text-yellow-200">
-              Revisa cuidadosamente la selección. La confirmación validará nuevamente permisos, estado y cruces horarios en el backend.
-            </p>
-            <button
-              type="button"
-              class="mt-3 rounded bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-50"
-              :disabled="isConfirmingAssignments"
-              @click="confirmAssignments"
-            >
-              {{ isConfirmingAssignments ? 'Confirmando...' : 'Confirmar asignaciones' }}
-            </button>
-          </div>
-          <section
-            v-for="section in message.structured.sections"
-            :key="section.title"
-            class="mb-3 last:mb-0"
-          >
-            <h4 class="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-400">
-              {{ section.title }}
-            </h4>
-            <article
-              v-for="(candidate, candidateIndex) in section.items"
-              :key="`proposal-${section.title}-${candidateIndex}`"
-              class="mb-2 rounded-md border border-white/10 bg-black/20 p-2 last:mb-0"
-            >
-              <template v-if="candidate.tecnico">
-                <p class="font-medium text-gray-100">{{ candidate.tecnico }}</p>
-                <p class="mt-1 text-xs text-gray-400">
-                  Zona: {{ candidate.zona || 'Sin zona' }} ·
-                  {{ candidate.visitasActivas || 0 }} visita(s) activa(s)
-                </p>
-                <p
-                  class="mt-1 text-xs"
-                  :class="candidate.tieneConflicto ? 'text-red-300' : 'text-emerald-300'"
-                >
-                  {{ candidate.tieneConflicto ? 'Tiene cruce horario' : 'Sin cruce horario detectado' }}
-                </p>
-                <p
-                  v-if="candidate.tieneConflicto && formatCandidateConflicts(candidate.conflictos)"
-                  class="mt-1 text-xs text-red-200"
-                >
-                  {{ formatCandidateConflicts(candidate.conflictos) }}
-                </p>
-                <button
-                  type="button"
-                  class="mt-2 rounded px-2 py-1 text-xs font-semibold transition"
-                  :class="
-                    selectedAssignments[section.key || section.title] === candidate.tecnico
-                      ? 'bg-emerald-500 text-white'
-                      : candidate.tieneConflicto
-                        ? 'cursor-not-allowed bg-gray-700 text-gray-400'
-                        : 'bg-white/10 text-gray-200 hover:bg-white/20'
-                  "
-                  :disabled="Boolean(candidate.tieneConflicto)"
-                  @click="selectAssignmentCandidate(section.key || section.title, section.title, candidate)"
-                >
-                  {{
-                    selectedAssignments[section.key || section.title] === candidate.tecnico
-                      ? 'Técnico seleccionado'
-                      : candidate.tieneConflicto
-                        ? 'No disponible por cruce'
-                        : 'Elegir este técnico'
-                  }}
-                </button>
-              </template>
-              <p v-else class="text-xs text-yellow-200">
-                {{ candidate.advertencia || 'Sin candidatos disponibles.' }}
-              </p>
-            </article>
-          </section>
-        </template>
-        <template v-else>{{ message.content }}</template>
-      </div>
-      <div
-        v-if="isLoading"
-        class="flex max-w-[90%] items-center gap-2 rounded-lg bg-white/10 px-3 py-2 text-sm text-gray-400"
-        aria-live="polite"
-      >
-        <span class="typing-dots" aria-hidden="true">
-          <span class="typing-dot"></span>
-          <span class="typing-dot"></span>
-          <span class="typing-dot"></span>
-        </span>
-        <span>{{ loadingStatus }}</span>
-      </div>
-    </div>
-
-    <p v-if="error" class="border-t border-red-500/30 bg-red-950/40 px-4 py-2 text-xs text-red-200">
-      {{ error }}
-    </p>
-
-    <form class="border-t border-white/10 p-3" @submit.prevent="sendMessage">
-      <div class="flex items-end gap-2">
-        <textarea
-          v-model="input"
-          rows="2"
-          class="min-w-0 flex-1 resize-none rounded-lg border border-white/10 bg-black/20 px-3 py-2 text-sm text-white outline-none placeholder:text-gray-500 focus:border-red-500"
-          placeholder="Escribe una pregunta..."
-          :disabled="isLoading"
-          @keydown.enter.exact.prevent="sendMessage"
-        ></textarea>
-        <button
-          type="submit"
-          class="rounded-lg bg-red-700 p-3 text-white transition hover:bg-red-600 disabled:cursor-not-allowed disabled:opacity-50"
-          title="Enviar pregunta"
-          aria-label="Enviar pregunta"
-          :disabled="!canSend"
-        >
-          <i class="fas fa-paper-plane"></i>
-        </button>
-      </div>
-    </form>
-  </aside>
-</template>
-
-<style scoped>
-.typing-dots {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  min-width: 22px;
-}
-
-.typing-dot {
-  width: 5px;
-  height: 5px;
-  border-radius: 999px;
-  background: currentColor;
-  animation: typing-bounce 1.2s infinite ease-in-out;
-}
-
-.typing-dot:nth-child(2) {
-  animation-delay: 0.15s;
-}
-
-.typing-dot:nth-child(3) {
-  animation-delay: 0.3s;
-}
-
-@keyframes typing-bounce {
-  0%,
-  60%,
-  100% {
-    transform: translateY(0);
-    opacity: 0.45;
-  }
-
-  30% {
-    transform: translateY(-3px);
-    opacity: 1;
-  }
-}
-</style>
-</file>
-
 <file path="src/components/ClientFormModal.vue">
 <!-- eslint-disable @typescript-eslint/no-explicit-any -->
 <script setup lang="ts">
@@ -18438,47 +17537,1071 @@ declare module '*.vue' {
 }
 </file>
 
-<file path=".gitignore">
-# Logs
-logs
-*.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-lerna-debug.log*
+<file path="src/components/AgentPanel.vue">
+<script setup lang="ts">
+import { computed, nextTick, ref } from 'vue'
+import { httpsCallable } from 'firebase/functions'
+import { useAuthStore } from '@/stores/auth'
+import { useDashboardStore } from '@/stores/dashboard'
+import { functions } from '@/firebase/config'
+import {
+  getAgentEntityContext,
+  getAssignmentProposalContext,
+  getPlanningConflictContext,
+  getPlanningContext,
+  getTechnicianWorkloadContext,
+  getUnassignedVisitsContext,
+  isAssignmentProposalQuestion,
+  isTechnicianWorkloadQuestion,
+  isUnassignedVisitsQuestion,
+  type AgentVisit,
+} from '@/agent/agentTools'
+import { doc, getDoc, setDoc } from 'firebase/firestore'
+import { db } from '@/firebase/config'
+import { onMounted } from 'vue'
 
-node_modules
-.DS_Store
-dist
-dist-ssr
-coverage
-*.zip
-*.local
+type ChatMessage = {
+  role: 'user' | 'assistant'
+  content: string
+  structured?: {
+    type: 'visits' | 'services' | 'dashboard' | 'conflicts' | 'unassigned' | 'workload' | 'proposal'
+    subject?: string
+    sections?: Array<{ title: string; key?: string; items: Array<Record<string, unknown>> }>
+    branches?: Record<string, Array<Record<string, unknown>>>
+    kpis?: Array<{ label: string; value: string | number }>
+    conflicts?: Array<Record<string, unknown>>
+    metrics?: Array<{ label: string; value: string | number }>
+  }
+}
 
-# Editor directories and files
-.vscode/*
-!.vscode/extensions.json
-.idea
-*.suo
-*.ntvs*
-*.njsproj
-*.sln
-*.sw?
+type OllamaResponse = {
+  message?: {
+    content?: string
+  }
+}
 
-*.tsbuildinfo
+type OllamaMessage = {
+  role: 'system' | 'user' | 'assistant'
+  content: string
+}
 
-.eslintcache
+const emit = defineEmits<{
+  close: []
+}>()
 
-# Cypress
-/cypress/videos/
-/cypress/screenshots/
+const authStore = useAuthStore()
+const dashboardStore = useDashboardStore()
+const ollamaBaseUrl = (import.meta.env.VITE_OLLAMA_URL || 'http://127.0.0.1:11434').replace(/\/$/, '')
+const ollamaModel = import.meta.env.VITE_OLLAMA_MODEL || 'sisfumi-assistant'
+const input = ref('')
+const isLoading = ref(false)
+const loadingStatus = ref('Ollama está preparando la respuesta...')
+const error = ref('')
+const messagesContainer = ref<HTMLElement | null>(null)
+const welcomeMessage: ChatMessage = {
+  role: 'assistant',
+  content:
+    'Hola. Soy el asistente local de SISFUMI. Puedo ayudarte a entender la aplicación y analizar los indicadores autorizados de tu operación.',
+}
+const messages = ref<ChatMessage[]>([welcomeMessage])
+const selectedAssignments = ref<Record<string, string>>({})
+const selectedAssignmentLabels = ref<Record<string, string>>({})
+const reviewSelection = ref<Array<{ key: string; visit: string; technician: string }>>([])
+const isConfirmingAssignments = ref(false)
 
-# Vitest
-__screenshots__/
-functions/googleConfig.js
-functions/.env.*
-!functions/.env.example
+const getSessionRef = () => {
+  if (!authStore.user?.uid) return null
+  return doc(db, 'users', authStore.user.uid, 'agent_session', 'current')
+}
+
+const loadConversationHistory = async () => {
+  const sessionRef = getSessionRef()
+  if (!sessionRef) return
+
+  try {
+    const docSnap = await getDoc(sessionRef)
+    if (docSnap.exists() && docSnap.data().messages) {
+      const savedMessages = docSnap.data().messages
+      if (savedMessages.length > 0) {
+        messages.value = savedMessages
+        await scrollToBottom()
+      }
+    }
+  } catch (err) {
+    console.error('Error cargando la memoria del asistente:', err)
+  }
+}
+
+const saveConversationHistory = async () => {
+  const sessionRef = getSessionRef()
+  if (!sessionRef) return
+
+  try {
+    // Guardamos un máximo de 20 mensajes para no exceder la ventana de contexto de Ollama
+    const messagesToSave = messages.value.slice(-20)
+    await setDoc(sessionRef, {
+      messages: messagesToSave,
+      updatedAt: new Date().toISOString()
+    }, { merge: true })
+  } catch (err) {
+    console.error('Error guardando la memoria del asistente:', err)
+  }
+}
+
+onMounted(() => {
+  loadConversationHistory()
+})
+
+const canSend = computed(() => input.value.trim().length > 0 && !isLoading.value)
+
+const getRecentConversation = (): OllamaMessage[] =>
+  messages.value
+    .slice(-6)
+    .map((message) => ({
+      role: message.role,
+      content: message.content.slice(0, 800),
+    }))
+
+const getRoutingQuestion = (currentQuestion: string) => {
+  const previousUserMessage = [...messages.value]
+    .reverse()
+    .find((message) => message.role === 'user')?.content
+
+  return previousUserMessage
+    ? `Contexto de la pregunta anterior: ${previousUserMessage}\nPregunta actual: ${currentQuestion}`
+    : currentQuestion
+}
+
+const scrollToBottom = async () => {
+  await nextTick()
+  if (messagesContainer.value) {
+    messagesContainer.value.scrollTop = messagesContainer.value.scrollHeight
+  }
+}
+
+const startNewConversation = async () => {
+  if (isLoading.value) return
+  messages.value = [{ ...welcomeMessage }]
+  input.value = ''
+  error.value = ''
+  cancelSelection()
+  await saveConversationHistory() // Borra la memoria en Firestore
+  await scrollToBottom()
+}
+
+const selectAssignmentCandidate = (
+  proposalKey: string,
+  proposalLabel: string,
+  candidate: Record<string, unknown>,
+) => {
+  if (candidate.tieneConflicto || typeof candidate.tecnico !== 'string') return
+  selectedAssignments.value = {
+    ...selectedAssignments.value,
+    [proposalKey]: candidate.tecnico,
+  }
+  selectedAssignmentLabels.value = {
+    ...selectedAssignmentLabels.value,
+    [proposalKey]: proposalLabel,
+  }
+}
+
+const cancelSelection = () => {
+  selectedAssignments.value = {}
+  selectedAssignmentLabels.value = {}
+  reviewSelection.value = []
+  error.value = ''
+}
+
+const removeSelection = (proposalKey: string) => {
+  const newAssignments = { ...selectedAssignments.value }
+  delete newAssignments[proposalKey]
+  selectedAssignments.value = newAssignments
+
+  const newLabels = { ...selectedAssignmentLabels.value }
+  delete newLabels[proposalKey]
+  selectedAssignmentLabels.value = newLabels
+
+  // Actualizar la lista de revisión activa
+  reviewSelection.value = reviewSelection.value.filter(s => s.key !== proposalKey)
+
+  // Si nos quedamos sin selecciones, limpiamos todo el estado de revisión
+  if (reviewSelection.value.length === 0) {
+    cancelSelection()
+  }
+}
+
+const reviewAssignments = () => {
+  reviewSelection.value = Object.entries(selectedAssignments.value).map(([visitKey, technician]) => ({
+    key: visitKey, // Almacenamos la clave real para poder eliminarla individualmente
+    visit: selectedAssignmentLabels.value[visitKey] || visitKey,
+    technician,
+  }))
+}
+
+const confirmAssignments = async () => {
+  if (reviewSelection.value.length === 0 || isConfirmingAssignments.value) return
+  if (!window.confirm('¿Confirmas las asignaciones seleccionadas? Esta acción modificará las visitas.')) {
+    return
+  }
+
+  isConfirmingAssignments.value = true
+  error.value = ''
+  try {
+    const confirmFn = httpsCallable(functions, 'confirmAssistantAssignments')
+    const result = (await confirmFn({
+      assignments: Object.entries(selectedAssignments.value).map(([visitId, technician]) => ({
+        visitId,
+        technician,
+      })),
+    })) as { data?: { message?: string } }
+    messages.value.push({
+      role: 'assistant',
+      content: result.data?.message || 'Asignaciones confirmadas correctamente. Te recomiendo recargar la agenda para ver los cambios.',
+    })
+    // Limpiamos la selección tras el éxito
+    cancelSelection()
+    await scrollToBottom()
+  } catch (err) {
+    console.error('Error confirmando asignaciones del asistente:', err)
+    const errorMessage = err instanceof Error ? err.message : 'No fue posible confirmar las asignaciones.'
+    error.value = errorMessage
+
+    // Si el error parece de concurrencia o estado inválido, forzamos la limpieza para evitar bloqueos
+    if (/ya tiene|no está activa|no existe|cruce horario/i.test(errorMessage)) {
+      messages.value.push({
+        role: 'assistant',
+        content: `⚠️ La asignación falló porque los datos cambiaron en el servidor: ${errorMessage}. Por favor, vuelve a consultar las visitas sin asignar.`
+      })
+      cancelSelection()
+      await scrollToBottom()
+    }
+  } finally {
+    isConfirmingAssignments.value = false
+  }
+}
+
+const getOperationalContext = async (question: string) => {
+  const asksUnassigned = isUnassignedVisitsQuestion(question)
+  const asksWorkload = isTechnicianWorkloadQuestion(question)
+  const asksAssignmentProposal = isAssignmentProposalQuestion(question)
+  const asksConflict = /conflict|cruce|solapamiento|choque/i.test(question)
+  const asksPlanning =
+    asksUnassigned ||
+    asksWorkload ||
+    asksAssignmentProposal ||
+    asksConflict ||
+    /agenda|hoy|mañana|manana|esta semana|próxima semana|proxima semana|este mes|\d{1,2}\s+de\s+/i.test(
+      question,
+    )
+  const asksEntity = /cliente|técnic|tecnico|servicio|sucursal|rendimiento|desempeño/i.test(question)
+
+  loadingStatus.value = asksPlanning
+    ? 'Consultando agenda autorizada...'
+    : asksEntity
+      ? 'Consultando entidad autorizada...'
+      : 'Consultando indicadores autorizados...'
+
+  const entityContext = asksEntity ? await getAgentEntityContext(question) : null
+  const hasExplicitDateRange =
+    /hoy|mañana|manana|pasado mañana|pasado manana|esta semana|próxima semana|proxima semana|este mes|\d{1,2}\s+de\s+/i.test(
+      question,
+    )
+  const planningContext = asksPlanning
+    ? await getPlanningContext(
+      asksAssignmentProposal && !hasExplicitDateRange ? `${question} este mes` : question,
+    )
+    : null
+  const conflictContext = asksConflict
+    ? await getPlanningConflictContext(question, planningContext)
+    : null
+  const planningVisits = (planningContext?.visitas || []) as AgentVisit[]
+
+  if (asksUnassigned || asksWorkload) {
+    let visits = planningVisits
+    if (visits.length === 0) {
+      await dashboardStore.fetchDashboardData()
+      visits = [...dashboardStore.todaysAgenda, ...dashboardStore.pendingVisits] as AgentVisit[]
+    }
+    return {
+      entidadConsultada: null,
+      agendaConsultada: planningContext,
+      conflictosAgenda: conflictContext,
+      visitasSinTecnico: asksUnassigned ? getUnassignedVisitsContext(visits) : null,
+      cargaTecnicos: asksWorkload ? getTechnicianWorkloadContext(visits) : null,
+      propuestaAsignacion: asksAssignmentProposal
+        ? getAssignmentProposalContext(visits, planningContext?.técnicos || [])
+        : null,
+    }
+  }
+
+  if (entityContext || planningContext || conflictContext) {
+    return {
+      entidadConsultada: entityContext,
+      agendaConsultada: planningContext,
+      conflictosAgenda: conflictContext,
+      visitasSinTecnico: null,
+      cargaTecnicos: null,
+      propuestaAsignacion: null,
+    }
+  }
+
+  loadingStatus.value = 'Consultando indicadores autorizados...'
+  await dashboardStore.fetchDashboardData()
+  if (!dashboardStore.kpis) {
+    throw new Error(dashboardStore.error || 'No se pudieron cargar los indicadores operativos.')
+  }
+
+  const summarizeVisit = (visit: (typeof dashboardStore.todaysAgenda)[number]) => ({
+    id: visit.id,
+    cliente: visit.nombre_cliente,
+    tipo: visit.tipo_visita,
+    fecha: visit.fecha_visita,
+    estado: visit.estado_visita || 'Programada',
+    tecnicos: visit.fumigadores_asignados || [],
+    zona: visit.zona,
+  })
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+  const isFutureVisit = (visit: (typeof dashboardStore.pendingVisits)[number]) => {
+    const date = new Date(visit.fecha_visita)
+    return !Number.isNaN(date.getTime()) && date >= today
+  }
+  const futurePendingVisits = dashboardStore.pendingVisits.filter(isFutureVisit)
+  const overduePendingVisits = dashboardStore.pendingVisits.filter((visit) => !isFutureVisit(visit))
+
+  return {
+    fechaConsulta: new Date().toISOString().slice(0, 10),
+    alcance: {
+      rol: authStore.userRole || 'Sin rol',
+      zona: authStore.userZone || 'Sin zona',
+    },
+    indicadores: {
+      sucursales: dashboardStore.kpis.totalBranches,
+      serviciosActivos: dashboardStore.kpis.activeServices,
+      visitasDelMes: dashboardStore.kpis.visitsThisMonth,
+      porcentajeCumplimientoDelMes: dashboardStore.kpis.completionRateThisMonth,
+      ingresosDelMes: dashboardStore.kpis.revenueThisMonth,
+    },
+    agendaDeHoy: {
+      total: dashboardStore.todaysAgenda.length,
+      registros: dashboardStore.todaysAgenda.slice(0, 30).map(summarizeVisit),
+    },
+    visitasPendientes: {
+      total: dashboardStore.pendingVisits.length,
+      registros: dashboardStore.pendingVisits.slice(0, 30).map(summarizeVisit),
+    },
+    visitasPendientesFuturas: {
+      total: futurePendingVisits.length,
+      registros: futurePendingVisits.slice(0, 30).map(summarizeVisit),
+    },
+    visitasVencidas: {
+      total: overduePendingVisits.length,
+      registros: overduePendingVisits.slice(0, 30).map(summarizeVisit),
+    },
+    entidadConsultada: entityContext,
+    agendaConsultada: planningContext,
+    conflictosAgenda: conflictContext,
+    visitasSinTecnico: null,
+    cargaTecnicos: null,
+    propuestaAsignacion: null,
+    nota: 'Estos datos fueron obtenidos por la aplicación usando los permisos del usuario actual. El total de visitas pendientes pertenece al conjunto devuelto por el dashboard y no debe interpretarse automáticamente como un total mensual.',
+  }
+
+}
+
+const formatUnassignedVisits = (operationalContext: unknown): ChatMessage => {
+  const context = operationalContext as {
+    total?: number
+    limitado?: boolean
+    visitas?: Array<Record<string, string | undefined>>
+  }
+  return {
+    role: 'assistant',
+    content: context.total
+      ? `Encontré ${context.total} visita${context.total === 1 ? '' : 's'} activa${context.total === 1 ? '' : 's'} sin técnico asignado.`
+      : 'No encontré visitas activas sin técnico asignado en el conjunto consultado.',
+    structured: {
+      type: 'unassigned',
+      sections: [
+        {
+          title: context.limitado ? 'Primeras 30 visitas' : 'Visitas',
+          items: context.visitas || [],
+        },
+      ],
+    },
+  }
+}
+
+const formatWorkload = (operationalContext: unknown): ChatMessage => {
+  const context = operationalContext as {
+    promedio?: number
+    sobrecargados?: Array<Record<string, unknown>>
+    técnicos?: Array<Record<string, unknown>>
+  }
+  return {
+    role: 'assistant',
+    content: context.sobrecargados?.length
+      ? `Detecté ${context.sobrecargados.length} técnico${context.sobrecargados.length === 1 ? '' : 's'} con carga alta.`
+      : 'No detecté técnicos con carga alta en el conjunto consultado.',
+    structured: {
+      type: 'workload',
+      kpis: [{ label: 'Promedio de visitas activas', value: context.promedio ?? 0 }],
+      sections: [
+        {
+          title: 'Técnicos con carga alta',
+          items: context.sobrecargados || [],
+        },
+        {
+          title: 'Carga por técnico',
+          items: context.técnicos || [],
+        },
+      ],
+    },
+  }
+}
+
+const formatAssignmentProposal = (operationalContext: unknown): ChatMessage => {
+  const context = operationalContext as {
+    totalVisitas?: number
+    propuestas?: Array<{
+      visita?: Record<string, unknown>
+      candidatos?: Array<Record<string, unknown>>
+      advertencia?: string
+    }>
+  }
+
+  return {
+    role: 'assistant',
+    content: context.totalVisitas
+      ? `Preparé propuestas para ${context.totalVisitas} visita${context.totalVisitas === 1 ? '' : 's'} sin técnico. No se ha ejecutado ninguna asignación.`
+      : 'No encontré visitas sin técnico para proponer asignaciones.',
+    structured: {
+      type: 'proposal',
+      sections: (context.propuestas || []).map((proposal, index) => ({
+        title: `${proposal.visita?.cliente || 'Cliente sin dato'} · ${proposal.visita?.fecha || 'Fecha sin dato'}`,
+        key: String(proposal.visita?.id || `proposal-${index}`),
+        items: proposal.candidatos?.length
+          ? proposal.candidatos
+          : [{ advertencia: proposal.advertencia || 'Sin candidatos disponibles.' }],
+      })),
+    },
+  }
+}
+
+const formatCandidateConflicts = (value: unknown) => {
+  if (!Array.isArray(value)) return ''
+  return value
+    .map((conflict) => {
+      if (!conflict || typeof conflict !== 'object') return ''
+      const item = conflict as { cliente?: string; fecha?: string }
+      return `${item.cliente || 'Cliente sin dato'} · ${item.fecha || 'Fecha sin dato'}`
+    })
+    .filter(Boolean)
+    .join('; ')
+}
+
+const formatServicesByBranch = (entityContext: unknown) => {
+  const context = entityContext as {
+    cliente?: { nombre?: string }
+    serviciosPorSucursal?: Record<string, Array<{ tipo?: string; frecuencia?: string; estado?: string }>>
+  }
+  const groups = context.serviciosPorSucursal || {}
+  const branches = Object.entries(groups)
+
+  if (branches.length === 0) {
+    return {
+      role: 'assistant' as const,
+      content: `No encontré servicios contratados con una sucursal asociada para ${context.cliente?.nombre || 'este cliente'}.`,
+    }
+  }
+
+  return {
+    role: 'assistant' as const,
+    content: `Servicios contratados de ${context.cliente?.nombre || 'este cliente'} por sucursal:`,
+    structured: {
+      type: 'services' as const,
+      subject: context.cliente?.nombre || 'este cliente',
+      branches: Object.fromEntries(branches),
+    },
+  }
+}
+
+const formatDashboard = (operationalContext: unknown, question: string): ChatMessage => {
+  const context = operationalContext as {
+    indicadores?: Record<string, string | number>
+    visitasPendientes?: { total?: number }
+  }
+  const indicators = context.indicadores || {}
+  const availableKpis = [
+    { key: 'clientes', label: 'Clientes', value: indicators.clientes ?? 'Sin dato', match: /clientes?/i },
+    { key: 'sucursales', label: 'Sucursales', value: indicators.sucursales ?? 'Sin dato', match: /sucursales?/i },
+    { key: 'serviciosActivos', label: 'Servicios activos', value: indicators.serviciosActivos ?? 'Sin dato', match: /servicios? activos?/i },
+    { key: 'visitasDelMes', label: 'Visitas del mes', value: indicators.visitasDelMes ?? 'Sin dato', match: /visitas? del mes/i },
+    { key: 'visitasPendientes', label: 'Visitas pendientes', value: context.visitasPendientes?.total ?? 'Sin dato', match: /visitas? pendientes?/i },
+    { key: 'cumplimiento', label: 'Cumplimiento del mes', value: `${indicators.porcentajeCumplimientoDelMes ?? 'Sin dato'}%`, match: /cumplimiento/i },
+    { key: 'ingresos', label: 'Ingresos del mes', value: indicators.ingresosDelMes ?? 'Sin dato', match: /ingresos?|facturación|facturacion/i },
+  ]
+  const requested = availableKpis.filter((kpi) => kpi.match.test(question))
+  const kpis = (requested.length > 0 ? requested : availableKpis).map((kpi) => ({
+    label: kpi.label,
+    value: kpi.value,
+  }))
+
+  return {
+    role: 'assistant',
+    content: requested.length === 1 ? requested[0]!.label : 'Indicadores operativos actualizados',
+    structured: { type: 'dashboard', kpis },
+  }
+}
+
+const formatVisits = (entityContext: unknown): ChatMessage => {
+  const context = entityContext as {
+    tipo?: string
+    cliente?: { nombre?: string }
+    técnico?: { nombre?: string }
+    indicadores?: { assigned?: number; completed?: number; rate?: number }
+    visitasFuturas?: Array<Record<string, unknown>>
+    visitasVencidas?: Array<Record<string, unknown>>
+    historialPasado?: Array<Record<string, unknown>>
+  }
+  const subject = context.cliente?.nombre || context.técnico?.nombre || 'la entidad consultada'
+  const future = context.visitasFuturas || []
+  const overdue = context.visitasVencidas || []
+  const history = context.historialPasado || []
+  const formatDate = (value: unknown) => {
+    const date = new Date(String(value || ''))
+    if (Number.isNaN(date.getTime())) return 'Fecha sin dato'
+    return new Intl.DateTimeFormat('es-CO', {
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    }).format(date)
+  }
+
+  return {
+    role: 'assistant',
+    content: `Visitas de ${subject}`,
+    structured: {
+      type: 'visits',
+      subject,
+      metrics: context.indicadores
+        ? [
+          { label: 'Asignadas', value: context.indicadores.assigned ?? 'Sin dato' },
+          { label: 'Realizadas', value: context.indicadores.completed ?? 'Sin dato' },
+          { label: 'Cumplimiento', value: `${context.indicadores.rate ?? 'Sin dato'}%` },
+        ]
+        : undefined,
+      sections: [
+        { title: 'Próximas visitas', items: future },
+        { title: 'Pendientes vencidas', items: overdue },
+        { title: 'Historial realizado', items: history },
+      ].map((section) => ({
+        ...section,
+        items: section.items.map((visit) => ({
+          ...visit,
+          fechaLegible: formatDate(visit.fecha),
+        })),
+      })),
+    },
+  }
+}
+
+const formatPlanning = (planningContext: unknown): ChatMessage => {
+  const context = planningContext as { visitas?: Array<Record<string, unknown>> }
+  const visits = context.visitas || []
+  const formatDate = (value: unknown) => {
+    const date = new Date(String(value || ''))
+    if (Number.isNaN(date.getTime())) return 'Fecha sin dato'
+    return new Intl.DateTimeFormat('es-CO', {
+      day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit',
+    }).format(date)
+  }
+
+  return {
+    role: 'assistant',
+    content: 'Agenda consultada',
+    structured: {
+      type: 'visits',
+      subject: 'la agenda solicitada',
+      sections: [{
+        title: 'Visitas encontradas',
+        items: visits.map((visit) => ({
+          ...visit,
+          fechaLegible: formatDate(visit.fecha_visita),
+          tipo: visit.tipo_visita,
+          cliente: visit.nombre_cliente,
+          sucursal: visit.sucursal || visit.nombre_sucursal || 'Sucursal sin dato',
+          estado: visit.estado_visita || 'Sin estado',
+        })),
+      }],
+    },
+  }
+}
+
+const formatConflicts = (conflictContext: unknown): ChatMessage => {
+  const context = conflictContext as { conflictos?: Array<Record<string, unknown>> }
+  const conflicts = context.conflictos || []
+  const cards = conflicts.map((conflict) => {
+    const first = (conflict.primera || {}) as Record<string, unknown>
+    const second = (conflict.segunda || {}) as Record<string, unknown>
+    return {
+      técnicos: Array.isArray(conflict.técnicos) ? conflict.técnicos.join(', ') : 'Sin técnico',
+      primera: `${first.nombre_cliente || 'Cliente sin dato'} · ${first.fecha_visita || 'Fecha sin dato'}`,
+      segunda: `${second.nombre_cliente || 'Cliente sin dato'} · ${second.fecha_visita || 'Fecha sin dato'}`,
+    }
+  })
+  return {
+    role: 'assistant',
+    content: cards.length ? 'Conflictos de agenda detectados' : 'No se detectaron conflictos de agenda',
+    structured: { type: 'conflicts', conflicts: cards },
+  }
+}
+
+const sendMessage = async () => {
+  const content = input.value.trim()
+  if (!content || isLoading.value) return
+
+  error.value = ''
+  input.value = ''
+  const conversationHistory = getRecentConversation()
+  const routingQuestion = getRoutingQuestion(content)
+  messages.value.push({ role: 'user', content })
+  await saveConversationHistory()
+  await scrollToBottom()
+  isLoading.value = true
+  loadingStatus.value = 'Ollama está preparando la respuesta...'
+  let timeoutId: number | undefined
+
+  try {
+    const operationalContext = await getOperationalContext(routingQuestion)
+    const entityContext = operationalContext.entidadConsultada as
+      | { tipo?: string; cliente?: { nombre?: string }; serviciosPorSucursal?: Record<string, Array<{ tipo?: string; frecuencia?: string; estado?: string }>> }
+      | null
+
+    if (operationalContext.propuestaAsignacion) {
+      messages.value.push(formatAssignmentProposal(operationalContext.propuestaAsignacion))
+      return
+    }
+
+    if (operationalContext.visitasSinTecnico) {
+      messages.value.push(formatUnassignedVisits(operationalContext.visitasSinTecnico))
+      return
+    }
+
+    if (operationalContext.cargaTecnicos) {
+      messages.value.push(formatWorkload(operationalContext.cargaTecnicos))
+      return
+    }
+
+    if (entityContext?.tipo === 'servicios por sucursal') {
+      const serviceAnswer = formatServicesByBranch(entityContext)
+      messages.value.push(serviceAnswer)
+      return
+    }
+
+    if (entityContext?.tipo === 'visitas de cliente' || entityContext?.tipo === 'visitas de técnico') {
+      messages.value.push(formatVisits(entityContext))
+      return
+    }
+
+    if (operationalContext.conflictosAgenda) {
+      messages.value.push(formatConflicts(operationalContext.conflictosAgenda))
+      return
+    }
+
+    if (operationalContext.agendaConsultada) {
+      messages.value.push(formatPlanning(operationalContext.agendaConsultada))
+      return
+    }
+
+    if (/cuántos clientes|cuántas visitas|cumplimiento|ingresos|indicadores|dashboard|servicios activos|visitas pendientes/i.test(routingQuestion)) {
+      messages.value.push(formatDashboard(operationalContext, routingQuestion))
+      return
+    }
+
+    const context = `Contexto operativo autorizado de SISFUMI:\n${JSON.stringify(operationalContext)}\n\nReglas de interpretación: si existe serviciosPorSucursal, responde agrupando cada servicio bajo su sucursal y no enumeres fechas ni menciones agenda o historial. Usa serviciosContratados solo para describir servicios contratados. Usa visitasFuturas para preguntas sobre próximas visitas. Usa historialPasado solo para visitas anteriores. Nunca presentes una fecha de historial como pendiente, futura o programada. Usa visitasDelMes únicamente para el indicador mensual, agendaDeHoy para la fecha actual y visitasPendientesFuturas para pendientes futuros.`
+    const apiMessages: OllamaMessage[] = [
+      {
+        role: 'system',
+        content:
+          'Eres el asistente interno de SISFUMI. Usa la conversación reciente para entender preguntas de seguimiento. Responde únicamente con el contexto operativo entregado y no inventes datos. Este asistente es de solo lectura.',
+      },
+      ...conversationHistory,
+      {
+        role: 'user' as const,
+        content: `${context}\n\nPregunta del usuario:\n${content}`,
+      },
+    ]
+    loadingStatus.value = 'Ollama está generando la respuesta...'
+    const controller = new AbortController()
+    timeoutId = window.setTimeout(() => controller.abort(), 300000)
+    const response = await fetch(`${ollamaBaseUrl}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: controller.signal,
+      body: JSON.stringify({
+        model: ollamaModel,
+        stream: false,
+        keep_alive: '10m',
+        options: { temperature: 0.2, num_predict: 192 },
+        messages: apiMessages,
+      }),
+    })
+
+    if (!response.ok) {
+      throw new Error(`Ollama respondió con HTTP ${response.status}.`)
+    }
+
+    loadingStatus.value = 'Ollama está escribiendo...'
+    const data = (await response.json()) as OllamaResponse
+    const answer = data.message?.content?.trim()
+    if (!answer) throw new Error('Ollama no devolvió una respuesta.')
+
+    messages.value.push({ role: 'assistant', content: answer })
+
+  } catch (requestError) {
+    console.error('Error conectando con Ollama:', requestError)
+    error.value = requestError instanceof DOMException && requestError.name === 'AbortError'
+      ? `Ollama tardó más de 5 minutos en responder. Verifica el modelo ${ollamaModel} o reduce el volumen de datos de la consulta.`
+      : `No se pudo conectar con el asistente local (${ollamaBaseUrl}). Verifica que Ollama esté ejecutándose con el modelo ${ollamaModel}.`
+  } finally {
+    if (timeoutId !== undefined) window.clearTimeout(timeoutId)
+    isLoading.value = false
+    await scrollToBottom()
+  }
+}
+</script>
+
+<template>
+  <aside
+    class="fixed right-4 bottom-20 z-[60] flex h-[min(680px,calc(100vh-7rem))] w-[min(420px,calc(100vw-2rem))] flex-col overflow-hidden rounded-xl border border-white/10 bg-[#151515] shadow-2xl"
+    aria-label="Asistente SISFUMI">
+    <header class="flex items-center justify-between border-b border-white/10 px-4 py-3">
+      <div>
+        <p class="font-semibold text-white">Asistente SISFUMI</p>
+        <p class="text-xs text-gray-400">Modelo local · solo lectura</p>
+      </div>
+      <div class="flex items-center gap-1">
+        <button type="button"
+          class="rounded p-2 text-gray-400 transition hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+          title="Nueva conversación" aria-label="Iniciar nueva conversación" :disabled="isLoading"
+          @click="startNewConversation">
+          <i class="fas fa-rotate-right"></i>
+        </button>
+        <button type="button" class="rounded p-2 text-gray-400 transition hover:bg-white/10 hover:text-white"
+          title="Cerrar asistente" aria-label="Cerrar asistente" @click="emit('close')">
+          <i class="fas fa-times"></i>
+        </button>
+      </div>
+    </header>
+
+    <div ref="messagesContainer" class="flex-1 space-y-3 overflow-y-auto p-4">
+      <div v-for="(message, index) in messages" :key="`${message.role}-${index}`"
+        class="max-w-[90%] rounded-lg px-3 py-2 text-sm whitespace-pre-wrap"
+        :class="message.role === 'user' ? 'ml-auto bg-red-700 text-white' : 'bg-white/10 text-gray-200'">
+        <template v-if="message.structured?.type === 'visits'">
+          <p class="mb-3 font-semibold text-white">Visitas de {{ message.structured.subject }}</p>
+          <div v-if="message.structured.metrics" class="mb-3 grid grid-cols-3 gap-2">
+            <article v-for="metric in message.structured.metrics" :key="metric.label"
+              class="rounded-md border border-white/10 bg-black/20 p-2">
+              <p class="text-[10px] uppercase tracking-wide text-gray-500">{{ metric.label }}</p>
+              <p class="mt-1 text-sm font-semibold text-white">{{ metric.value }}</p>
+            </article>
+          </div>
+          <section v-for="section in message.structured.sections" :key="section.title" class="mb-3 last:mb-0">
+            <h4 class="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-400">
+              {{ section.title }}
+            </h4>
+            <p v-if="section.items.length === 0" class="text-xs text-gray-500">
+              No hay registros.
+            </p>
+            <article v-for="(visit, visitIndex) in section.items" :key="`${section.title}-${visitIndex}`"
+              class="mb-2 rounded-md border border-white/10 bg-black/20 p-2 last:mb-0">
+              <div class="flex items-start justify-between gap-2">
+                <p class="font-medium text-gray-100">{{ visit.tipo || 'Tipo sin dato' }}</p>
+                <span class="shrink-0 rounded-full bg-yellow-500/15 px-2 py-0.5 text-[10px] text-yellow-300">
+                  {{ visit.estado || 'Sin estado' }}
+                </span>
+              </div>
+              <p class="mt-1 text-xs text-gray-300">{{ visit.fechaLegible }}</p>
+              <p class="mt-1 text-xs text-gray-400">
+                Cliente: {{ visit.cliente || 'Cliente sin dato' }}
+              </p>
+              <p class="text-xs text-gray-400">
+                Sucursal: {{ visit.sucursal || 'Sucursal sin dato' }}
+              </p>
+              <p v-if="visit.zona" class="text-xs text-gray-500">{{ visit.zona }}</p>
+            </article>
+          </section>
+        </template>
+        <template v-else-if="message.structured?.type === 'services'">
+          <p class="mb-3 font-semibold text-white">
+            Servicios de {{ message.structured.subject }}
+          </p>
+          <section v-for="(services, branch) in message.structured.branches" :key="branch" class="mb-3 last:mb-0">
+            <h4 class="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-400">
+              {{ branch }}
+            </h4>
+            <article v-for="(service, serviceIndex) in services" :key="`${branch}-${serviceIndex}`"
+              class="mb-2 rounded-md border border-white/10 bg-black/20 p-2 last:mb-0">
+              <p class="font-medium text-gray-100">{{ service.tipo || 'Servicio sin dato' }}</p>
+              <p class="mt-1 text-xs text-gray-400">
+                {{ service.frecuencia || 'Frecuencia sin dato' }} ·
+                {{ service.estado || 'Estado sin dato' }}
+              </p>
+            </article>
+          </section>
+        </template>
+        <template v-else-if="message.structured?.type === 'dashboard'">
+          <p class="mb-3 font-semibold text-white">Indicadores operativos</p>
+          <div class="grid grid-cols-2 gap-2">
+            <article v-for="kpi in message.structured.kpis" :key="kpi.label"
+              class="rounded-md border border-white/10 bg-black/20 p-2">
+              <p class="text-[10px] uppercase tracking-wide text-gray-500">{{ kpi.label }}</p>
+              <p class="mt-1 text-base font-semibold text-white">{{ kpi.value }}</p>
+            </article>
+          </div>
+        </template>
+        <template v-else-if="message.structured?.type === 'conflicts'">
+          <p class="mb-3 font-semibold text-white">Conflictos de agenda</p>
+          <p v-if="message.structured.conflicts?.length === 0" class="text-sm text-gray-400">
+            No se detectaron conflictos en el rango consultado.
+          </p>
+          <article v-for="(conflict, conflictIndex) in message.structured.conflicts" :key="`conflict-${conflictIndex}`"
+            class="mb-2 rounded-md border border-red-500/30 bg-red-950/20 p-3 last:mb-0">
+            <p class="font-medium text-red-200">
+              Técnico: {{ conflict.técnicos }}
+            </p>
+            <p class="mt-2 text-xs text-gray-300">{{ conflict.primera }}</p>
+            <p class="text-xs text-gray-400">{{ conflict.segunda }}</p>
+          </article>
+        </template>
+        <template v-else-if="message.structured?.type === 'unassigned'">
+          <p class="mb-3 font-semibold text-white">Visitas sin técnico asignado</p>
+          <section v-for="section in message.structured.sections" :key="section.title" class="mb-3 last:mb-0">
+            <h4 class="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-400">
+              {{ section.title }}
+            </h4>
+            <p v-if="section.items.length === 0" class="text-xs text-gray-500">
+              No hay registros.
+            </p>
+            <article v-for="(visit, visitIndex) in section.items" :key="`unassigned-${visitIndex}`"
+              class="mb-2 rounded-md border border-yellow-500/20 bg-black/20 p-2 last:mb-0">
+              <p class="font-medium text-gray-100">{{ visit.cliente || 'Cliente sin dato' }}</p>
+              <p class="mt-1 text-xs text-gray-300">{{ visit.fecha || 'Fecha sin dato' }}</p>
+              <p class="text-xs text-gray-400">
+                {{ visit.tipo || 'Tipo sin dato' }} · {{ visit.sucursal || 'Sucursal sin dato' }}
+              </p>
+              <p class="text-xs text-gray-500">
+                {{ visit.zona || 'Zona sin dato' }} · {{ visit.estado || 'Sin estado' }}
+              </p>
+            </article>
+          </section>
+        </template>
+        <template v-else-if="message.structured?.type === 'workload'">
+          <p class="mb-3 font-semibold text-white">Carga operativa de técnicos</p>
+          <div class="mb-3 grid grid-cols-2 gap-2">
+            <article v-for="kpi in message.structured.kpis" :key="kpi.label"
+              class="rounded-md border border-white/10 bg-black/20 p-2">
+              <p class="text-[10px] uppercase tracking-wide text-gray-500">{{ kpi.label }}</p>
+              <p class="mt-1 text-base font-semibold text-white">{{ kpi.value }}</p>
+            </article>
+          </div>
+          <section v-for="section in message.structured.sections" :key="section.title" class="mb-3 last:mb-0">
+            <h4 class="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-400">
+              {{ section.title }}
+            </h4>
+            <p v-if="section.items.length === 0" class="text-xs text-gray-500">
+              No hay registros.
+            </p>
+            <article v-for="(technician, technicianIndex) in section.items"
+              :key="`workload-${section.title}-${technicianIndex}`"
+              class="mb-2 rounded-md border border-white/10 bg-black/20 p-2 last:mb-0">
+              <p class="font-medium text-gray-100">
+                {{ technician.tecnico || 'Técnico sin dato' }}
+              </p>
+              <p class="mt-1 text-xs text-gray-400">
+                {{ technician.total || 0 }} visita(s) activa(s)
+              </p>
+            </article>
+          </section>
+        </template>
+        <template v-else-if="message.structured?.type === 'proposal'">
+          <p class="mb-3 font-semibold text-white">Propuestas de asignación</p>
+          <p class="mb-3 text-xs text-yellow-200">
+            Selecciona un técnico disponible por visita. La selección todavía no modifica ninguna visita.
+          </p>
+
+          <div v-if="Object.keys(selectedAssignments).length"
+            class="mb-3 rounded-md border border-blue-400/30 bg-blue-400/10 p-3">
+            <p class="text-xs font-semibold text-blue-200">
+              {{ Object.keys(selectedAssignments).length }} selección(es) preparada(s)
+            </p>
+            <div class="mt-2 flex gap-2">
+              <button type="button"
+                class="rounded bg-blue-500 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-blue-400"
+                @click="reviewAssignments">
+                Revisar selección
+              </button>
+              <button type="button"
+                class="rounded border border-blue-500/50 bg-transparent px-3 py-1.5 text-xs font-semibold text-blue-300 transition hover:bg-blue-500/20"
+                @click="cancelSelection">
+                Cancelar
+              </button>
+            </div>
+          </div>
+
+          <div v-if="reviewSelection.length" class="mb-3 rounded-md border border-yellow-400/30 bg-yellow-400/10 p-3">
+            <p class="text-xs font-semibold text-yellow-100">Revisión antes de confirmar</p>
+            <ul class="mt-2 space-y-1 text-xs text-yellow-100">
+              <li v-for="selection in reviewSelection" :key="selection.key"
+                class="flex justify-between items-center group rounded px-1 hover:bg-yellow-400/10 transition-colors">
+                <span>
+                  <i class="fas fa-arrow-right text-[10px] mr-1 opacity-70"></i>
+                  {{ selection.visit }} → <span class="font-bold">{{ selection.technician }}</span>
+                </span>
+                <button type="button" @click="removeSelection(selection.key)"
+                  class="text-red-400 opacity-50 hover:opacity-100 hover:text-red-300 transition-opacity p-1"
+                  title="Quitar esta asignación">
+                  <i class="fas fa-times"></i>
+                </button>
+              </li>
+            </ul>
+            <p class="mt-2 text-xs text-yellow-200">
+              Revisa cuidadosamente la selección. La confirmación validará nuevamente permisos, estado y cruces horarios
+              en el backend.
+            </p>
+            <div class="mt-3 flex gap-2">
+              <button type="button"
+                class="rounded bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-50"
+                :disabled="isConfirmingAssignments" @click="confirmAssignments">
+                {{ isConfirmingAssignments ? 'Confirmando...' : 'Confirmar asignaciones' }}
+              </button>
+              <button type="button"
+                class="rounded border border-yellow-500/50 bg-transparent px-3 py-1.5 text-xs font-semibold text-yellow-300 transition hover:bg-yellow-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+                :disabled="isConfirmingAssignments" @click="cancelSelection">
+                Descartar
+              </button>
+            </div>
+          </div>
+
+          <section v-for="section in message.structured.sections" :key="section.title" class="mb-3 last:mb-0">
+            <h4 class="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-400">
+              {{ section.title }}
+            </h4>
+            <article v-for="(candidate, candidateIndex) in section.items"
+              :key="`proposal-${section.title}-${candidateIndex}`"
+              class="mb-2 rounded-md border border-white/10 bg-black/20 p-2 last:mb-0">
+              <template v-if="candidate.tecnico">
+                <p class="font-medium text-gray-100">{{ candidate.tecnico }}</p>
+                <p class="mt-1 text-xs text-gray-400">
+                  Zona: {{ candidate.zona || 'Sin zona' }} ·
+                  {{ candidate.visitasActivas || 0 }} visita(s) activa(s)
+                </p>
+                <p class="mt-1 text-xs" :class="candidate.tieneConflicto ? 'text-red-300' : 'text-emerald-300'">
+                  {{ candidate.tieneConflicto ? 'Tiene cruce horario' : 'Sin cruce horario detectado' }}
+                </p>
+                <p v-if="candidate.tieneConflicto && formatCandidateConflicts(candidate.conflictos)"
+                  class="mt-1 text-xs text-red-200">
+                  {{ formatCandidateConflicts(candidate.conflictos) }}
+                </p>
+                <button type="button" class="mt-2 rounded px-2 py-1 text-xs font-semibold transition" :class="selectedAssignments[section.key || section.title] === candidate.tecnico
+                  ? 'bg-emerald-500 text-white'
+                  : candidate.tieneConflicto
+                    ? 'cursor-not-allowed bg-gray-700 text-gray-400'
+                    : 'bg-white/10 text-gray-200 hover:bg-white/20'
+                  " :disabled="Boolean(candidate.tieneConflicto)"
+                  @click="selectAssignmentCandidate(section.key || section.title, section.title, candidate)">
+                  {{
+                    selectedAssignments[section.key || section.title] === candidate.tecnico
+                      ? 'Técnico seleccionado'
+                      : candidate.tieneConflicto
+                        ? 'No disponible por cruce'
+                        : 'Elegir este técnico'
+                  }}
+                </button>
+              </template>
+              <p v-else class="text-xs text-yellow-200">
+                {{ candidate.advertencia || 'Sin candidatos disponibles.' }}
+              </p>
+            </article>
+          </section>
+        </template>
+        <template v-else>{{ message.content }}</template>
+      </div>
+      <div v-if="isLoading"
+        class="flex max-w-[90%] items-center gap-2 rounded-lg bg-white/10 px-3 py-2 text-sm text-gray-400"
+        aria-live="polite">
+        <span class="typing-dots" aria-hidden="true">
+          <span class="typing-dot"></span>
+          <span class="typing-dot"></span>
+          <span class="typing-dot"></span>
+        </span>
+        <span>{{ loadingStatus }}</span>
+      </div>
+    </div>
+
+    <p v-if="error" class="border-t border-red-500/30 bg-red-950/40 px-4 py-2 text-xs text-red-200">
+      {{ error }}
+    </p>
+
+    <form class="border-t border-white/10 p-3" @submit.prevent="sendMessage">
+      <div class="flex items-end gap-2">
+        <textarea v-model="input" rows="2"
+          class="min-w-0 flex-1 resize-none rounded-lg border border-white/10 bg-black/20 px-3 py-2 text-sm text-white outline-none placeholder:text-gray-500 focus:border-red-500"
+          placeholder="Escribe una pregunta..." :disabled="isLoading"
+          @keydown.enter.exact.prevent="sendMessage"></textarea>
+        <button type="submit"
+          class="rounded-lg bg-red-700 p-3 text-white transition hover:bg-red-600 disabled:cursor-not-allowed disabled:opacity-50"
+          title="Enviar pregunta" aria-label="Enviar pregunta" :disabled="!canSend">
+          <i class="fas fa-paper-plane"></i>
+        </button>
+      </div>
+    </form>
+  </aside>
+</template>
+
+<style scoped>
+.typing-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 22px;
+}
+
+.typing-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: currentColor;
+  animation: typing-bounce 1.2s infinite ease-in-out;
+}
+
+.typing-dot:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.typing-dot:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+@keyframes typing-bounce {
+
+  0%,
+  60%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.45;
+  }
+
+  30% {
+    transform: translateY(-3px);
+    opacity: 1;
+  }
+}
+</style>
 </file>
 
 <file path="src/components/Sidebar.vue">
@@ -19812,6 +19935,51 @@ const handleSearch = () => {
 </template>
 </file>
 
+<file path=".gitignore">
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+.DS_Store
+dist
+dist-ssr
+coverage
+*.zip
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+*.tsbuildinfo
+
+.eslintcache
+
+# Cypress
+/cypress/videos/
+/cypress/screenshots/
+
+# Vitest
+__screenshots__/
+functions/googleConfig.js
+functions/.env.*
+!functions/.env.example
+functions/node_modules
+functions/serviceAccountKey.json
+</file>
+
 <file path="src/components/ClientImportExportModal.vue">
 <!-- eslint-disable @typescript-eslint/no-explicit-any -->
 <script setup lang="ts">
@@ -20832,9 +21000,7 @@ export const useServicesStore = defineStore('services', () => {
     const canView =
       authStore.userRole === 'Administrador' ||
       authStore.userRole === 'Jefe' ||
-      authStore.userRole === 'Coordinador Nacional' ||
-      authStore.userRole === 'Administrador' ||
-      authStore.userRole === 'Jefe'
+      authStore.userRole === 'Coordinador Nacional'
 
     if (!canView) return
 
@@ -20868,445 +21034,6 @@ export const useServicesStore = defineStore('services', () => {
     fetchPendingPriceRequests,
   }
 })
-</file>
-
-<file path="src/views/ServicesView.vue">
-<!-- eslint-disable @typescript-eslint/no-explicit-any -->
-<script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
-import { useServicesStore, type Service } from '@/stores/services'
-import { useAuthStore } from '@/stores/auth'
-import { useSettingsStore } from '@/stores/settings'
-import ServiceFormModal from '@/components/ServiceFormModal.vue'
-import { useToast } from '@/composables/useToast'
-import { onClickOutside } from '@vueuse/core'
-
-const servicesStore = useServicesStore()
-const authStore = useAuthStore()
-const settingsStore = useSettingsStore()
-const { showToast } = useToast()
-const searchTerm = ref('')
-const showModal = ref(false)
-const editingService = ref<Service | null>(null)
-const editingServiceIndex = ref(-1)
-const showClientResults = ref(false)
-const searchResultsContainer = ref(null)
-
-const normalizeSearchText = (value: string) =>
-  value
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .toLowerCase()
-    .trim()
-    .replace(/\s+/g, ' ')
-
-// Filtro local de clientes
-const filteredClients = computed(() => {
-  // Si no hay término de búsqueda, mostrar los primeros 10 para no saturar la lista
-  if (!searchTerm.value) {
-    return servicesStore.clientList.slice(0, 10)
-  }
-  const normalizedSearch = normalizeSearchText(searchTerm.value)
-
-  // Permitir coincidencias parciales, sin distinguir mayúsculas ni tildes.
-  return servicesStore.clientList.filter((client) =>
-    normalizeSearchText(client.nombreComercial).includes(normalizedSearch),
-  )
-})
-
-const canApprovePrices = computed(() => {
-  return (
-    authStore.userRole === 'Administrador' ||
-    authStore.userRole === 'Jefe' ||
-    authStore.userRole === 'Coordinador Nacional' ||
-    authStore.userRole === 'Administrador' ||
-    authStore.userRole === 'Jefe'
-  )
-})
-
-onMounted(async () => {
-  // Cargar los datos maestros (tipos de servicio, zonas, etc.) para que el modal los tenga disponibles
-  await settingsStore.fetchBusinessData()
-
-  // Aseguramos cargar la lista completa para el buscador local
-  servicesStore.fetchClients()
-  // Si el usuario tiene permisos, cargamos las solicitudes pendientes
-  if (canApprovePrices.value) {
-    servicesStore.fetchPendingPriceRequests()
-  }
-})
-
-// Cerrar dropdown al hacer click fuera
-onClickOutside(searchResultsContainer, () => {
-  showClientResults.value = false
-})
-
-const handleSelectClient = async (clientId: string) => {
-  await servicesStore.fetchServiceSheet(clientId)
-  // Actualizar el input con el nombre seleccionado
-  const client = servicesStore.clientList.find((c) => c.id === clientId)
-  if (client) {
-    searchTerm.value = client.nombreComercial
-  }
-  showClientResults.value = false
-}
-
-// Al enfocar, mostramos resultados (o los top 10 si está vacío)
-const handleFocus = () => {
-  showClientResults.value = true
-  if (servicesStore.selectedClient && !searchTerm.value) {
-    searchTerm.value = servicesStore.selectedClient.nombreComercial
-  }
-}
-
-const openCreateModal = () => {
-  editingService.value = null
-  editingServiceIndex.value = -1
-  showModal.value = true
-}
-
-const openEditModal = (service: Service, index: number) => {
-  editingService.value = service
-  editingServiceIndex.value = index
-  showModal.value = true
-}
-
-const handlePriceRequest = async (request: any) => {
-  // 1. Seleccionar el cliente
-  await handleSelectClient(request.clientId)
-
-  // 2. Abrir el modal únicamente después de cargar la ficha real.
-  openEditModal(request.service, request.serviceIndex)
-}
-
-const handleSaveService = () => {
-  showModal.value = false
-}
-
-const handleDeleteService = (index: number) => {
-  servicesStore.deleteService(index)
-}
-
-const handleSaveSheet = async () => {
-  try {
-    await servicesStore.saveServiceSheet()
-    showToast({
-      title: 'Éxito',
-      message: 'Ficha de servicio guardada correctamente.',
-      type: 'success',
-    })
-  } catch (error: any) {
-    showToast({
-      title: 'Error',
-      message: `No se pudo guardar la ficha: ${error.message}`,
-      type: 'error',
-    })
-  }
-}
-
-// Función auxiliar para obtener los nombres de las sucursales a partir de sus IDs
-const getBranchNames = (branchIds: string[]) => {
-  if (!branchIds || branchIds.length === 0) return 'Todas'
-  if (!servicesStore.selectedClient || !servicesStore.selectedClient.sucursales) return branchIds.join(', ')
-
-  const branchNames = branchIds.map(id => {
-    const branch = servicesStore.selectedClient!.sucursales.find((b: any) => b.id === id)
-    return branch ? branch.nombre : id // Si no encuentra el nombre, muestra el ID como fallback
-  })
-
-  return branchNames.join(', ')
-}
-
-</script>
-
-<template>
-  <main class="p-4 md:p-8 h-full flex flex-col overflow-hidden bg-[#0a0a0a] text-gray-100">
-    <!-- Header: Flexible -->
-    <header class="mb-6 flex-shrink-0 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-      <div>
-        <h1 class="text-2xl md:text-3xl font-bold text-white">Gestión de Servicios</h1>
-        <p class="text-sm text-gray-400 mt-1">Configura las fichas técnicas por cliente</p>
-      </div>
-
-      <!-- Buscador de Clientes -->
-      <!-- Corrección Z-Index: Bajamos a z-10 para no tapar el menú lateral -->
-      <div class="relative w-full md:w-96 z-10" ref="searchResultsContainer">
-        <div class="relative">
-          <input v-model="searchTerm" @focus="handleFocus" type="text" id="clientSearchInput"
-            class="w-full pl-10 pr-4 py-2.5 bg-[#0a0a0a] border border-white/10 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-[#d60000] focus:border-[#d60000] transition-all shadow-sm"
-            placeholder="Buscar cliente..." autocomplete="off" />
-          <i class="fas fa-search absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"></i>
-
-          <!-- Botón X para limpiar búsqueda -->
-          <button v-if="searchTerm" @click="
-            searchTerm = '',
-            showClientResults = true
-            " class="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-white">
-            <i class="fas fa-times"></i>
-          </button>
-        </div>
-
-        <!-- Dropdown de Resultados -->
-        <!-- Corrección Z-Index: z-20 es suficiente para estar sobre el contenido pero bajo el menú -->
-        <div v-if="showClientResults"
-          class="absolute top-full mt-2 w-full bg-[#151515] border border-white/10 rounded-lg shadow-2xl max-h-60 overflow-y-auto custom-scrollbar z-20">
-          <div v-if="filteredClients.length > 0">
-            <div v-for="client in filteredClients" :key="client.id" @click="handleSelectClient(client.id)"
-              class="px-4 py-3 hover:bg-white/5 cursor-pointer border-b border-white/5 last:border-0 transition-colors">
-              <p class="font-semibold text-white">{{ client.nombreComercial }}</p>
-              <p class="text-xs text-gray-400">{{ client.ciudad || 'Sin ciudad' }}</p>
-            </div>
-          </div>
-
-          <!-- Estado vacío explícito -->
-          <div v-else class="px-4 py-6 text-center text-gray-500">
-            <i class="fas fa-search mb-2 text-xl block opacity-50"></i>
-            <p class="text-sm">No se encontraron clientes.</p>
-          </div>
-        </div>
-      </div>
-    </header>
-
-    <!-- BANDEJA DE SOLICITUDES DE PRECIO (Solo para Admins/Jefes) -->
-    <section v-if="canApprovePrices && servicesStore.pendingPriceRequests.length > 0" class="mb-6">
-      <div class="bg-yellow-900/10 border border-yellow-700/50 rounded-xl shadow-lg">
-        <div class="p-4 border-b border-yellow-700/50 flex items-center gap-3">
-          <i class="fas fa-dollar-sign text-yellow-400 text-xl"></i>
-          <div>
-            <h3 class="font-bold text-white">Solicitudes de Precio Pendientes</h3>
-            <p class="text-xs text-yellow-300/80">
-              Estos servicios requieren que se les asigne un valor.
-            </p>
-          </div>
-        </div>
-        <div class="max-h-48 overflow-y-auto custom-scrollbar p-2">
-          <div v-for="request in servicesStore.pendingPriceRequests"
-            :key="`${request.serviceSheetId}-${request.serviceIndex}`"
-            class="flex justify-between items-center p-2 hover:bg-yellow-900/20 rounded-lg">
-            <div class="min-w-0">
-              <p class="text-sm font-semibold text-white truncate">{{ request.clientName }}</p>
-              <p class="text-xs text-gray-400 truncate">{{ request.service.tipo_servicio }}</p>
-            </div>
-            <button @click="handlePriceRequest(request)"
-              class="btn btn-secondary !py-1 !px-3 text-xs bg-yellow-600 hover:bg-yellow-700 text-white shrink-0 ml-2">
-              Asignar Precio
-            </button>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- Estado: Ningún Cliente Seleccionado -->
-    <div v-if="!servicesStore.selectedClient"
-      class="flex-grow flex flex-col items-center justify-center text-gray-500 opacity-60">
-      <div class="bg-[#151515] p-6 rounded-full mb-4 animate-pulse">
-        <i class="fas fa-hand-pointer text-4xl text-[#d60000]"></i>
-      </div>
-      <p class="text-lg font-medium">Busca y selecciona un cliente para comenzar.</p>
-    </div>
-
-    <!-- Contenedor de la Ficha de Servicio -->
-    <section v-else class="flex-grow flex flex-col overflow-hidden">
-      <!-- Cabecera del Cliente -->
-      <div
-        class="flex-shrink-0 mb-6 bg-[#151515] p-4 rounded-xl border border-white/10 flex flex-col md:flex-row justify-between items-start md:items-center gap-4 shadow-sm">
-        <div class="flex items-center gap-3">
-          <div
-            class="hidden md:flex h-12 w-12 bg-white/5 rounded-lg items-center justify-center text-[#d60000] text-xl">
-            <i class="fas fa-file-contract"></i>
-          </div>
-          <div>
-            <p class="text-xs text-gray-400 uppercase tracking-wider">Cliente Seleccionado</p>
-            <h3 class="text-xl md:text-2xl font-bold text-white">
-              {{ servicesStore.selectedClient.nombreComercial }}
-            </h3>
-          </div>
-        </div>
-        <button @click="openCreateModal"
-          class="btn btn-primary bg-[#d60000] hover:bg-red-700 w-full md:w-auto flex items-center justify-center shadow-lg">
-          <i class="fas fa-plus mr-2"></i>Añadir Servicio
-        </button>
-      </div>
-
-      <!-- Área de Contenido con Scroll -->
-      <div class="flex-grow overflow-y-auto custom-scrollbar pr-2">
-        <!-- Loading State -->
-        <div v-if="servicesStore.loadingSheet" class="h-full flex items-center justify-center">
-          <i class="fas fa-spinner fa-spin text-4xl text-cyan-400"></i>
-        </div>
-
-        <!-- Empty State -->
-        <div v-else-if="!servicesStore.serviceSheet?.services.length"
-          class="h-full flex flex-col items-center justify-center text-gray-500">
-          <i class="fas fa-clipboard-list text-6xl mb-4 opacity-20"></i>
-          <p>No hay servicios configurados para este cliente.</p>
-          <button @click="openCreateModal" class="mt-4 text-[#d60000] hover:text-red-400 underline">
-            Crear el primer servicio
-          </button>
-        </div>
-
-        <div v-else>
-          <!-- ========================================== -->
-          <!-- VISTA MÓVIL (Cards) - Visible < md -->
-          <!-- ========================================== -->
-          <div class="md:hidden grid grid-cols-1 gap-4">
-            <div v-for="(service, index) in servicesStore.serviceSheet.services" :key="index"
-              class="bg-[#151515] p-4 rounded-lg shadow-md border border-white/10 relative">
-              <!-- Botones flotantes en la card -->
-              <div class="absolute top-3 right-3 flex gap-2">
-                <button @click="openEditModal(service, index)"
-                  class="p-2 bg-white/5 rounded-full text-gray-400 hover:text-white">
-                  <i class="fas fa-pencil-alt text-xs"></i>
-                </button>
-                <button @click="handleDeleteService(index)"
-                  class="p-2 bg-white/5 rounded-full text-gray-400 hover:text-red-400">
-                  <i class="fas fa-trash-alt text-xs"></i>
-                </button>
-              </div>
-
-              <div class="pr-16">
-                <h4 class="font-bold text-lg text-white mb-1">{{ service.tipo_servicio }}</h4>
-                <div class="flex flex-wrap gap-2 mb-3">
-                  <span class="text-xs bg-white/5 px-2 py-1 rounded text-gray-300">
-                    <i class="fas fa-clock mr-1"></i> {{ service.frecuencia }}
-                  </span>
-                  <span class="text-xs px-2 py-1 rounded font-bold" :class="service.estado_servicio === 'Activo'
-                      ? 'bg-green-900/50 text-green-400'
-                      : 'bg-red-900/50 text-red-400'
-                    ">
-                    {{ service.estado_servicio }}
-                  </span>
-                </div>
-              </div>
-
-              <div class="flex justify-between items-end border-t border-white/10 pt-3 mt-2">
-                <div class="text-xs text-gray-400 max-w-[60%]">
-                  <p class="truncate" :title="getBranchNames(service.sucursales_asignadas)">
-                    <i class="fas fa-map-marker-alt mr-1"></i>
-                    Sucursales: {{ service.sucursales_asignadas.length > 0 ? service.sucursales_asignadas.length : 'Todas' }}
-                  </p>
-                  <p v-if="service.sucursales_asignadas.length > 0" class="truncate mt-1 text-gray-500">
-                    {{ getBranchNames(service.sucursales_asignadas) }}
-                  </p>
-                </div>
-                <div class="text-right">
-                  <p class="text-xs text-gray-500">Valor</p>
-                  <p class="font-bold text-white text-lg">
-                    {{
-                      new Intl.NumberFormat('es-CO', {
-                        style: 'currency',
-                        currency: 'COP',
-                        minimumFractionDigits: 0,
-                      }).format(service.valor)
-                    }}
-                  </p>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <!-- ========================================== -->
-          <!-- VISTA ESCRITORIO (Tabla) - Visible >= md -->
-          <!-- ========================================== -->
-          <div class="hidden md:block bg-[#151515] rounded-lg shadow-lg border border-white/10 overflow-hidden">
-            <table class="min-w-full divide-y divide-white/5">
-              <thead class="bg-[#0a0a0a]/50">
-                <tr>
-                  <th class="px-6 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">
-                    Servicio
-                  </th>
-                  <th class="px-6 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">
-                    Frecuencia
-                  </th>
-                  <th class="px-6 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">
-                    Sucursales
-                  </th>
-                  <th class="px-6 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">
-                    Estado
-                  </th>
-                  <th class="px-6 py-3 text-right text-xs font-medium text-gray-400 uppercase tracking-wider">
-                    Valor
-                  </th>
-                  <th class="px-6 py-3 text-center text-xs font-medium text-gray-400 uppercase tracking-wider">
-                    Acciones
-                  </th>
-                </tr>
-              </thead>
-              <tbody class="divide-y divide-white/5 bg-[#151515]">
-                <tr v-for="(service, index) in servicesStore.serviceSheet.services" :key="index"
-                  class="hover:bg-white/5 transition-colors">
-                  <td class="px-6 py-4 whitespace-nowrap">
-                    <div class="text-sm font-bold text-white">{{ service.tipo_servicio }}</div>
-                  </td>
-                  <td class="px-6 py-4 whitespace-nowrap">
-                    <span class="px-2 py-1 text-xs rounded bg-white/5 text-gray-300 border border-white/10">
-                      {{ service.frecuencia }}
-                    </span>
-                  </td>
-                  <td class="px-6 py-4">
-                    <div class="text-sm text-gray-300 truncate max-w-xs"
-                      :title="getBranchNames(service.sucursales_asignadas)">
-                      {{ getBranchNames(service.sucursales_asignadas) }}
-                    </div>
-                  </td>
-                  <td class="px-6 py-4 whitespace-nowrap">
-                    <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full" :class="service.estado_servicio === 'Activo'
-                        ? 'bg-green-900/50 text-green-400'
-                        : 'bg-red-900/50 text-red-400'
-                      ">
-                      {{ service.estado_servicio }}
-                    </span>
-                  </td>
-                  <td class="px-6 py-4 whitespace-nowrap text-right">
-                    <div class="text-sm font-mono font-bold text-white">
-                      {{
-                        new Intl.NumberFormat('es-CO', {
-                          style: 'currency',
-                          currency: 'COP',
-                          minimumFractionDigits: 0,
-                        }).format(service.valor)
-                      }}
-                    </div>
-                  </td>
-                  <td class="px-6 py-4 whitespace-nowrap text-center text-sm font-medium">
-                    <div class="flex justify-center space-x-3">
-                      <button @click="openEditModal(service, index)"
-                        class="text-gray-400 hover:text-white transition-colors" title="Editar">
-                        <i class="fas fa-pencil-alt"></i>
-                      </button>
-                      <button @click="handleDeleteService(index)"
-                        class="text-gray-400 hover:text-red-400 transition-colors" title="Eliminar">
-                        <i class="fas fa-trash-alt"></i>
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </div>
-
-      <!-- Botón de Guardado (Sticky Bottom) -->
-      <div class="flex-shrink-0 mt-4 pt-4 border-t border-white/10 flex justify-end">
-        <button @click="handleSaveSheet" :disabled="!servicesStore.hasUnsavedChanges || servicesStore.savingSheet"
-          class="btn btn-primary bg-[#d60000] hover:bg-red-700 w-full md:w-auto py-3 px-6 shadow-xl text-lg md:text-base flex items-center justify-center"
-          :class="{
-            'opacity-50 cursor-not-allowed':
-              !servicesStore.hasUnsavedChanges && !servicesStore.savingSheet,
-          }">
-          <i v-if="servicesStore.savingSheet" class="fas fa-spinner fa-spin mr-2"></i>
-          <i v-else class="fas fa-save mr-2"></i>
-          {{ servicesStore.savingSheet ? 'Guardando...' : 'Guardar Cambios' }}
-        </button>
-      </div>
-    </section>
-
-    <!-- Modal -->
-    <ServiceFormModal :show="showModal" :service="editingService" :service-index="editingServiceIndex"
-      @close="showModal = false" @save="handleSaveService" />
-  </main>
-</template>
 </file>
 
 <file path="src/layouts/MainLayout.vue">
@@ -21385,7 +21112,7 @@ const navLinks = [
     name: 'Finanzas',
     icon: 'fa-dollar-sign',
     // Roles de ejemplo, ajusta según sea necesario
-    roles: ['Administrador', 'Jefe'],
+    roles: ['Administrador', 'Jefe', 'Coordinador Nacional'],
     children: [
       { name: 'Facturación', to: '/dashboard/facturacion', icon: 'fa-file-invoice-dollar' },
     ],
@@ -21797,6 +21524,453 @@ router.beforeEach(async (to, from, next) => {
 })
 
 export default router
+</file>
+
+<file path="src/views/ServicesView.vue">
+<!-- eslint-disable @typescript-eslint/no-explicit-any -->
+<script setup lang="ts">
+import { ref, onMounted, computed } from 'vue'
+import { useServicesStore, type Service } from '@/stores/services'
+import { useAuthStore } from '@/stores/auth'
+import { useSettingsStore } from '@/stores/settings'
+import ServiceFormModal from '@/components/ServiceFormModal.vue'
+import { useToast } from '@/composables/useToast'
+import { onClickOutside } from '@vueuse/core'
+
+const servicesStore = useServicesStore()
+const authStore = useAuthStore()
+const settingsStore = useSettingsStore()
+const { showToast } = useToast()
+const searchTerm = ref('')
+const showModal = ref(false)
+const editingService = ref<Service | null>(null)
+const editingServiceIndex = ref(-1)
+const showClientResults = ref(false)
+const searchResultsContainer = ref(null)
+
+const normalizeSearchText = (value: string) =>
+  value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, ' ')
+
+// Filtro local de clientes
+const filteredClients = computed(() => {
+  if (!searchTerm.value) {
+    return servicesStore.clientList.slice(0, 10)
+  }
+  const normalizedSearch = normalizeSearchText(searchTerm.value)
+
+  return servicesStore.clientList.filter((client) =>
+    normalizeSearchText(client.nombreComercial).includes(normalizedSearch),
+  )
+})
+
+const canApprovePrices = computed(() => {
+  return (
+    authStore.userRole === 'Administrador' ||
+    authStore.userRole === 'Jefe' ||
+    authStore.userRole === 'Coordinador Nacional'
+  )
+})
+
+onMounted(async () => {
+  await settingsStore.fetchBusinessData()
+  servicesStore.fetchClients()
+  if (canApprovePrices.value) {
+    servicesStore.fetchPendingPriceRequests()
+  }
+})
+
+onClickOutside(searchResultsContainer, () => {
+  showClientResults.value = false
+})
+
+const handleSelectClient = async (clientId: string) => {
+  await servicesStore.fetchServiceSheet(clientId)
+  const client = servicesStore.clientList.find((c) => c.id === clientId)
+  if (client) {
+    searchTerm.value = client.nombreComercial
+  }
+  showClientResults.value = false
+}
+
+const handleFocus = () => {
+  showClientResults.value = true
+  if (servicesStore.selectedClient && !searchTerm.value) {
+    searchTerm.value = servicesStore.selectedClient.nombreComercial
+  }
+}
+
+const openCreateModal = () => {
+  editingService.value = null
+  editingServiceIndex.value = -1
+  showModal.value = true
+}
+
+const openEditModal = (service: Service, index: number) => {
+  editingService.value = service
+  editingServiceIndex.value = index
+  showModal.value = true
+}
+
+const handlePriceRequest = async (request: any) => {
+  await handleSelectClient(request.clientId)
+  openEditModal(request.service, request.serviceIndex)
+}
+
+const handleSaveService = () => {
+  showModal.value = false
+}
+
+const handleDeleteService = (index: number) => {
+  servicesStore.deleteService(index)
+}
+
+const handleSaveSheet = async () => {
+  try {
+    await servicesStore.saveServiceSheet()
+    showToast({
+      title: 'Éxito',
+      message: 'Ficha de servicio guardada correctamente.',
+      type: 'success',
+    })
+  } catch (error: any) {
+    showToast({
+      title: 'Error',
+      message: `No se pudo guardar la ficha: ${error.message}`,
+      type: 'error',
+    })
+  }
+}
+
+// Función auxiliar para obtener los nombres de las sucursales a partir de sus IDs (Ficha seleccionada)
+const getBranchNames = (branchIds: string[]) => {
+  if (!branchIds || branchIds.length === 0) return 'Todas'
+  if (!servicesStore.selectedClient || !servicesStore.selectedClient.sucursales) return branchIds.join(', ')
+
+  const branchNames = branchIds.map(id => {
+    const branch = servicesStore.selectedClient!.sucursales.find((b: any) => b.id === id)
+    return branch ? branch.nombre : id
+  })
+
+  return branchNames.join(', ')
+}
+
+// Función auxiliar para obtener nombres de sucursales en la bandeja de solicitudes pendientes
+const getBranchNamesForRequest = (branchIds?: string[], clientId?: string) => {
+  if (!branchIds || branchIds.length === 0) return 'Todas las sucursales'
+
+  const client = servicesStore.clientList.find((c: any) => c.id === clientId)
+  if (!client || !client.sucursales) return branchIds.join(', ')
+
+  const branchNames = branchIds.map((id: string) => {
+    if (id === 'Principal') return 'Principal'
+    const branch = client.sucursales?.find((b: any) => b.id === id || b.nombre === id)
+    return branch ? branch.nombre : id
+  })
+
+  return branchNames.join(', ')
+}
+</script>
+
+<template>
+  <main class="p-4 md:p-8 h-full flex flex-col overflow-hidden bg-[#0a0a0a] text-gray-100">
+    <!-- Header: Flexible -->
+    <header class="mb-6 flex-shrink-0 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+      <div>
+        <h1 class="text-2xl md:text-3xl font-bold text-white">Gestión de Servicios</h1>
+        <p class="text-sm text-gray-400 mt-1">Configura las fichas técnicas por cliente</p>
+      </div>
+
+      <!-- Buscador de Clientes -->
+      <div class="relative w-full md:w-96 z-10" ref="searchResultsContainer">
+        <div class="relative">
+          <input v-model="searchTerm" @focus="handleFocus" type="text" id="clientSearchInput"
+            class="w-full pl-10 pr-4 py-2.5 bg-[#0a0a0a] border border-white/10 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-[#d60000] focus:border-[#d60000] transition-all shadow-sm"
+            placeholder="Buscar cliente..." autocomplete="off" />
+          <i class="fas fa-search absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"></i>
+
+          <button v-if="searchTerm" @click="
+            searchTerm = '',
+            showClientResults = true
+            " class="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-white">
+            <i class="fas fa-times"></i>
+          </button>
+        </div>
+
+        <div v-if="showClientResults"
+          class="absolute top-full mt-2 w-full bg-[#151515] border border-white/10 rounded-lg shadow-2xl max-h-60 overflow-y-auto custom-scrollbar z-20">
+          <div v-if="filteredClients.length > 0">
+            <div v-for="client in filteredClients" :key="client.id" @click="handleSelectClient(client.id)"
+              class="px-4 py-3 hover:bg-white/5 cursor-pointer border-b border-white/5 last:border-0 transition-colors">
+              <p class="font-semibold text-white">{{ client.nombreComercial }}</p>
+              <p class="text-xs text-gray-400">{{ client.ciudad || 'Sin ciudad' }}</p>
+            </div>
+          </div>
+
+          <div v-else class="px-4 py-6 text-center text-gray-500">
+            <i class="fas fa-search mb-2 text-xl block opacity-50"></i>
+            <p class="text-sm">No se encontraron clientes.</p>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <!-- BANDEJA DE SOLICITUDES DE PRECIO (Solo para Admins/Jefes/Nacionales) -->
+    <section v-if="canApprovePrices && servicesStore.pendingPriceRequests.length > 0" class="mb-6">
+      <div class="bg-yellow-900/10 border border-yellow-700/50 rounded-xl shadow-lg">
+        <div class="p-4 border-b border-yellow-700/50 flex items-center gap-3">
+          <i class="fas fa-dollar-sign text-yellow-400 text-xl"></i>
+          <div>
+            <h3 class="font-bold text-white">Solicitudes de Precio Pendientes</h3>
+            <p class="text-xs text-yellow-300/80">
+              Estos servicios requieren que se les asigne un valor.
+            </p>
+          </div>
+        </div>
+        <div class="max-h-48 overflow-y-auto custom-scrollbar p-2">
+          <div v-for="request in servicesStore.pendingPriceRequests"
+            :key="`${request.serviceSheetId}-${request.serviceIndex}`"
+            class="flex justify-between items-center p-2 hover:bg-yellow-900/20 rounded-lg">
+            <div class="min-w-0">
+              <p class="text-sm font-semibold text-white truncate">{{ request.clientName }}</p>
+              <p class="text-xs text-gray-400 truncate">
+                {{ request.service.tipo_servicio }} - {{ getBranchNamesForRequest(request.service.sucursales_asignadas, request.clientId) }}
+              </p>
+            </div>
+            <button @click="handlePriceRequest(request)"
+              class="btn btn-secondary !py-1 !px-3 text-xs bg-yellow-600 hover:bg-yellow-700 text-white shrink-0 ml-2">
+              Asignar Precio
+            </button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Estado: Ningún Cliente Seleccionado -->
+    <div v-if="!servicesStore.selectedClient"
+      class="flex-grow flex flex-col items-center justify-center text-gray-500 opacity-60">
+      <div class="bg-[#151515] p-6 rounded-full mb-4 animate-pulse">
+        <i class="fas fa-hand-pointer text-4xl text-[#d60000]"></i>
+      </div>
+      <p class="text-lg font-medium">Busca y selecciona un cliente para comenzar.</p>
+    </div>
+
+    <!-- Contenedor de la Ficha de Servicio -->
+    <section v-else class="flex-grow flex flex-col overflow-hidden">
+      <!-- Cabecera del Cliente -->
+      <div
+        class="flex-shrink-0 mb-6 bg-[#151515] p-4 rounded-xl border border-white/10 flex flex-col md:flex-row justify-between items-start md:items-center gap-4 shadow-sm">
+        <div class="flex items-center gap-3">
+          <div
+            class="hidden md:flex h-12 w-12 bg-white/5 rounded-lg items-center justify-center text-[#d60000] text-xl">
+            <i class="fas fa-file-contract"></i>
+          </div>
+          <div>
+            <p class="text-xs text-gray-400 uppercase tracking-wider">Cliente Seleccionado</p>
+            <h3 class="text-xl md:text-2xl font-bold text-white">
+              {{ servicesStore.selectedClient.nombreComercial }}
+            </h3>
+          </div>
+        </div>
+        <button @click="openCreateModal"
+          class="btn btn-primary bg-[#d60000] hover:bg-red-700 w-full md:w-auto flex items-center justify-center shadow-lg">
+          <i class="fas fa-plus mr-2"></i>Añadir Servicio
+        </button>
+      </div>
+
+      <!-- Área de Contenido con Scroll -->
+      <div class="flex-grow overflow-y-auto custom-scrollbar pr-2">
+        <div v-if="servicesStore.loadingSheet" class="h-full flex items-center justify-center">
+          <i class="fas fa-spinner fa-spin text-4xl text-cyan-400"></i>
+        </div>
+
+        <div v-else-if="!servicesStore.serviceSheet?.services.length"
+          class="h-full flex flex-col items-center justify-center text-gray-500">
+          <i class="fas fa-clipboard-list text-6xl mb-4 opacity-20"></i>
+          <p>No hay servicios configurados para este cliente.</p>
+          <button @click="openCreateModal" class="mt-4 text-[#d60000] hover:text-red-400 underline">
+            Crear el primer servicio
+          </button>
+        </div>
+
+        <div v-else>
+          <!-- VISTA MÓVIL (Cards) -->
+          <div class="md:hidden grid grid-cols-1 gap-4">
+            <div v-for="(service, index) in servicesStore.serviceSheet.services" :key="index"
+              class="bg-[#151515] p-4 rounded-lg shadow-md border border-white/10 relative">
+              <div class="absolute top-3 right-3 flex gap-2">
+                <button @click="openEditModal(service, index)"
+                  class="p-2 bg-white/5 rounded-full text-gray-400 hover:text-white">
+                  <i class="fas fa-pencil-alt text-xs"></i>
+                </button>
+                <button @click="handleDeleteService(index)"
+                  class="p-2 bg-white/5 rounded-full text-gray-400 hover:text-red-400">
+                  <i class="fas fa-trash-alt text-xs"></i>
+                </button>
+              </div>
+
+              <div class="pr-16">
+                <h4 class="font-bold text-lg text-white mb-1">{{ service.tipo_servicio }}</h4>
+                <div class="flex flex-wrap gap-2 mb-3">
+                  <span class="text-xs bg-white/5 px-2 py-1 rounded text-gray-300">
+                    <i class="fas fa-clock mr-1"></i> {{ service.frecuencia }}
+                  </span>
+                  <span class="text-xs px-2 py-1 rounded font-bold" :class="service.estado_servicio === 'Activo'
+                      ? 'bg-green-900/50 text-green-400'
+                      : 'bg-red-900/50 text-red-400'
+                    ">
+                    {{ service.estado_servicio }}
+                  </span>
+                  <span v-if="service.estado_servicio === 'Activo' && service.frecuencia !== 'UNICA'"
+                        class="text-[10px] bg-yellow-900/50 text-yellow-400 px-2 py-1 rounded flex items-center gap-1 font-bold">
+                    <i class="fas fa-exclamation-triangle"></i> Revisar Agenda
+                  </span>
+                </div>
+              </div>
+
+              <div class="flex justify-between items-end border-t border-white/10 pt-3 mt-2">
+                <div class="text-xs text-gray-400 max-w-[60%]">
+                  <p class="truncate" :title="getBranchNames(service.sucursales_asignadas)">
+                    <i class="fas fa-map-marker-alt mr-1"></i>
+                    Sucursales: {{ service.sucursales_asignadas.length > 0 ? service.sucursales_asignadas.length : 'Todas' }}
+                  </p>
+                  <p v-if="service.sucursales_asignadas.length > 0" class="truncate mt-1 text-gray-500">
+                    {{ getBranchNames(service.sucursales_asignadas) }}
+                  </p>
+                </div>
+                <div class="text-right">
+                  <p class="text-xs text-gray-500">Valor</p>
+                  <p class="font-bold text-white text-lg">
+                    {{
+                      new Intl.NumberFormat('es-CO', {
+                        style: 'currency',
+                        currency: 'COP',
+                        minimumFractionDigits: 0,
+                      }).format(service.valor)
+                    }}
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- VISTA ESCRITORIO (Tabla) -->
+          <div class="hidden md:block bg-[#151515] rounded-lg shadow-lg border border-white/10 overflow-hidden">
+            <table class="min-w-full divide-y divide-white/5">
+              <thead class="bg-[#0a0a0a]/50">
+                <tr>
+                  <th class="px-6 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">
+                    Servicio
+                  </th>
+                  <th class="px-6 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">
+                    Frecuencia
+                  </th>
+                  <th class="px-6 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">
+                    Sucursales
+                  </th>
+                  <th class="px-6 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">
+                    Estado
+                  </th>
+                  <th class="px-6 py-3 text-right text-xs font-medium text-gray-400 uppercase tracking-wider">
+                    Valor
+                  </th>
+                  <th class="px-6 py-3 text-center text-xs font-medium text-gray-400 uppercase tracking-wider">
+                    Estado Agenda
+                  </th>
+                  <th class="px-6 py-3 text-center text-xs font-medium text-gray-400 uppercase tracking-wider">
+                    Acciones
+                  </th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-white/5 bg-[#151515]">
+                <tr v-for="(service, index) in servicesStore.serviceSheet.services" :key="index"
+                  class="hover:bg-white/5 transition-colors">
+                  <td class="px-6 py-4 whitespace-nowrap">
+                    <div class="text-sm font-bold text-white">{{ service.tipo_servicio }}</div>
+                  </td>
+                  <td class="px-6 py-4 whitespace-nowrap">
+                    <span class="px-2 py-1 text-xs rounded bg-white/5 text-gray-300 border border-white/10">
+                      {{ service.frecuencia }}
+                    </span>
+                  </td>
+                  <td class="px-6 py-4">
+                    <div class="text-sm text-gray-300 truncate max-w-xs"
+                      :title="getBranchNames(service.sucursales_asignadas)">
+                      {{ getBranchNames(service.sucursales_asignadas) }}
+                    </div>
+                  </td>
+                  <td class="px-6 py-4 whitespace-nowrap">
+                    <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full" :class="service.estado_servicio === 'Activo'
+                        ? 'bg-green-900/50 text-green-400'
+                        : 'bg-red-900/50 text-red-400'
+                      ">
+                      {{ service.estado_servicio }}
+                    </span>
+                  </td>
+                  <td class="px-6 py-4 whitespace-nowrap text-right">
+                    <div class="text-sm font-mono font-bold text-white">
+                      {{
+                        new Intl.NumberFormat('es-CO', {
+                          style: 'currency',
+                          currency: 'COP',
+                          minimumFractionDigits: 0,
+                        }).format(service.valor)
+                      }}
+                    </div>
+                  </td>
+                  <td class="px-6 py-4 whitespace-nowrap text-center text-sm font-medium">
+                    <div v-if="service.estado_servicio === 'Activo' && service.frecuencia !== 'UNICA'"
+                         class="flex flex-col items-center justify-center">
+                      <span class="text-[10px] bg-yellow-900/50 text-yellow-400 px-2 py-1 rounded-full flex items-center gap-1 cursor-help"
+                            title="Asegúrate de que este servicio tenga su próxima visita programada en Planeación.">
+                        <i class="fas fa-exclamation-triangle"></i> Revisar Agenda
+                      </span>
+                    </div>
+                    <div v-else class="text-xs text-gray-500">-</div>
+                  </td>
+                  <td class="px-6 py-4 whitespace-nowrap text-center text-sm font-medium">
+                    <div class="flex justify-center space-x-3">
+                      <button @click="openEditModal(service, index)"
+                        class="text-gray-400 hover:text-white transition-colors" title="Editar">
+                        <i class="fas fa-pencil-alt"></i>
+                      </button>
+                      <button @click="handleDeleteService(index)"
+                        class="text-gray-400 hover:text-red-400 transition-colors" title="Eliminar">
+                        <i class="fas fa-trash-alt"></i>
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- Botón de Guardado -->
+      <div class="flex-shrink-0 mt-4 pt-4 border-t border-white/10 flex justify-end">
+        <button @click="handleSaveSheet" :disabled="!servicesStore.hasUnsavedChanges || servicesStore.savingSheet"
+          class="btn btn-primary bg-[#d60000] hover:bg-red-700 w-full md:w-auto py-3 px-6 shadow-xl text-lg md:text-base flex items-center justify-center"
+          :class="{
+            'opacity-50 cursor-not-allowed':
+              !servicesStore.hasUnsavedChanges && !servicesStore.savingSheet,
+          }">
+          <i v-if="servicesStore.savingSheet" class="fas fa-spinner fa-spin mr-2"></i>
+          <i v-else class="fas fa-save mr-2"></i>
+          {{ servicesStore.savingSheet ? 'Guardando...' : 'Guardar Cambios' }}
+        </button>
+      </div>
+    </section>
+
+    <!-- Modal Formulario de Servicio -->
+    <ServiceFormModal :show="showModal" :service="editingService" :service-index="editingServiceIndex"
+      @close="showModal = false" @save="handleSaveService" />
+  </main>
+</template>
 </file>
 
 <file path="src/components/VisitFormModal.vue">
@@ -26932,35 +27106,38 @@ async function sendVisitNotificationViaGmailAPI(visitData, visitId, organizerUid
 
 /**
  * Construye el objeto de recurso para un evento de Google Calendar.
- * @param {object} visitData - Los datos de la visita.
- * @param {Array<string>} attendeeEmails - Un array de correos de los técnicos a invitar.
- * @param {string} [colorId="8"] - El ID de color para el evento.
- * @returns {object} El recurso del evento listo para la API de Google.
+ *
+ * @param {object} visitData - Datos de la visita provenientes de Firestore.
+ * @param {Array<string>} attendeeEmails - Correos de los técnicos o invitados.
+ * @param {string} [colorId="11"] - ID de color de Google Calendar ('11' = Tomate/Rojo).
+ * @returns {object} Recurso formateado para la API de Google Calendar.
  */
-function buildEventResource(visitData, attendeeEmails = [], colorId = '8') {
+function buildEventResource(visitData, attendeeEmails = [], colorId = '11') {
   const visitDate = visitData.fecha_visita.toDate()
-  const endTime = new Date(visitDate.getTime() + 60 * 60 * 1000)
+  const durationMinutes = visitData.duracion_minutos || 60
+  const endTime = new Date(visitDate.getTime() + durationMinutes * 60 * 1000)
 
-const allAttendeeEmails = [
+  const allAttendeeEmails = [
     ...attendeeEmails,
-    ...(Array.isArray(visitData.client_emails) ? visitData.client_emails : [])
-  ];
+    ...(Array.isArray(visitData.client_emails) ? visitData.client_emails : []),
+  ]
 
   const attendees = allAttendeeEmails.map((email) => ({ email }))
 
-  const encodedAddress = encodeURIComponent(visitData.ubicacion)
+  const encodedAddress = encodeURIComponent(visitData.ubicacion || '')
   const mapsLink = `https://www.google.com/maps/search/?api=1&query=${encodedAddress}`
+
   const descriptionParts = [
     `<b>-- DETALLES DE LA VISITA --</b>`,
     `\n`,
     `<b>Cliente:</b>`,
-    escapeHTML(visitData.nombre_cliente),
+    escapeHTML(visitData.nombre_cliente || ''),
     `\n`,
     `<b>Tipo de Servicio:</b>`,
-    escapeHTML(visitData.tipo_visita),
+    escapeHTML(visitData.tipo_visita || ''),
     `\n`,
     `<b>Ubicación:</b>`,
-    `${escapeHTML(visitData.ubicacion)}`,
+    `${escapeHTML(visitData.ubicacion || '')}`,
     `(<a href="${mapsLink}">Ver en Google Maps</a>)`,
   ]
 
@@ -26981,13 +27158,19 @@ const allAttendeeEmails = [
     `\n<i>Este es un evento automático de SISFUMI.</i>`,
   )
 
+  // Formato de título: "MCCORMICK - ZONA INDUSTRIAL - GPP"
+  const sucursalInfo = visitData.sucursal || visitData.ubicacion || ''
+  const sucursalPart = sucursalInfo ? ` - ${sucursalInfo}` : ''
+  const tipoServicioPart = visitData.tipo_visita ? ` - ${visitData.tipo_visita}` : ''
+  const newSummary = `${visitData.nombre_cliente}${sucursalPart}${tipoServicioPart}`
+
   return {
-    summary: `Visita: ${visitData.nombre_cliente}${visitData.sucursal ? ` - ${visitData.sucursal}` : ''}`,
+    summary: newSummary,
     description: descriptionParts.join('\n'),
     start: { dateTime: visitDate.toISOString(), timeZone: 'America/Bogota' },
     end: { dateTime: endTime.toISOString(), timeZone: 'America/Bogota' },
     attendees: attendees,
-    colorId: colorId,
+    colorId: String(colorId), // '11' = Tomate
     extendedProperties: {
       private: { useHtml: 'true' },
     },
@@ -27034,26 +27217,47 @@ async function createOrUpdateCalendarEvent(
 
     const calendar = google.calendar({ version: 'v3', auth: oAuth2Client })
 
-    let eventColorId = '8'
+    // --- LÓGICA DE ASIGNACIÓN DE COLORES ---
+    const GROUP_COLOR_ID = '11' // Color Tomate (Rojo) para grupos de técnicos (>1)
+    const DEFAULT_TECH_COLOR_ID = '1' // Color individual por defecto (Lavanda)
+
+    let eventColorId = DEFAULT_TECH_COLOR_ID
     let attendeeEmails = []
-    if (visitData.fumigadores_asignados?.length) {
+    const fumigadores = visitData.fumigadores_asignados || []
+
+    if (fumigadores.length > 0) {
+      // 1. Obtener correos de los técnicos e identificar el color si es asignación individual
       const snap = await db
         .collection('fumigadores')
-        .where('nombreCompleto', 'in', visitData.fumigadores_asignados)
+        .where('nombreCompleto', 'in', fumigadores)
         .get()
 
-      const primaryTechnicianName = visitData.fumigadores_asignados[0]
+      const primaryTechnicianName = fumigadores[0]
       let primaryFound = false
+
       snap.forEach((doc) => {
         const t = doc.data()
         if (t.email) attendeeEmails.push(t.email)
-        if (!primaryFound && t.nombreCompleto === primaryTechnicianName && t.googleColorId) {
+
+        // Si es un solo técnico, asignamos su googleColorId si lo tiene definido
+        if (
+          fumigadores.length === 1 &&
+          !primaryFound &&
+          t.nombreCompleto === primaryTechnicianName &&
+          t.googleColorId
+        ) {
           eventColorId = t.googleColorId
           primaryFound = true
         }
       })
+
+      // 2. Si son 2 o más técnicos (Grupo), forzamos el color Tomate ('11')
+      if (fumigadores.length > 1) {
+        eventColorId = GROUP_COLOR_ID
+      }
     }
 
+    // Construir el recurso del evento con el colorId resuelto y la lista de asistentes
     const eventResource = buildEventResource(visitData, attendeeEmails, eventColorId)
 
     const safeVisitId = visitId
@@ -27089,7 +27293,7 @@ async function createOrUpdateCalendarEvent(
 
       const created = await calendar.events.insert({
         calendarId: 'primary',
-        resource: eventResource,
+        requestBody: eventResource,
         sendUpdates: 'all',
       })
 
@@ -27108,8 +27312,8 @@ async function createOrUpdateCalendarEvent(
     await calendar.events.update({
       calendarId: 'primary',
       eventId: targetEventId,
-      sendUpdates: 'all', // <-- CLAVE: Fuerza a Google a notificar y actualizar a los técnicos
-      resource: { ...eventResource, id: targetEventId },
+      sendUpdates: 'all', // Fuerza a Google a notificar y actualizar a los técnicos
+      requestBody: { ...eventResource, id: targetEventId },
     })
 
     const updates = { activeOrganizerUid: uid }
@@ -29490,17 +29694,14 @@ exports.confirmAssistantAssignments = onCall({ cors: true }, async (request) => 
     assignments.map((assignment) => [assignment.visitId, assignment.technician]),
   )
   if (uniqueAssignments.size !== assignments.length) {
-    throw new HttpsError('invalid-argument', 'No se permiten visitas repetidas.')
+    throw new HttpsError('invalid-argument', 'No se permiten visitas repetidas en la misma solicitud.')
   }
 
   const { zona: userZone, role: userRole } = request.auth.token
   const isGlobal = GLOBAL_CLIENT_ROLES.includes(userRole)
-  const visitRefs = Array.from(uniqueAssignments.keys()).map((id) =>
-    db.collection('visitas').doc(id),
-  )
-  const visitDocs = await Promise.all(visitRefs.map((ref) => ref.get()))
-
   const technicianNames = Array.from(new Set(uniqueAssignments.values()))
+
+  // Obtenemos los técnicos fuera de la transacción para mantenerla rápida (sus datos maestros cambian poco)
   const technicianSnapshot = await db.collection('fumigadores').get()
   const techniciansByName = new Map(
     technicianSnapshot.docs
@@ -29508,104 +29709,149 @@ exports.confirmAssistantAssignments = onCall({ cors: true }, async (request) => 
       .filter(([name]) => technicianNames.includes(name)),
   )
 
-  const visitDataById = new Map()
-  let earliestDate = null
-  let latestDate = null
-  for (const visitDoc of visitDocs) {
-    if (!visitDoc.exists) {
-      throw new HttpsError('not-found', `La visita ${visitDoc.id} no existe.`)
-    }
-
-    const visitData = visitDoc.data()
-    if (!isGlobal && userZone && visitData.zona !== userZone) {
-      throw new HttpsError('permission-denied', 'No puedes asignar visitas fuera de tu zona.')
-    }
-    if (visitData.estado_visita === 'Realizada' || visitData.estado_visita === 'Cancelada') {
-      throw new HttpsError('failed-precondition', `La visita ${visitDoc.id} ya no está activa.`)
-    }
-    if (Array.isArray(visitData.fumigadores_asignados) && visitData.fumigadores_asignados.length > 0) {
-      throw new HttpsError('failed-precondition', `La visita ${visitDoc.id} ya tiene técnico asignado.`)
-    }
-
-    const visitDate = visitData.fecha_visita?.toDate
-      ? visitData.fecha_visita.toDate()
-      : new Date(visitData.fecha_visita)
-    if (Number.isNaN(visitDate.getTime())) {
-      throw new HttpsError('failed-precondition', `La visita ${visitDoc.id} no tiene una fecha válida.`)
-    }
-    const duration = Number(visitData.duracion_minutos) || 60
-    earliestDate = !earliestDate || visitDate < earliestDate ? visitDate : earliestDate
-    const endDate = new Date(visitDate.getTime() + duration * 60 * 1000)
-    latestDate = !latestDate || endDate > latestDate ? endDate : latestDate
-    visitDataById.set(visitDoc.id, { ...visitData, visitDate, duration })
-  }
-
   for (const technicianName of technicianNames) {
     const technician = techniciansByName.get(technicianName)
     if (!technician) {
-      throw new HttpsError('not-found', `No existe el técnico ${technicianName}.`)
+      throw new HttpsError('not-found', `No existe el técnico: ${technicianName}.`)
     }
     if (!isGlobal && userZone && technician.zona !== userZone) {
-      throw new HttpsError('permission-denied', 'No puedes asignar técnicos fuera de tu zona.')
+      throw new HttpsError('permission-denied', `No puedes asignar al técnico ${technicianName} por estar fuera de tu zona.`)
     }
   }
 
-  const conflictSnapshot = await db
-    .collection('visitas')
-    .where('fecha_visita', '>=', earliestDate)
-    .where('fecha_visita', '<=', latestDate)
-    .get()
-  const activeByTechnician = new Map()
-  conflictSnapshot.docs.forEach((doc) => {
-    const data = doc.data()
-    if (data.estado_visita === 'Realizada' || data.estado_visita === 'Cancelada') return
-    ;(data.fumigadores_asignados || []).forEach((technician) => {
-      const current = activeByTechnician.get(technician) || []
-      current.push({ id: doc.id, data })
-      activeByTechnician.set(technician, current)
-    })
-  })
-
-  const overlaps = (firstStart, firstDuration, secondStart, secondDuration) =>
-    firstStart < new Date(secondStart.getTime() + secondDuration * 60 * 1000) &&
-    secondStart < new Date(firstStart.getTime() + firstDuration * 60 * 1000)
-
-  for (const [visitId, technician] of uniqueAssignments) {
-    const visit = visitDataById.get(visitId)
-    const conflicts = (activeByTechnician.get(technician) || []).some(
-      (scheduled) =>
-        scheduled.id !== visitId &&
-        overlaps(
-          visit.visitDate,
-          visit.duration,
-          scheduled.data.fecha_visita.toDate
-            ? scheduled.data.fecha_visita.toDate()
-            : new Date(scheduled.data.fecha_visita),
-          Number(scheduled.data.duracion_minutos) || 60,
-        ),
-    )
-    if (conflicts) {
-      throw new HttpsError(
-        'failed-precondition',
-        `El técnico ${technician} tiene un cruce horario en la visita ${visitId}.`,
+  // EJECUCIÓN TRANSACCIONAL (Evita Race Conditions)
+  try {
+    const assignedCount = await db.runTransaction(async (transaction) => {
+      const visitRefs = Array.from(uniqueAssignments.keys()).map((id) =>
+        db.collection('visitas').doc(id),
       )
-    }
-  }
 
-  const batch = db.batch()
-  for (const [visitId, technician] of uniqueAssignments) {
-    batch.update(db.collection('visitas').doc(visitId), {
-      fumigadores_asignados: [technician],
-      updatedBy: request.auth.uid,
-      estado_visita: 'Programada',
+      // 1. Lecturas transaccionales de visitas
+      const visitDocs = await Promise.all(visitRefs.map((ref) => transaction.get(ref)))
+
+      const visitDataById = new Map()
+      let earliestDate = null
+      let latestDate = null
+
+      // 2. Validaciones estrictas de estado
+      for (const visitDoc of visitDocs) {
+        if (!visitDoc.exists) {
+          throw new HttpsError('not-found', `La visita con ID ${visitDoc.id} ya no existe.`)
+        }
+
+        const visitData = visitDoc.data()
+        if (!isGlobal && userZone && visitData.zona !== userZone) {
+          throw new HttpsError('permission-denied', 'No puedes asignar visitas fuera de tu zona.')
+        }
+        if (visitData.estado_visita === 'Realizada' || visitData.estado_visita === 'Cancelada') {
+          throw new HttpsError('failed-precondition', `La visita del cliente ${visitData.nombre_cliente} ya no está activa.`)
+        }
+        if (Array.isArray(visitData.fumigadores_asignados) && visitData.fumigadores_asignados.length > 0) {
+          throw new HttpsError('failed-precondition', `La visita de ${visitData.nombre_cliente} ya fue asignada a otro técnico.`)
+        }
+
+        const visitDate = visitData.fecha_visita?.toDate
+          ? visitData.fecha_visita.toDate()
+          : new Date(visitData.fecha_visita)
+
+        if (Number.isNaN(visitDate.getTime())) {
+          throw new HttpsError('failed-precondition', `Fecha inválida en la visita ${visitDoc.id}.`)
+        }
+
+        const duration = Number(visitData.duracion_minutos) || 60
+        earliestDate = !earliestDate || visitDate < earliestDate ? visitDate : earliestDate
+        const endDate = new Date(visitDate.getTime() + duration * 60 * 1000)
+        latestDate = !latestDate || endDate > latestDate ? endDate : latestDate
+
+        visitDataById.set(visitDoc.id, { ...visitData, visitDate, duration })
+      }
+
+      // 3. Consultar posibles conflictos (dentro de la transacción)
+      const conflictQuery = db.collection('visitas')
+        .where('fecha_visita', '>=', earliestDate)
+        .where('fecha_visita', '<=', latestDate)
+
+      const conflictSnapshot = await transaction.get(conflictQuery)
+
+      const activeByTechnician = new Map()
+      conflictSnapshot.docs.forEach((doc) => {
+        const data = doc.data()
+        if (data.estado_visita === 'Realizada' || data.estado_visita === 'Cancelada') return
+        ;(data.fumigadores_asignados || []).forEach((technician) => {
+          if (technicianNames.includes(technician)) {
+            const current = activeByTechnician.get(technician) || []
+            current.push({ id: doc.id, data })
+            activeByTechnician.set(technician, current)
+          }
+        })
+      })
+
+      const overlaps = (firstStart, firstDuration, secondStart, secondDuration) =>
+        firstStart < new Date(secondStart.getTime() + secondDuration * 60 * 1000) &&
+        secondStart < new Date(firstStart.getTime() + firstDuration * 60 * 1000)
+
+      // 4. Verificación de cruces horarios
+      for (const [visitId, technician] of uniqueAssignments) {
+        const visit = visitDataById.get(visitId)
+        const conflicts = (activeByTechnician.get(technician) || []).some(
+          (scheduled) =>
+            scheduled.id !== visitId &&
+            overlaps(
+              visit.visitDate,
+              visit.duration,
+              scheduled.data.fecha_visita.toDate
+                ? scheduled.data.fecha_visita.toDate()
+                : new Date(scheduled.data.fecha_visita),
+              Number(scheduled.data.duracion_minutos) || 60,
+            ),
+        )
+
+        if (conflicts) {
+          throw new HttpsError(
+            'failed-precondition',
+            `El técnico ${technician} tiene un cruce horario en la fecha de la visita solicitada.`,
+          )
+        }
+      }
+
+      // 5. Aplicar escrituras a las visitas
+      for (const [visitId, technician] of uniqueAssignments) {
+        transaction.update(db.collection('visitas').doc(visitId), {
+          fumigadores_asignados: [technician],
+          updatedBy: request.auth.uid,
+          estado_visita: 'Programada',
+        })
+      }
+
+      // 6. Registro de Auditoría Unificado (Integración Fase 5)
+      const auditRef = db.collection('audit_logs').doc()
+      const userEmail = request.auth.token?.email || 'Desconocido'
+      transaction.set(auditRef, {
+        action: 'AI_ASSISTANT_ASSIGNMENT',
+        details: `El Asistente IA asignó ${uniqueAssignments.size} visita(s).`,
+        performedBy: request.auth.uid,
+        performerEmail: userEmail,
+        adminEmail: userEmail, // Para que aparezca en el panel de auditoría
+        targetData: JSON.stringify(Object.fromEntries(uniqueAssignments)),
+        timestamp: admin.firestore.FieldValue.serverTimestamp(),
+        userAgent: request.rawRequest ? request.rawRequest.headers['user-agent'] : 'Internal AI Assistant'
+      })
+
+      return uniqueAssignments.size
     })
+
+    logger.info('Asignaciones confirmadas desde el asistente', {
+      uid: request.auth.uid,
+      count: assignedCount,
+    })
+
+    return { message: `${assignedCount} visita(s) asignada(s) correctamente.` }
+
+  } catch (error) {
+    logger.error('Error en la transacción de confirmAssistantAssignments:', error)
+    if (error instanceof HttpsError) throw error
+    throw new HttpsError('internal', 'Ocurrió un error concurrente al intentar procesar las asignaciones.')
   }
-  await batch.commit()
-  logger.info('Asignaciones confirmadas desde el asistente', {
-    uid: request.auth.uid,
-    count: uniqueAssignments.size,
-  })
-  return { message: `${uniqueAssignments.size} visita(s) asignada(s) correctamente.` }
 })
 
 exports.getConsolidatedDashboardStats = onCall(
@@ -30197,7 +30443,7 @@ exports.registerPartialPayment = onCall({ cors: true }, async (request) => {
     const data = freshDoc.data()
 
     // Validar zona del usuario
-    const isAdmin = ['Administrador', 'Jefe'].includes(userRole)
+    const isAdmin = ['Administrador', 'Jefe', 'Coordinador Nacional'].includes(userRole)
     if (!isAdmin && userZone && data.zona && data.zona !== userZone) {
       throw new HttpsError(
         'permission-denied',
@@ -30344,6 +30590,7 @@ exports.generateInvoiceReport = onCall({ cors: true }, async (request) => {
   assertRole(request, [
     'Administrador',
     'Jefe',
+    'Coordinador Nacional',
     'Coordinador Valle',
     'Coordinador Norte de Santander',
   ])

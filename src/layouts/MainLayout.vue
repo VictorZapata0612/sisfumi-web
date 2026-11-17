@@ -73,7 +73,7 @@ const navLinks = [
     name: 'Finanzas',
     icon: 'fa-dollar-sign',
     // Roles de ejemplo, ajusta según sea necesario
-    roles: ['Administrador', 'Jefe'],
+    roles: ['Administrador', 'Jefe', 'Coordinador Nacional'],
     children: [
       { name: 'Facturación', to: '/dashboard/facturacion', icon: 'fa-file-invoice-dollar' },
     ],
