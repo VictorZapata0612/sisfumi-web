@@ -1968,7 +1968,7 @@ exports.getSignedUploadUrl = onCall({ cors: true }, async (request) => {
 })
 
 exports.getSignedSupportUploadUrl = onCall({ cors: true }, async (request) => {
-  assertVisitManager(request)
+  assertRole(request, ['Administrador'])
   const { visitId, filePath, contentType } = request.data
   if (
     typeof visitId !== 'string' ||
@@ -2253,6 +2253,10 @@ exports.updateVisit = onCall({ cors: true }, async (request) => {
 
     const updatePayload = { ...visitData }
 
+    // La pestaña y sus operaciones quedan temporalmente reservadas al Administrador.
+    // Si el formulario envía el objeto completo, no se permite alterar gestionPermiso.
+    if (request.auth.token.role !== 'Administrador') delete updatePayload.gestionPermiso
+
     // --- LIMPIEZA DE METADATOS ---
     // Vital para evitar que el trigger handleVisitWrite se engañe y aborte
     delete updatePayload.assignmentNotificationKey
@@ -2296,10 +2300,10 @@ exports.updateVisit = onCall({ cors: true }, async (request) => {
 
 /**
  * Obtiene todas las visitas que están pendientes de aprobación de permiso.
- * Solo para Administradores y Jefes.
+ * Solo para Administrador mientras el módulo Permisos esté restringido.
  */
 exports.getPendingPermissionVisits = onCall({ cors: true }, async (request) => {
-  assertRole(request, APPROVER_ROLES)
+  assertRole(request, ['Administrador'])
 
   try {
     // Buscar visitas pendientes y aprobadas para mostrar en tablero
@@ -2328,10 +2332,10 @@ exports.getPendingPermissionVisits = onCall({ cors: true }, async (request) => {
 
 /**
  * Aprueba el permiso para una visita específica.
- * Solo para Administradores y Jefes.
+ * Solo para Administrador mientras el módulo Permisos esté restringido.
  */
 exports.approveVisitPermission = onCall({ cors: true }, async (request) => {
-  assertRole(request, APPROVER_ROLES)
+  assertRole(request, ['Administrador'])
 
   const { visitId, notes } = request.data
 
@@ -2383,7 +2387,7 @@ exports.approveVisitPermission = onCall({ cors: true }, async (request) => {
  * En lugar de borrarla, la marca como 'rechazada' para mantener un historial.
  */
 exports.rejectVisitPermission = onCall({ cors: true }, async (request) => {
-  assertRole(request, APPROVER_ROLES)
+  assertRole(request, ['Administrador'])
 
   const { visitId, reason } = request.data
 
@@ -2431,7 +2435,7 @@ exports.rejectVisitPermission = onCall({ cors: true }, async (request) => {
  * Añade una referencia de un archivo de soporte a una visita existente.
  */
 exports.addSupportFileToVisit = onCall({ cors: true }, async (request) => {
-  assertVisitManager(request)
+  assertRole(request, ['Administrador'])
 
   const { visitId, fileData } = request.data
   if (
@@ -2520,7 +2524,7 @@ exports.updatePermissionNotes = onCall({ cors: true }, async (request) => {
   const visitRef = db.collection('visitas').doc(visitId)
 
   try {
-    assertRole(request, APPROVER_ROLES)
+    assertRole(request, ['Administrador'])
     await getAuthorizedVisit(request, visitId)
     const updateData = {}
     if (isApproval) {
@@ -2555,7 +2559,7 @@ exports.updatePermissionNotes = onCall({ cors: true }, async (request) => {
  * Genera una URL firmada temporal para un soporte asociado a una visita autorizada.
  */
 exports.getPublicFileUrl = onCall({ cors: true }, async (request) => {
-  assertVisitManager(request)
+  assertRole(request, ['Administrador'])
   const { visitId, filePath } = request.data
   if (!visitId || typeof filePath !== 'string') {
     throw new HttpsError('invalid-argument', 'Se requieren visitId y filePath.')
@@ -2643,6 +2647,7 @@ exports.deleteSupportFile = onCall({ cors: true }, async (request) => {
   if (!request.auth) {
     throw new HttpsError('unauthenticated', 'La solicitud debe estar autenticada.')
   }
+  assertRole(request, ['Administrador'])
 
   const { visitId, fileData } = request.data
   const filePath = fileData?.path
@@ -6202,7 +6207,7 @@ exports.sendContactEmail = onCall({ cors: true }, async (request) => {
 })
 
 exports.updateSupportFileName = onCall({ cors: true }, async (request) => {
-  assertVisitManager(request)
+  assertRole(request, ['Administrador'])
 
   const { visitId, filePath, newName } = request.data
 
@@ -6259,7 +6264,7 @@ exports.updateSupportFileName = onCall({ cors: true }, async (request) => {
 
 exports.updateSupportFileOrder = onCall({ cors: true }, async (request) => {
   const { auth, data } = request
-  assertVisitManager(request)
+  assertRole(request, ['Administrador'])
 
   const { visitId, newOrderPaths } = data
   if (

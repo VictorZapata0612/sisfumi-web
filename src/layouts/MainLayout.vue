@@ -58,8 +58,13 @@ onUnmounted(() => {
   window.removeEventListener('keydown', handleKeydown)
 })
 
+type NavChildLink = { name: string; to: string; icon?: string; roles?: string[] }
+type NavLink =
+  | { name: string; to: string; icon: string; roles?: string[]; children?: never }
+  | { name: string; icon: string; roles?: string[]; children: NavChildLink[] }
+
 // Estructura de navegación ajustada para coincidir con la imagen
-const navLinks = [
+const navLinks: NavLink[] = [
   // Ítems de nivel superior
   // Nota: La ruta de inicio es '/dashboard' para coincidir con el router y el menú
   { name: 'Inicio', to: '/dashboard', icon: 'fa-clock' }, // Ya es correcto
@@ -86,7 +91,12 @@ const navLinks = [
     roles: ['Administrador', 'Jefe', 'Coordinador Nacional'],
     children: [
       { name: 'Reportes', to: '/dashboard/reportes', icon: 'fa-chart-pie' },
-      { name: 'Permisos', to: '/dashboard/permisos', icon: 'fa-file-signature' },
+      {
+        name: 'Permisos',
+        to: '/dashboard/permisos',
+        icon: 'fa-file-signature',
+        roles: ['Administrador'],
+      },
     ],
   },
   // Configuración (Movido a nivel superior)
@@ -215,7 +225,7 @@ const toggleCollapse = () => {
                 class="bg-white/5 overflow-hidden transition-all duration-300 ease-in-out">
                 <ul>
                   <li v-for="child in link.children" :key="child.name">
-                    <RouterLink :to="child.to" active-class="" exact-active-class=""
+                    <RouterLink v-if="hasAccess(child.roles)" :to="child.to" active-class="" exact-active-class=""
                       class="flex items-center pl-10 pr-6 py-2 text-gray-400 hover:bg-[#d60000] hover:text-white transition-colors"
                       :class="{ '!text-white font-bold bg-[#d60000]/20': isLinkActive(child.to) }">
                       {{ child.name }}

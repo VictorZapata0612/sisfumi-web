@@ -125,6 +125,7 @@ const router = createRouter({
           path: 'permisos',
           name: 'permisos',
           component: () => import('../views/PermissionsView.vue'),
+          meta: { roles: ['Administrador'] },
         },
         {
           path: 'configuracion',

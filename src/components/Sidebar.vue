@@ -222,7 +222,7 @@ const userInitials = computed(() => {
             <RouterLink to="/reportes" class="sub-nav-item" active-class="sub-active"
               >Reportes</RouterLink
             >
-            <RouterLink to="/permisos" class="sub-nav-item" active-class="sub-active"
+            <RouterLink v-if="authStore.userRole === 'Administrador'" to="/permisos" class="sub-nav-item" active-class="sub-active"
               >Permisos</RouterLink
             >
           </div>
