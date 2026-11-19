@@ -79,6 +79,8 @@ const MAX_PROFILE_IMAGE_SIZE = 5 * 1024 * 1024
 const PROFILE_IMAGE_PATH = /^profile_pictures\/([^/]+)\/([^/]+)$/
 const PROFILE_IMAGE_CONTENT_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif'])
 const MAX_SUPPORT_FILE_SIZE = 15 * 1024 * 1024
+const MAX_SUPPORT_FILES_PER_VISIT = 50
+const SUPPORT_FILE_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 const SUPPORT_FILE_CONTENT_TYPES = new Set([
   'application/pdf',
   'application/msword',
@@ -1969,24 +1971,25 @@ exports.getSignedSupportUploadUrl = onCall({ cors: true }, async (request) => {
   assertVisitManager(request)
   const { visitId, filePath, contentType } = request.data
   if (
+    typeof visitId !== 'string' ||
     typeof filePath !== 'string' ||
-    !visitId ||
     !filePath.startsWith(`soportes_permisos/${visitId}/`) ||
-    !/^[0-9a-f-]{36}$/i.test(filePath.slice(`soportes_permisos/${visitId}/`.length)) ||
+    !SUPPORT_FILE_ID_PATTERN.test(filePath.slice(`soportes_permisos/${visitId}/`.length)) ||
     !SUPPORT_FILE_CONTENT_TYPES.has(contentType)
   ) {
     throw new HttpsError('invalid-argument', 'La ruta o el tipo de archivo de soporte no es válido.')
   }
 
   try {
-    await getAuthorizedVisit(request, visitId)
+    const { data: visit } = await getAuthorizedVisit(request, visitId)
+    if ((visit.gestionPermiso?.soportes || []).length >= MAX_SUPPORT_FILES_PER_VISIT) {
+      throw new HttpsError('resource-exhausted', 'Una visita admite máximo 50 soportes.')
+    }
     const [uploadPolicy] = await getStorageBucket().file(filePath).generateSignedPostPolicyV4({
       expires: Date.now() + 15 * 60 * 1000,
       fields: { key: filePath, 'Content-Type': contentType },
       conditions: [
         { bucket: storageBucketName },
-        ['eq', '$key', filePath],
-        ['eq', '$Content-Type', contentType],
         // The policy size includes multipart overhead; final object size is checked below.
         ['content-length-range', 1, MAX_SUPPORT_FILE_SIZE + 64 * 1024],
       ],
@@ -2000,7 +2003,7 @@ exports.getSignedSupportUploadUrl = onCall({ cors: true }, async (request) => {
 })
 
 /**
- * Hace público un archivo subido a Firebase Storage.
+ * Hace pública únicamente la foto de perfil del usuario autenticado.
  */
 exports.makeSupportFilePublic = onCall({ cors: true }, async (request) => {
   if (!request.auth) {
@@ -2431,31 +2434,67 @@ exports.addSupportFileToVisit = onCall({ cors: true }, async (request) => {
   assertVisitManager(request)
 
   const { visitId, fileData } = request.data
-  if (!visitId || !fileData || typeof fileData.name !== 'string' || !fileData.path) {
+  if (
+    typeof visitId !== 'string' ||
+    !fileData ||
+    typeof fileData.name !== 'string' ||
+    !fileData.name.trim() ||
+    typeof fileData.path !== 'string' ||
+    !fileData.path.startsWith(`soportes_permisos/${visitId}/`) ||
+    !SUPPORT_FILE_ID_PATTERN.test(fileData.path.slice(`soportes_permisos/${visitId}/`.length))
+  ) {
     throw new HttpsError('invalid-argument', 'Faltan datos del archivo o de la visita.')
   }
 
   const visitRef = db.collection('visitas').doc(visitId)
 
   try {
-    await getAuthorizedVisit(request, visitId)
-    if (!fileData.path.startsWith(`soportes_permisos/${visitId}/`)) {
-      throw new HttpsError('invalid-argument', 'La ruta del soporte no corresponde a la visita.')
+    const { data: visit } = await getAuthorizedVisit(request, visitId)
+    const currentSupports = visit.gestionPermiso?.soportes || []
+    if (currentSupports.length >= MAX_SUPPORT_FILES_PER_VISIT) {
+      await getStorageBucket().file(fileData.path).delete({ ignoreNotFound: true })
+      throw new HttpsError('resource-exhausted', 'Una visita admite máximo 50 soportes.')
+    }
+    if (currentSupports.some((support) => support.path === fileData.path)) {
+      throw new HttpsError('already-exists', 'Ese archivo ya está asociado a la visita.')
     }
     const bucketFile = getStorageBucket().file(fileData.path)
     const [metadata] = await bucketFile.getMetadata()
+    const uploadedSize = Number(metadata.size)
     if (
       !SUPPORT_FILE_CONTENT_TYPES.has(metadata.contentType) ||
-      Number(metadata.size) > MAX_SUPPORT_FILE_SIZE
+      !Number.isSafeInteger(uploadedSize) ||
+      uploadedSize <= 0 ||
+      uploadedSize > MAX_SUPPORT_FILE_SIZE
     ) {
       await bucketFile.delete().catch(() => {})
       throw new HttpsError('invalid-argument', 'El archivo debe ser PDF, Word o imagen y pesar máximo 15 MB.')
     }
     const safeFileData = { name: fileData.name.slice(0, 180), path: fileData.path }
-    await visitRef.update({
-      'gestionPermiso.soportes': admin.firestore.FieldValue.arrayUnion(safeFileData),
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-    })
+    try {
+      await db.runTransaction(async (transaction) => {
+        const latestVisitSnapshot = await transaction.get(visitRef)
+        if (!latestVisitSnapshot.exists) throw new HttpsError('not-found', 'La visita no existe.')
+        const latestVisit = latestVisitSnapshot.data()
+        assertVisitZoneAccess(request, latestVisit)
+        const latestSupports = latestVisit.gestionPermiso?.soportes || []
+        if (latestSupports.some((support) => support.path === fileData.path)) {
+          throw new HttpsError('already-exists', 'Ese archivo ya está asociado a la visita.')
+        }
+        if (latestSupports.length >= MAX_SUPPORT_FILES_PER_VISIT) {
+          throw new HttpsError('resource-exhausted', 'Una visita admite máximo 50 soportes.')
+        }
+        transaction.update(visitRef, {
+          'gestionPermiso.soportes': admin.firestore.FieldValue.arrayUnion(safeFileData),
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        })
+      })
+    } catch (error) {
+      if (error instanceof HttpsError && error.code === 'resource-exhausted') {
+        await bucketFile.delete({ ignoreNotFound: true }).catch(() => {})
+      }
+      throw error
+    }
     return { success: true, message: 'Soporte añadido correctamente.' }
   } catch (error) {
     logger.error(`Error al añadir soporte a la visita ${visitId}:`, error)
@@ -2513,7 +2552,7 @@ exports.updatePermissionNotes = onCall({ cors: true }, async (request) => {
 })
 
 /**
- * Obtiene la URL pública de un archivo en Storage.
+ * Genera una URL firmada temporal para un soporte asociado a una visita autorizada.
  */
 exports.getPublicFileUrl = onCall({ cors: true }, async (request) => {
   assertVisitManager(request)
@@ -2528,7 +2567,10 @@ exports.getPublicFileUrl = onCall({ cors: true }, async (request) => {
     if (!isAttachedFile || !filePath.startsWith(`soportes_permisos/${visitId}/`)) {
       throw new HttpsError('permission-denied', 'El archivo no está asociado a esta visita.')
     }
-    const [signedUrl] = await getStorageBucket().file(filePath).getSignedUrl({
+    const file = getStorageBucket().file(filePath)
+    const [exists] = await file.exists()
+    if (!exists) throw new HttpsError('not-found', 'El archivo de soporte no existe en Storage.')
+    const [signedUrl] = await file.getSignedUrl({
       action: 'read',
       expires: Date.now() + 15 * 60 * 1000,
     })
@@ -6164,7 +6206,12 @@ exports.updateSupportFileName = onCall({ cors: true }, async (request) => {
 
   const { visitId, filePath, newName } = request.data
 
-  if (!visitId || !filePath || !newName || typeof newName !== 'string') {
+  if (
+    typeof visitId !== 'string' ||
+    typeof filePath !== 'string' ||
+    typeof newName !== 'string' ||
+    !newName.trim()
+  ) {
     throw new HttpsError(
       'invalid-argument',
       'Los parámetros visitId, filePath y newName son obligatorios.',
@@ -6215,7 +6262,12 @@ exports.updateSupportFileOrder = onCall({ cors: true }, async (request) => {
   assertVisitManager(request)
 
   const { visitId, newOrderPaths } = data
-  if (!visitId || !Array.isArray(newOrderPaths)) {
+  if (
+    typeof visitId !== 'string' ||
+    !Array.isArray(newOrderPaths) ||
+    newOrderPaths.length > MAX_SUPPORT_FILES_PER_VISIT ||
+    newOrderPaths.some((path) => typeof path !== 'string' || !path)
+  ) {
     throw new HttpsError(
       'invalid-argument',
       'Se requiere visitId y un array con el nuevo orden de rutas (newOrderPaths).',

@@ -162,7 +162,7 @@ const openPreview = async (file: { path: string; name: string }) => {
     if (['jpg', 'jpeg', 'png', 'webp', 'pdf'].includes(ext || '')) {
       previewFile.value = { url: signedUrl, type: ext === 'pdf' ? 'pdf' : 'image' }
     } else {
-      window.open(signedUrl, '_blank', 'noopener,noreferrer')
+      previewFile.value = { url: signedUrl, type: 'download' }
     }
   } catch (error: any) {
     showToast({
@@ -369,6 +369,10 @@ const openPreview = async (file: { path: string; name: string }) => {
           class="object-contain w-full h-full rounded-lg" />
         <iframe v-else-if="previewFile.type === 'pdf'" :src="previewFile.url"
           class="w-full h-full rounded-lg bg-white"></iframe>
+        <a v-else :href="previewFile.url" target="_blank" rel="noopener noreferrer" download
+          class="m-auto rounded-lg bg-cyan-600 px-5 py-3 font-semibold text-white hover:bg-cyan-500">
+          Descargar soporte
+        </a>
       </div>
     </div>
   </div>

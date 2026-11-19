@@ -111,7 +111,7 @@ export const usePermissionsStore = defineStore('permissions', () => {
     })
 
     // 3. Guardar solo la referencia; el acceso se entrega mediante URL firmada temporal.
-    const fileData = { name: file.name, path: filePath }
+    const fileData = { name: file.name.slice(0, 180), path: filePath }
     const addSupportFn = httpsCallable(functions, 'addSupportFileToVisit')
     await addSupportFn({ visitId, fileData })
 
