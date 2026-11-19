@@ -4,11 +4,13 @@ import { onMounted } from 'vue'
 import { useNotificationStore } from '@/stores/notifications'
 import { storeToRefs } from 'pinia'
 import { useToast } from '@/composables/useToast'
+import { useRouter } from 'vue-router'
 
 defineOptions({ name: 'NotificationsView' })
 
 const notificationStore = useNotificationStore()
 const { showToast } = useToast()
+const router = useRouter()
 
 // Usamos storeToRefs para mantener la reactividad
 const { notifications, loading } = storeToRefs(notificationStore)
@@ -34,6 +36,16 @@ const handleMarkAsRead = async (notificationId: string) => {
       type: 'error',
     })
   }
+}
+
+const openNotification = async (notification: { id: string; link?: string }) => {
+  if (notification.link) {
+    const target = new URL(notification.link, window.location.origin)
+    if (target.origin === window.location.origin && target.pathname.startsWith('/dashboard/')) {
+      await router.push(`${target.pathname}${target.search}${target.hash}`)
+    }
+  }
+  await handleMarkAsRead(notification.id)
 }
 
 const formatDate = (timestamp: any) => {
@@ -98,15 +110,20 @@ const formatDate = (timestamp: any) => {
             <i class="fas fa-dollar-sign"></i>
           </div>
           <div class="flex-grow">
-            <p class="text-white font-medium leading-relaxed">{{ notification.message }}</p>
+            <button
+              v-if="notification.link"
+              class="text-left text-white font-medium leading-relaxed hover:text-indigo-300"
+              @click="openNotification(notification)"
+            >{{ notification.message }}</button>
+            <p v-else class="text-white font-medium leading-relaxed">{{ notification.message }}</p>
             <p class="text-xs text-gray-500 mt-2">{{ formatDate(notification.timestamp) }}</p>
           </div>
           <button
-            @click="handleMarkAsRead(notification.id)"
+            @click="openNotification(notification)"
             class="btn btn-secondary !py-1 !px-3 text-xs w-full sm:w-auto"
             title="Marcar como leído"
           >
-            <i class="fas fa-check mr-1.5"></i> Entendido
+            <i class="fas fa-check mr-1.5"></i> {{ notification.link ? 'Abrir' : 'Entendido' }}
           </button>
         </div>
       </transition-group>

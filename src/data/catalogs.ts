@@ -1202,7 +1202,7 @@ export const ROLES = [
   'Administrador',
   'Jefe',
   'Coordinador Nacional',
-  'Coordinador Regional',
-  'Técnico',
-  'Cliente',
+  'Coordinador Valle',
+  'Coordinador Norte de Santander',
+  'Invitado',
 ]

@@ -35,14 +35,8 @@ export const useAuthStore = defineStore('auth', () => {
     loading.value = true
     try {
       await signInWithEmailAndPassword(auth, email, password)
-      // ✅ CORRECCIÓN: Después del login, no dependemos del router guard.
-      // Esperamos a que el listener 'onAuthStateChanged' (en init) termine su trabajo
-      // y luego redirigimos explícitamente.
       await init() // Espera a que el estado del usuario (rol, zona) se cargue.
-      if (user.value) {
-        router.push('/') // Redirige al dashboard.
-      }
-      // La redirección se maneja usualmente en el componente LoginView o en el router
+      // LoginView es la única fuente de navegación tras un inicio interactivo.
     } catch (error: any) {
       console.error('Error en login:', error)
       throw error

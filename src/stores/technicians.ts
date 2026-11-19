@@ -84,7 +84,7 @@ export const useTechniciansStore = defineStore('technicians', () => {
           pageHistory.value.push(lastDocId)
         }
       }
-      isLastPage.value = newTechnicians.length < 15 // Asumiendo PAGE_SIZE = 15
+      isLastPage.value = newTechnicians.length < 20 // Debe coincidir con getFumigadoresPage en Functions.
     } catch (err: any) {
       error.value = `Error al cargar técnicos: ${err.message}`
     } finally {

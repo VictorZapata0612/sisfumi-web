@@ -9,6 +9,7 @@ import { storeToRefs } from 'pinia'
 import VisitFormModal from '@/components/VisitFormModal.vue'
 import { useToast } from '@/composables/useToast'
 import { useDialog } from '@/composables/useDialog'
+import { useRoute, useRouter } from 'vue-router'
 
 defineOptions({ name: 'PlanningView' })
 
@@ -17,6 +18,9 @@ const authStore = useAuthStore()
 const settingsStore = useSettingsStore()
 const { showToast } = useToast()
 const { showDialog } = useDialog()
+const route = useRoute()
+const router = useRouter()
+const openedVisitFromUrl = ref<string | null>(null)
 
 // ✅ Mapeo de colores para los técnicos
 const googleCalendarColors: Record<string, string> = {
@@ -74,6 +78,14 @@ const handleCalendarChange = () => {
 }
 
 onMounted(async () => {
+  const requestedDate = route.query.date
+  if (typeof requestedDate === 'string') {
+    const parsedDate = new Date(requestedDate)
+    if (!Number.isNaN(parsedDate.getTime())) {
+      currentDate.value = parsedDate
+      selectedDate.value = parsedDate
+    }
+  }
   if (authStore.userRole?.startsWith('Coordinador')) {
     selectedZone.value = authStore.userZone || 'Todos'
     selectedCalendarUid.value = authStore.user?.uid || 'internal'
@@ -411,6 +423,23 @@ const openEditModal = (event: any) => {
 
   showEditModal.value = true
 }
+
+watch(
+  () => [route.query.visitIdToOpen, planningStore.monthlyVisits, planningStore.pendingVisits],
+  ([visitId]) => {
+    if (typeof visitId !== 'string' || !visitId || openedVisitFromUrl.value === visitId) return
+    const visit = [...planningStore.monthlyVisits, ...planningStore.pendingVisits].find(
+      (item) => item.id === visitId,
+    )
+    if (!visit) return
+    openedVisitFromUrl.value = visitId
+    openEditModal(visit)
+    void router.replace({
+      query: { ...route.query, visitIdToOpen: undefined, date: undefined },
+    })
+  },
+  { immediate: true },
+)
 
 const handleSaveVisit = async (visitData: any) => {
   if (isSavingVisit.value) return

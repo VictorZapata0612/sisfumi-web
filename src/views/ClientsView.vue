@@ -4,13 +4,14 @@ import { onMounted, onUnmounted, ref, computed, reactive, defineAsyncComponent }
 import { useClientsStore } from '@/stores/clients'
 import { useAuthStore } from '@/stores/auth'
 import { useDialog } from '@/composables/useDialog'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { httpsCallable } from 'firebase/functions'
 import { functions } from '@/firebase/config'
 
 const authStore = useAuthStore()
 const clientsStore = useClientsStore()
 const route = useRoute()
+const router = useRouter()
 
 const ClientFormModal = defineAsyncComponent(() => import('@/components/ClientFormModal.vue'))
 const ClientImportExportModal = defineAsyncComponent(() => import('@/components/ClientImportExportModal.vue'))
@@ -183,6 +184,12 @@ onMounted(() => {
 
   initializeFilters()
   resetAndFetch()
+
+  const clientId = route.query.clientIdToOpen
+  if (typeof clientId === 'string' && clientId) {
+    viewClientProfile(clientId)
+    void router.replace({ query: { ...route.query, clientIdToOpen: undefined } })
+  }
 
   // Infinite Scroll Observer
   observer = new IntersectionObserver((entries) => {

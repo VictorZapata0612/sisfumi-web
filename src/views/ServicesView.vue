@@ -7,10 +7,13 @@ import { useSettingsStore } from '@/stores/settings'
 import ServiceFormModal from '@/components/ServiceFormModal.vue'
 import { useToast } from '@/composables/useToast'
 import { onClickOutside } from '@vueuse/core'
+import { useRoute, useRouter } from 'vue-router'
 
 const servicesStore = useServicesStore()
 const authStore = useAuthStore()
 const settingsStore = useSettingsStore()
+const route = useRoute()
+const router = useRouter()
 const { showToast } = useToast()
 const searchTerm = ref('')
 const showModal = ref(false)
@@ -49,7 +52,12 @@ const canApprovePrices = computed(() => {
 
 onMounted(async () => {
   await settingsStore.fetchBusinessData()
-  servicesStore.fetchClients()
+  await servicesStore.fetchClients()
+  const clientId = route.query.clientIdToOpen
+  if (typeof clientId === 'string' && clientId) {
+    await handleSelectClient(clientId)
+    await router.replace({ query: { ...route.query, clientIdToOpen: undefined } })
+  }
   if (canApprovePrices.value) {
     servicesStore.fetchPendingPriceRequests()
   }

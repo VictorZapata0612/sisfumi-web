@@ -2364,11 +2364,14 @@ exports.approveVisitPermission = onCall({ cors: true }, async (request) => {
     // --- Lógica de Notificación ---
     const requesterUid = visitData.createdBy
     if (requesterUid && requesterUid !== request.auth.uid) {
+      const visitDate = visitData.fecha_visita?.toDate
+        ? visitData.fecha_visita.toDate()
+        : new Date(visitData.fecha_visita)
       const notificationPayload = {
         title: 'Permiso Aprobado',
         message: `Tu solicitud para la visita a "${visitData.nombre_cliente}" ha sido aprobada.`,
         type: 'success',
-        link: `/planeacion?visitIdToOpen=${visitId}`,
+        link: `/dashboard/planeacion?visitIdToOpen=${encodeURIComponent(visitId)}&date=${encodeURIComponent(visitDate.toISOString())}`,
         read: false,
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
       }
@@ -2413,11 +2416,14 @@ exports.rejectVisitPermission = onCall({ cors: true }, async (request) => {
     // --- Lógica de Notificación ---
     const requesterUid = visitData.createdBy
     if (requesterUid && requesterUid !== request.auth.uid) {
+      const visitDate = visitData.fecha_visita?.toDate
+        ? visitData.fecha_visita.toDate()
+        : new Date(visitData.fecha_visita)
       const notificationPayload = {
         title: 'Permiso Rechazado',
         message: `Tu solicitud para "${visitData.nombre_cliente}" fue rechazada. Motivo: ${reason}`,
         type: 'error',
-        link: `/planeacion?visitIdToOpen=${visitId}`,
+        link: `/dashboard/planeacion?visitIdToOpen=${encodeURIComponent(visitId)}&date=${encodeURIComponent(visitDate.toISOString())}`,
         read: false,
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
       }
@@ -6714,7 +6720,7 @@ exports.onServiceSheetUpdateForPriceRequest = onDocumentWritten(
         title: 'Solicitud de Precio',
         message: `El usuario ${requesterName} solicita precio para el servicio "${service.tipo_servicio}" del cliente "${afterData.clientName}".`,
         type: 'price_request',
-        link: `/servicios?clientId=${afterData.clientId}`,
+        link: `/dashboard/servicios?clientIdToOpen=${encodeURIComponent(afterData.clientId)}`,
         read: false,
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
       }
