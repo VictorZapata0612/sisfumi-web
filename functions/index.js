@@ -1972,6 +1972,7 @@ exports.getSignedSupportUploadUrl = onCall({ cors: true }, async (request) => {
     typeof filePath !== 'string' ||
     !visitId ||
     !filePath.startsWith(`soportes_permisos/${visitId}/`) ||
+    !/^[0-9a-f-]{36}$/i.test(filePath.slice(`soportes_permisos/${visitId}/`.length)) ||
     !SUPPORT_FILE_CONTENT_TYPES.has(contentType)
   ) {
     throw new HttpsError('invalid-argument', 'La ruta o el tipo de archivo de soporte no es válido.')
@@ -1979,12 +1980,18 @@ exports.getSignedSupportUploadUrl = onCall({ cors: true }, async (request) => {
 
   try {
     await getAuthorizedVisit(request, visitId)
-    const [signedUrl] = await getStorageBucket().file(filePath).getSignedUrl({
-      action: 'write',
+    const [uploadPolicy] = await getStorageBucket().file(filePath).generateSignedPostPolicyV4({
       expires: Date.now() + 15 * 60 * 1000,
-      contentType,
+      fields: { key: filePath, 'Content-Type': contentType },
+      conditions: [
+        { bucket: storageBucketName },
+        ['eq', '$key', filePath],
+        ['eq', '$Content-Type', contentType],
+        // The policy size includes multipart overhead; final object size is checked below.
+        ['content-length-range', 1, MAX_SUPPORT_FILE_SIZE + 64 * 1024],
+      ],
     })
-    return { signedUrl, expiresInSeconds: 900 }
+    return { uploadUrl: uploadPolicy.url, fields: uploadPolicy.fields, expiresInSeconds: 900 }
   } catch (error) {
     if (error instanceof HttpsError) throw error
     logger.error(`Error al generar URL temporal de carga para visita ${visitId}:`, error)

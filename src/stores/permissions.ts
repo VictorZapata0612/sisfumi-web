@@ -83,29 +83,31 @@ export const usePermissionsStore = defineStore('permissions', () => {
       throw new Error('El archivo debe ser PDF, Word o imagen y pesar máximo 15 MB.')
     }
 
-    const filePath = `soportes_permisos/${visitId}/${Date.now()}-${file.name}`
+    const filePath = `soportes_permisos/${visitId}/${crypto.randomUUID()}`
 
-    // 1. Obtener URL firmada
+    // 1. Obtener política firmada con límites de ruta, tipo y tamaño.
     const getSignedUrlFn = httpsCallable(functions, 'getSignedSupportUploadUrl')
     const result = (await getSignedUrlFn({ visitId, filePath, contentType: file.type })) as {
-      data: { signedUrl: string }
+      data: { uploadUrl: string; fields: Record<string, string> }
     }
-    const { signedUrl } = result.data
+    const { uploadUrl, fields } = result.data
 
-    // 2. Subir archivo con XHR para progreso
+    // 2. Subir con POST multipart; Cloud Storage aplica el límite de tamaño en la política.
     await new Promise<void>((resolve, reject) => {
       const xhr = new XMLHttpRequest()
-      xhr.open('PUT', signedUrl, true)
-      xhr.setRequestHeader('Content-Type', file.type)
+      xhr.open('POST', uploadUrl, true)
       xhr.upload.onprogress = (event) => {
         if (event.lengthComputable) {
           onProgress(Math.round((event.loaded / event.total) * 100))
         }
       }
       xhr.onload = () =>
-        xhr.status >= 200 && xhr.status < 300 ? resolve() : reject(xhr.statusText)
+        xhr.status >= 200 && xhr.status < 300 ? resolve() : reject(`Carga rechazada (${xhr.status}).`)
       xhr.onerror = () => reject('Error de red durante la subida.')
-      xhr.send(file)
+      const form = new FormData()
+      Object.entries(fields).forEach(([key, value]) => form.append(key, value))
+      form.append('file', file)
+      xhr.send(form)
     })
 
     // 3. Guardar solo la referencia; el acceso se entrega mediante URL firmada temporal.
