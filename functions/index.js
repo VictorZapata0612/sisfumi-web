@@ -27,6 +27,10 @@ const { onObjectDeleted } = require('firebase-functions/v2/storage')
 const { onSchedule } = require('firebase-functions/v2/scheduler')
 const { logger } = require('firebase-functions')
 const { setGlobalOptions } = require('firebase-functions/options')
+const { defineSecret } = require('firebase-functions/params')
+
+// Nombre distinto de la variable de entorno antigua para evitar colisión en Cloud Run.
+const googleClientSecret = defineSecret('GOOGLE_OAUTH_CLIENT_SECRET')
 
 setGlobalOptions({
   region: 'us-central1',
@@ -118,7 +122,6 @@ const callableCorsOrigins = [
 // Las credenciales OAuth solo se cargan desde la configuración segura del entorno.
 const googleConfig = {
   clientId: process.env.GOOGLE_CLIENT_ID,
-  clientSecret: process.env.GOOGLE_CLIENT_SECRET,
 }
 
 // ==========================================
@@ -484,7 +487,7 @@ function getStorageBucket() {
  * Esta función es segura y se basa en los permisos del usuario que la llama.
  */
 exports.getClientsPage = onCall({ cors: true }, async (request) => {
-  const { zona: userZone, isGlobal } = assertVisitManager(request)
+  const { role: userRole, zona: userZone, isGlobal } = assertVisitManager(request)
 
   const {
     status,
@@ -574,7 +577,7 @@ exports.getClientsPage = onCall({ cors: true }, async (request) => {
     return { clients: clients || [], count: clients.length }
   } catch (error) {
     logger.error('Error crítico en getClientsPage:', error)
-    throw new HttpsError('internal', 'Error al consultar la base de datos de clientes.', error)
+    throw new HttpsError('internal', 'Error al consultar la base de datos de clientes.')
   }
 })
 
@@ -1121,7 +1124,7 @@ async function sendVisitNotificationViaGmailAPI(visitData, visitId, organizerUid
       throw new Error(`Integración no encontrada para ${organizerUid}`)
 
     const tokens = organizerAccountDoc.data()
-    const oAuth2Client = new google.auth.OAuth2(googleConfig.clientId, googleConfig.clientSecret)
+    const oAuth2Client = new google.auth.OAuth2(googleConfig.clientId, googleClientSecret.value())
     oAuth2Client.setCredentials(tokens)
     const gmail = google.gmail({ version: 'v1', auth: oAuth2Client })
 
@@ -1360,7 +1363,7 @@ async function createOrUpdateCalendarEvent(
     }
 
     const tokens = integrationDoc.data()
-    const oAuth2Client = new google.auth.OAuth2(googleConfig.clientId, googleConfig.clientSecret)
+    const oAuth2Client = new google.auth.OAuth2(googleConfig.clientId, googleClientSecret.value())
     oAuth2Client.setCredentials(tokens)
     oAuth2Client.on('tokens', async (newTokens) => {
       await admin
@@ -1507,7 +1510,7 @@ async function deleteCalendarEvent(visitData, uid) {
 
     const tokens = integrationDoc.data()
 
-    const oAuth2Client = new google.auth.OAuth2(googleConfig.clientId, googleConfig.clientSecret)
+    const oAuth2Client = new google.auth.OAuth2(googleConfig.clientId, googleClientSecret.value())
 
     oAuth2Client.setCredentials(tokens)
 
@@ -1895,6 +1898,7 @@ exports.deleteVisitAndCalendarEvent = onCall(
     // ✅ FIX: Usar cors: true para estandarizar con el resto del backend
     // y evitar bloqueos preflight en Firebase v2.
     cors: true,
+    secrets: [googleClientSecret],
   },
   async (request) => {
     assertVisitManager(request)
@@ -3103,10 +3107,11 @@ exports.undoRoleChange = onCall({ cors: true }, async (request) => {
  * ✅ MEJORA: Intercambia un código de autorización de Google por tokens de acceso y refresco.
  * Este es el flujo de servidor seguro recomendado por Google.
  */
-exports.exchangeAuthCodeForTokens = onCall(async (request) => {
+exports.exchangeAuthCodeForTokens = onCall({ secrets: [googleClientSecret] }, async (request) => {
   logger.info('--> Iniciando exchangeAuthCodeForTokens (V3 ROBUST MODE)')
 
-  const { clientId, clientSecret } = googleConfig
+  const { clientId } = googleConfig
+  const clientSecret = googleClientSecret.value()
   const { code, targetUid, redirect_uri } = request.data
 
   assertAuth(request)
@@ -3274,7 +3279,9 @@ exports.exchangeAuthCodeForTokens = onCall(async (request) => {
     throw new HttpsError('internal', error.message || 'Error desconocido durante la vinculación.')
   }
 })
-exports.getGoogleCalendarEvents = onCall({ cors: true }, async (request) => {
+exports.getGoogleCalendarEvents = onCall(
+  { cors: true, secrets: [googleClientSecret] },
+  async (request) => {
   assertAuth(request)
   const { targetUid, startDate, endDate } = request.data
   const isGlobal = GLOBAL_CLIENT_ROLES.includes(request.auth.token.role)
@@ -3287,7 +3294,7 @@ exports.getGoogleCalendarEvents = onCall({ cors: true }, async (request) => {
 
   const tokens = doc.data()
   // CORRECCIÓN: Usar googleConfig
-  const oAuth2Client = new google.auth.OAuth2(googleConfig.clientId, googleConfig.clientSecret)
+  const oAuth2Client = new google.auth.OAuth2(googleConfig.clientId, googleClientSecret.value())
   oAuth2Client.setCredentials(tokens)
 
   // Listener para refrescar tokens
@@ -3313,9 +3320,12 @@ exports.getGoogleCalendarEvents = onCall({ cors: true }, async (request) => {
     if (e.code === 401) throw new HttpsError('unauthenticated', 'Token expirado.')
     throw new HttpsError('internal', e.message)
   }
-})
+  },
+)
 
-exports.getConsolidatedPlanningData = onCall({ cors: callableCorsOrigins }, async (request) => {
+exports.getConsolidatedPlanningData = onCall(
+  { cors: callableCorsOrigins, secrets: [googleClientSecret] },
+  async (request) => {
   const { auth, data } = request
   const { zona: userZone, isGlobal } = assertVisitManager(request)
 
@@ -3400,7 +3410,7 @@ exports.getConsolidatedPlanningData = onCall({ cors: callableCorsOrigins }, asyn
         const tokens = integrationDoc.data()
         const oAuth2Client = new google.auth.OAuth2(
           googleConfig.clientId,
-          googleConfig.clientSecret,
+          googleClientSecret.value(),
         )
         oAuth2Client.setCredentials(tokens)
 
@@ -3538,7 +3548,8 @@ exports.getConsolidatedPlanningData = onCall({ cors: callableCorsOrigins }, asyn
     console.error('Error en la Cloud Function getPlanningData:', error)
     throw new HttpsError('internal', 'No se pudieron obtener los datos de planeación.')
   }
-})
+  },
+)
 
 exports.getBillingDataForMonth = onCall({ cors: true }, async (request) => {
   assertRole(request, FINANCIAL_ROLES)
@@ -3724,7 +3735,7 @@ exports.getBillingDataForMonth = onCall({ cors: true }, async (request) => {
       .collection('grupos_facturacion')
       .where('month', '==', month)
       .where('year', '==', year)
-    if (!isAdmin && userZone) {
+    if (!hasGlobalFinancialAccess && userZone) {
       invoicedQuery = invoicedQuery.where('zona', '==', userZone)
     }
     const invoicedSnapshot = await invoicedQuery.get()
@@ -5204,7 +5215,9 @@ exports.exportPaymentDataToExcel = onCall(
 
 // --- Funciones de Disparo (Triggers) ---
 
-exports.handleVisitWrite = onDocumentWritten({ document: 'visitas/{visitId}' }, async (event) => {
+exports.handleVisitWrite = onDocumentWritten(
+  { document: 'visitas/{visitId}', secrets: [googleClientSecret] },
+  async (event) => {
   const visitId = event.params.visitId
   if (!visitId) return
 
@@ -5318,7 +5331,8 @@ exports.handleVisitWrite = onDocumentWritten({ document: 'visitas/{visitId}' }, 
   } catch (err) {
     logger.error(`Error al procesar evento/correo para ${visitId}:`, err)
   }
-})
+  },
+)
 
 exports.onClientWrite = onDocumentWritten('clientes/{clientId}', (event) => {
   if (!event.data.after.exists) return null

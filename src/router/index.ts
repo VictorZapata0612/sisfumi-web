@@ -5,6 +5,7 @@ import PublicLayout from '@/layouts/PublicLayout.vue'
 import HomeView from '@/views/HomeView.vue'
 import HomePage from '@/views/public/HomePage.vue'
 import LoginView from '@/views/LoginView.vue'
+import { ROLE_MATRIX } from '@/data/roleMatrix'
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -89,21 +90,25 @@ const router = createRouter({
           path: 'clientes',
           name: 'clientes',
           component: () => import('../views/ClientsView.vue'),
+          meta: { roles: [...ROLE_MATRIX.operational] },
         },
         {
           path: 'servicios',
           name: 'servicios',
           component: () => import('../views/ServicesView.vue'),
+          meta: { roles: [...ROLE_MATRIX.operational] },
         },
         {
           path: 'planeacion',
           name: 'planeacion',
           component: () => import('../views/PlanningView.vue'),
+          meta: { roles: [...ROLE_MATRIX.operational] },
         },
         {
           path: 'fumigadores',
           name: 'fumigadores',
           component: () => import('../views/TechniciansView.vue'),
+          meta: { roles: [...ROLE_MATRIX.operational] },
         },
         {
           path: 'notificaciones',
@@ -114,23 +119,31 @@ const router = createRouter({
           path: 'facturacion',
           name: 'facturacion',
           component: () => import('../views/BillingView.vue'),
-          meta: { roles: ['Administrador', 'Jefe', 'Coordinador Nacional'] },
+          meta: { roles: [...ROLE_MATRIX.financial] },
+        },
+        {
+          path: 'pagos',
+          name: 'pagos',
+          component: () => import('../views/PaymentsView.vue'),
+          meta: { roles: [...ROLE_MATRIX.financial] },
         },
         {
           path: 'reportes',
           name: 'reportes',
           component: () => import('../views/ReportsView.vue'),
+          meta: { roles: [...ROLE_MATRIX.financial] },
         },
         {
           path: 'permisos',
           name: 'permisos',
           component: () => import('../views/PermissionsView.vue'),
-          meta: { roles: ['Administrador'] },
+          meta: { roles: [...ROLE_MATRIX.permissions] },
         },
         {
           path: 'configuracion',
           name: 'configuracion',
           component: () => import('../views/SettingsView.vue'),
+          meta: { roles: [...ROLE_MATRIX.operational] },
         },
       ],
     },

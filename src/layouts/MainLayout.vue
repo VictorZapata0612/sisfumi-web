@@ -6,6 +6,7 @@ import AppHeader from '@/components/Header.vue'
 import AgentPanel from '@/components/AgentPanel.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useNotificationStore } from '@/stores/notifications'
+import { ROLE_MATRIX } from '@/data/roleMatrix'
 
 const UserProfileModal = defineAsyncComponent(() => import('@/components/UserProfileModal.vue'))
 const ToastContainer = defineAsyncComponent(() => import('@/components/ToastContainer.vue'))
@@ -68,19 +69,20 @@ const navLinks: NavLink[] = [
   // Ítems de nivel superior
   // Nota: La ruta de inicio es '/dashboard' para coincidir con el router y el menú
   { name: 'Inicio', to: '/dashboard', icon: 'fa-clock' }, // Ya es correcto
-  { name: 'Clientes', to: '/dashboard/clientes', icon: 'fa-users' },
-  { name: 'Servicios', to: '/dashboard/servicios', icon: 'fa-concierge-bell' },
-  { name: 'Planeación', to: '/dashboard/planeacion', icon: 'fa-calendar-alt' },
-  { name: 'Técnicos', to: '/dashboard/fumigadores', icon: 'fa-user-shield' },
+  { name: 'Clientes', to: '/dashboard/clientes', icon: 'fa-users', roles: [...ROLE_MATRIX.operational] },
+  { name: 'Servicios', to: '/dashboard/servicios', icon: 'fa-concierge-bell', roles: [...ROLE_MATRIX.operational] },
+  { name: 'Planeación', to: '/dashboard/planeacion', icon: 'fa-calendar-alt', roles: [...ROLE_MATRIX.operational] },
+  { name: 'Técnicos', to: '/dashboard/fumigadores', icon: 'fa-user-shield', roles: [...ROLE_MATRIX.operational] },
 
   // Dropdown Finanzas (Nuevo grupo)
   {
     name: 'Finanzas',
     icon: 'fa-dollar-sign',
     // Roles de ejemplo, ajusta según sea necesario
-    roles: ['Administrador', 'Jefe', 'Coordinador Nacional'],
+    roles: [...ROLE_MATRIX.financial],
     children: [
-      { name: 'Facturación', to: '/dashboard/facturacion', icon: 'fa-file-invoice-dollar' },
+      { name: 'Facturación', to: '/dashboard/facturacion', icon: 'fa-file-invoice-dollar', roles: [...ROLE_MATRIX.financial] },
+      { name: 'Pagos', to: '/dashboard/pagos', icon: 'fa-money-bill-wave', roles: [...ROLE_MATRIX.financial] },
     ],
   },
   // Dropdown Administración (Renombrado y reorganizado)
@@ -88,7 +90,7 @@ const navLinks: NavLink[] = [
     name: 'Administración',
     icon: 'fa-screwdriver-wrench',
     // Roles de ejemplo, ajusta según sea necesario
-    roles: ['Administrador', 'Jefe', 'Coordinador Nacional'],
+    roles: [...ROLE_MATRIX.financial],
     children: [
       { name: 'Reportes', to: '/dashboard/reportes', icon: 'fa-chart-pie' },
       {
