@@ -19,6 +19,7 @@ const router = useRouter()
 const zoneFilter = ref('Todos')
 const searchTerm = ref('')
 let searchTimeout: ReturnType<typeof setTimeout> | undefined
+const canCreate = computed(() => canEdit.value && authStore.canAccess('fumigadores', 'create'))
 const canDelete = computed(() => ['Administrador', 'Jefe'].includes(authStore.userRole ?? ''))
 const canEdit = computed(() => canDelete.value || ['Coordinador Valle', 'Coordinador Norte de Santander'].includes(authStore.userRole ?? ''))
 const zones = ['Todos', 'Norte de Santander', 'Valle del Cauca', 'Nacionales']
@@ -128,7 +129,7 @@ const handleDelete = async (technicianId: string) => {
           <p class="tech-muted mt-1 text-sm">Consulta el equipo, sus zonas y las visitas asignadas.</p>
         </div>
       </div>
-      <button v-if="canEdit" type="button" class="tech-button tech-primary" @click="openCreateModal">
+      <button v-if="canCreate" type="button" class="tech-button tech-primary" @click="openCreateModal">
         <i class="fas fa-user-plus" aria-hidden="true"></i> Registrar técnico
       </button>
     </header>
@@ -169,8 +170,8 @@ const handleDelete = async (technicianId: string) => {
                 <td>
                   <div class="flex gap-1">
                     <button type="button" class="tech-button tech-action" :aria-label="'Ver ficha de ' + tech.nombreCompleto" @click="openProfileModal(tech.id)"><i class="fas fa-eye" aria-hidden="true"></i></button>
-                    <button v-if="canEdit" type="button" class="tech-button tech-action" :aria-label="'Editar a ' + tech.nombreCompleto" @click="openEditModal(tech)"><i class="fas fa-edit" aria-hidden="true"></i></button>
-                    <button v-if="canDelete" type="button" class="tech-button tech-action" :aria-label="'Eliminar a ' + tech.nombreCompleto" @click="handleDelete(tech.id)"><i class="fas fa-trash-alt" aria-hidden="true"></i></button>
+                    <button v-if="canEdit && authStore.canAccess('fumigadores', 'edit')" type="button" class="tech-button tech-action" :aria-label="'Editar a ' + tech.nombreCompleto" @click="openEditModal(tech)"><i class="fas fa-edit" aria-hidden="true"></i></button>
+                    <button v-if="canDelete && authStore.canAccess('fumigadores', 'delete')" type="button" class="tech-button tech-action" :aria-label="'Eliminar a ' + tech.nombreCompleto" @click="handleDelete(tech.id)"><i class="fas fa-trash-alt" aria-hidden="true"></i></button>
                   </div>
                 </td>
               </tr>
@@ -196,9 +197,9 @@ const handleDelete = async (technicianId: string) => {
       </footer>
     </section>
 
-    <TechnicianFormModal :show="showFormModal" :technician="editingTechnician" :can-delete="canDelete"
+    <TechnicianFormModal :show="showFormModal" :technician="editingTechnician" :can-delete="canDelete && authStore.canAccess('fumigadores', 'delete')"
       @close="showFormModal = false" @refresh="handleRefresh" @delete="handleDelete" />
-    <TechnicianProfileModal :show="showProfileModal" :technician-id="viewingTechnicianId" :can-edit="canEdit"
+    <TechnicianProfileModal :show="showProfileModal" :technician-id="viewingTechnicianId" :can-edit="canEdit && authStore.canAccess('fumigadores', 'edit')"
       @close="showProfileModal = false" @edit="openEditModal" />
   </section>
 </template>

@@ -51,7 +51,7 @@ const handleKeydown = (e: KeyboardEvent) => {
 }
 
 onMounted(() => {
-  void settingsStore.fetchWorkspacePreferences()
+  void settingsStore.fetchWorkspacePreferences().catch(() => {})
   notificationStore.listenForPriceRequests()
   notificationStore.listenForGeneralNotifications()
   window.addEventListener('online', updateOnlineStatus)
@@ -158,7 +158,7 @@ const toggleCollapse = () => {
       <nav aria-label="Navegación principal" class="sidebar-nav flex min-h-0 flex-1 flex-col overflow-y-auto px-2.5 pb-3 pt-2">
         <ul class="shrink-0 space-y-0.5">
           <template v-for="link in navLinks" :key="link.name">
-            <li v-if="hasAccess(link.roles) && authStore.canAccess(link.to.split('/').at(-1) || '')">
+            <li v-if="hasAccess(link.roles) && authStore.canAccess(link.to.slice(link.to.lastIndexOf('/') + 1))">
               <!-- Enlace simple -->
               <RouterLink :to="link.to" active-class="" exact-active-class="" :aria-label="link.name" @click="sidebarOpen = false"
                 class="nav-button flex items-center gap-3 rounded-lg px-3 text-sm text-neutral-200 transition-colors hover:bg-white/10"

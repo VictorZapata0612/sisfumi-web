@@ -2951,6 +2951,7 @@ exports.checkForConflicts = protectedCall('planeacion', 'view', { cors: true }, 
 
 exports.globalSearch = onCall({ cors: true }, async (request) => {
   const { zona: userZone, isGlobal } = assertVisitManager(request)
+  const restrictions = await getRestrictions(request)
   const { data } = request
   const { term } = data
   if (!term || term.length < 2) {
@@ -2970,13 +2971,13 @@ exports.globalSearch = onCall({ cors: true }, async (request) => {
       fumigadorQuery = fumigadorQuery.where('zona', '==', userZone)
     }
 
-    const finalClientQuery = clientQuery
+    const finalClientQuery = restrictions.clientes?.view ? Promise.resolve({ docs: [] }) : clientQuery
       .where('nombreComercial_lower', '>=', lowerTerm)
       .where('nombreComercial_lower', '<', termEnd)
       .limit(5)
       .get()
 
-    const finalFumigadorQuery = fumigadorQuery
+    const finalFumigadorQuery = restrictions.fumigadores?.view ? Promise.resolve({ docs: [] }) : fumigadorQuery
       .where('nombreCompleto_lower', '>=', lowerTerm)
       .where('nombreCompleto_lower', '<', termEnd)
       .limit(5)
@@ -3490,7 +3491,10 @@ exports.getConsolidatedPlanningData = protectedCall('planeacion', 'view',
     if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) {
       throw new HttpsError('invalid-argument', 'El rango de fechas no es válido.')
     }
-    const sixMonthsAgo = new Date(new Date().setMonth(new Date().getMonth() - 6))
+    const section = data.section
+    const loadVisits = !section || section === 'visits'
+    const loadClients = !section || section === 'clients'
+    const loadGoogle = !section || section === 'google'
 
     let visitsQuery = db.collection('visitas')
     let techniciansQuery = db.collection('fumigadores')
@@ -3502,29 +3506,29 @@ exports.getConsolidatedPlanningData = protectedCall('planeacion', 'view',
       techniciansQuery = techniciansQuery.where('zona', '==', zoneToFilter)
     }
 
-    const monthlyVisitsPromise = visitsQuery
+    const monthlyVisitsPromise = loadVisits ? visitsQuery
       .where('fecha_visita', '>=', startDate)
       .where('fecha_visita', '<', endDate)
-      .get()
+      .get() : Promise.resolve({ docs: [] })
 
-    const techniciansPromise = techniciansQuery.get()
+    const techniciansPromise = loadVisits ? techniciansQuery.get() : Promise.resolve({ docs: [] })
     // ✅ MEJORA: Obtener solo los clientes activos para poblar los modales.
     let clientsQuery = db.collection('clientes').where('estado', '==', 'Activo')
     if (zoneToFilter) {
       clientsQuery = clientsQuery.where('zonasDeSucursales', 'array-contains', zoneToFilter)
     }
-    const clientsQueryPromise = clientsQuery.get()
+    const clientsQueryPromise = loadClients ? clientsQuery.get() : Promise.resolve({ docs: [] })
     // ✅ MEJORA: Obtener visitas pendientes de forma más eficiente.
-    const pendingVisitsPromise = pendingVisitsQuery
+    const pendingVisitsPromise = loadVisits ? pendingVisitsQuery
       .where('isUrgent', '==', true)
       .where('estado_visita', '==', 'Programada')
       .orderBy('fecha_visita', 'asc')
       .limit(20)
-      .get()
+      .get() : Promise.resolve({ docs: [] })
 
     // ✅ NUEVO: Obtener eventos de Google Calendar si se solicita.
     let googleEventsPromise = Promise.resolve([])
-    if (calendarTargetUid && calendarTargetUid !== 'internal') {
+    if (loadGoogle && calendarTargetUid && calendarTargetUid !== 'internal') {
       const integrationDoc = await db
         .collection('calendar_integrations')
         .doc(calendarTargetUid)
@@ -3574,6 +3578,7 @@ exports.getConsolidatedPlanningData = protectedCall('planeacion', 'view',
               await integrationDoc.ref.update({ needsReconnect: true })
               return { error: 'needs-auth-refresh' }
             }
+            if (section === 'google') throw err
             return []
           })
       }
@@ -4240,7 +4245,7 @@ exports.getConsolidatedDashboardStats = onCall(
     const { auth, data } = request
     const { zona: userZone, isGlobal: hasGlobalAccess } = assertVisitManager(request)
 
-    const { clientDate, zone: requestedZone, range = 'month' } = data || {}
+    const { clientDate, zone: requestedZone, range = 'month', compact = false } = data || {}
     if (!clientDate) {
       throw new HttpsError('invalid-argument', 'Se requiere la fecha del cliente (clientDate).')
     }
@@ -4293,12 +4298,13 @@ exports.getConsolidatedDashboardStats = onCall(
         fumigadoresQuery = fumigadoresQuery.where('zona', '==', zoneToFilter)
       }
 
-      const servicesPromise = servicesQuery.get()
-      const clientsPromise = clientsQuery.where('estado', '==', 'Activo').get()
+      const servicesPromise = servicesQuery.select('clientId', 'clientCity', 'services').get()
+      const clientsPromise = clientsQuery.where('estado', '==', 'Activo').select('sucursales').get()
 
       const visitsInRangePromise = visitsQuery
         .where('fecha_visita', '>=', startOfRange)
         .where('fecha_visita', '<=', endOfRange)
+        .select('fecha_visita', 'estado_visita', 'fumigadores_asignados', 'id_cliente', 'nombre_cliente', 'tipo_visita')
         .get()
 
       const sixMonthsAgo = new Date(now.getFullYear(), now.getMonth() - 5, 1)
@@ -4309,6 +4315,7 @@ exports.getConsolidatedDashboardStats = onCall(
       const visitsForChartPromise = baseVisitsQuery
         .where('fecha_visita', '>=', sixMonthsAgo)
         .where('estado_visita', '==', 'Realizada')
+        .select('fecha_visita', 'estado_visita')
         .get()
 
       // ✅ FIX: Buscar visitas sin técnicos asignados, no solo las creadas por SYSTEM
@@ -4321,8 +4328,10 @@ exports.getConsolidatedDashboardStats = onCall(
         pendingVisitsQuery = pendingVisitsQuery.where('zona', '==', zoneToFilter)
       }
 
-      const pendingVisitsPromise = pendingVisitsQuery.orderBy('fecha_visita', 'asc').limit(20).get()
-      const fumigadoresPromise = fumigadoresQuery.get()
+      const pendingVisitsPromise = compact
+        ? Promise.resolve({ docs: [] })
+        : pendingVisitsQuery.orderBy('fecha_visita', 'asc').limit(20).get()
+      const fumigadoresPromise = fumigadoresQuery.select('nombreCompleto').get()
 
       const [
         servicesSnapshot,
@@ -4389,9 +4398,13 @@ exports.getConsolidatedDashboardStats = onCall(
       })
 
       if (hasGlobalAccess) {
+        const sheetsByClient = new Map()
+        for (const sheet of allServices) {
+          if (!sheetsByClient.has(sheet.clientId)) sheetsByClient.set(sheet.clientId, sheet)
+        }
         validVisitsInRange.forEach((v) => {
           if (v.estado_visita === 'Realizada') {
-            const serviceSheet = allServices.find((s) => s.clientId === v.id_cliente)
+            const serviceSheet = sheetsByClient.get(v.id_cliente)
             if (serviceSheet && serviceSheet.services) {
               const service = serviceSheet.services.find((s) => s.tipo_servicio === v.tipo_visita)
               if (service?.valor) revenueThisMonth += service.valor

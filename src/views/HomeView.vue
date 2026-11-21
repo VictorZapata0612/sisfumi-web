@@ -53,6 +53,7 @@ const dailyActivity = computed(() => {
 })
 
 function canOpen(name: string) {
+  if (!auth.canAccess(name)) return false
   const roles = router.resolve({ name }).meta.roles
   return !Array.isArray(roles) || roles.includes(auth.userRole)
 }
@@ -98,7 +99,7 @@ function destroyCharts() {
 
 const renderCharts = () => {
   destroyCharts()
-  if (!dashboardStore.charts || !dashboard.value || dashboardStore.loading) return
+  if (!dashboardStore.charts || !dashboard.value) return
 
   const theme = getComputedStyle(dashboard.value)
   const text = theme.getPropertyValue('--shell-muted').trim()
@@ -165,6 +166,7 @@ const renderCharts = () => {
 
 onMounted(() => {
   dashboardStore.fetchDashboardData()
+  renderCharts()
   clock = window.setInterval(() => { now.value = new Date() }, 15000)
   const shell = dashboard.value?.closest('[data-theme]')
   if (shell) {
@@ -182,7 +184,7 @@ onUnmounted(() => {
 })
 
 watch(
-  [() => dashboardStore.charts, () => dashboardStore.loading],
+  () => dashboardStore.charts,
   renderCharts,
   { flush: 'post' },
 )
@@ -206,16 +208,16 @@ watch(
       </div>
     </header>
 
-    <div v-if="dashboardStore.loading" role="status" class="panel p-6">
+    <div v-if="dashboardStore.loading && !dashboardStore.kpis" role="status" class="panel p-6">
       Cargando el resumen de la operación…
     </div>
-    <div v-else-if="dashboardStore.error" role="alert" class="panel p-6">
+    <div v-if="dashboardStore.error" role="alert" class="panel p-6">
       <h2 class="font-bold">Error al cargar Inicio</h2>
       <p class="muted mt-2 text-sm">{{ dashboardStore.error }}</p>
       <button type="button" class="accent-link mt-2" @click="dashboardStore.fetchDashboardData">Reintentar</button>
     </div>
 
-    <template v-else-if="dashboardStore.kpis">
+    <template v-if="dashboardStore.kpis">
       <section aria-label="Indicadores" class="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
         <component v-for="metric in metrics" :key="metric.label"
           :is="canOpen(metric.name) ? RouterLink : 'div'"

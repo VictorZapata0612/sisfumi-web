@@ -47,19 +47,40 @@ export const useDashboardStore = defineStore('dashboard', () => {
   const loading = ref(true)
   const error = ref<string | null>(null)
 
+  let currentScope = ''
+  let activeRequest: Promise<void> | undefined
+
   // --- Actions ---
-  async function fetchDashboardData() {
+  function fetchDashboardData() {
+    const authStore = useAuthStore()
+    const now = new Date()
+    const clientDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+    const scope = JSON.stringify([authStore.user?.uid, authStore.userRole, authStore.userZone, clientDate])
+    if (scope === currentScope && activeRequest) return activeRequest
+    if (scope !== currentScope) {
+      kpis.value = null
+      charts.value = null
+      todaysAgenda.value = []
+      pendingVisits.value = []
+    }
+    currentScope = scope
     loading.value = true
     error.value = null
+    const request = loadDashboardData(clientDate, scope).finally(() => {
+      if (activeRequest !== request) return
+      loading.value = false
+      activeRequest = undefined
+    })
+    activeRequest = request
+    return request
+  }
+
+  async function loadDashboardData(clientDate: string, scope: string) {
     const authStore = useAuthStore()
 
     try {
       const getDashboardData = httpsCallable(functions, 'getConsolidatedDashboardStats')
-      // La Cloud Function espera la fecha del cliente para evitar desajustes de zona horaria.
-      const today = new Date()
-      const clientDate = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`
-
-      const params: { clientDate: string; zone?: string } = { clientDate }
+      const params: { clientDate: string; zone?: string; compact: boolean } = { clientDate, compact: true }
       // Si el rol es de un coordinador de zona (no Nacionales), filtramos por su zona.
       if (
         authStore.userRole?.startsWith('Coordinador') &&
@@ -69,6 +90,7 @@ export const useDashboardStore = defineStore('dashboard', () => {
       }
 
       const result = await getDashboardData(params)
+      if (scope !== currentScope) return
       const data = result.data as DashboardData
 
       kpis.value = data.kpis
@@ -76,14 +98,13 @@ export const useDashboardStore = defineStore('dashboard', () => {
       todaysAgenda.value = data.todaysAgenda
       pendingVisits.value = data.pendingVisits
     } catch (err: unknown) {
+      if (scope !== currentScope) return
       console.error('Error al obtener los datos del dashboard:', err)
       if (err instanceof Error) {
         error.value = 'No se pudieron cargar los datos del dashboard. ' + err.message
       } else {
         error.value = 'No se pudieron cargar los datos del dashboard.'
       }
-    } finally {
-      loading.value = false
     }
   }
 

@@ -271,10 +271,10 @@ function handleSearch() {
         </div>
       </div>
       <div class="flex flex-wrap items-center gap-2">
-        <button type="button" class="client-button" @click="showImportModal = true">
+        <button v-if="authStore.canAccess('clientes', 'create') || authStore.canAccess('clientes', 'export')" type="button" class="client-button" @click="showImportModal = true">
           <i class="fas fa-file-csv" aria-hidden="true"></i> Importar / exportar
         </button>
-        <button type="button" class="client-button client-primary" @click="openCreateModal">
+        <button v-if="authStore.canAccess('clientes', 'create')" type="button" class="client-button client-primary" @click="openCreateModal">
           <i class="fas fa-plus" aria-hidden="true"></i> Nuevo cliente
         </button>
       </div>
@@ -403,7 +403,7 @@ function handleSearch() {
               <span class="client-muted">{{ [profile.client.ciudad, profile.client.departamento].filter(Boolean).join(', ') }}</span>
             </div>
           </div>
-          <button v-if="profile && !clientsStore.loadingProfile" type="button" class="client-button client-primary shrink-0"
+          <button v-if="profile && !clientsStore.loadingProfile && authStore.canAccess('clientes', 'edit')" type="button" class="client-button client-primary shrink-0"
             aria-label="Editar cliente" @click="openEditModal(profile.client.id)">
             <i class="fas fa-edit" aria-hidden="true"></i><span class="hidden sm:inline">Editar cliente</span>
           </button>

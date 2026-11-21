@@ -81,7 +81,7 @@ const handleCalendarChange = () => {
   loadData()
 }
 
-onMounted(async () => {
+onMounted(() => {
   const requestedDate = route.query.date
   if (typeof requestedDate === 'string') {
     const parsedDate = new Date(requestedDate)
@@ -99,7 +99,7 @@ onMounted(async () => {
   // Administrador/Jefe (ver el v-if de abajo), así que solo se pide para
   // esos roles.
   if (authStore.userRole === 'Administrador' || authStore.userRole === 'Jefe') {
-    await settingsStore.fetchIntegrations()
+    void settingsStore.fetchIntegrations()
   }
   loadData()
 
@@ -368,7 +368,10 @@ function movePeriod(offset: number) {
     const next = new Date(reference)
     next.setDate(next.getDate() + offset * (calendarView.value === 'week' ? 7 : 1))
     selectedDate.value = next
+    const sameMonth = next.getMonth() === currentDate.value.getMonth() &&
+      next.getFullYear() === currentDate.value.getFullYear()
     currentDate.value = next
+    if (calendarView.value === 'day' && sameMonth) return
   } else {
     const next = new Date(currentDate.value.getFullYear(), currentDate.value.getMonth() + offset, 1)
     selectedDate.value = next
@@ -696,6 +699,22 @@ const handleQuickComplete = (visit: Visit) => {
         </button>
       </div>
     </header>
+
+    <div v-if="planningStore.loading" role="status" class="text-sm text-[var(--shell-muted)]">
+      Cargando visitas…
+    </div>
+    <p v-if="planningStore.calendarLoading" role="status" class="text-sm text-[var(--shell-muted)]">
+      Sincronizando Google Calendar…
+    </p>
+    <div v-if="planningStore.error || planningStore.calendarError || planningStore.clientsError" role="alert" class="text-sm">
+      <p v-if="planningStore.error">{{ planningStore.error }}</p>
+      <p v-if="planningStore.calendarError">No se pudo cargar Google Calendar.</p>
+      <p v-if="planningStore.clientsError">No se pudo cargar el catálogo para el formulario de visitas.</p>
+      <button type="button" class="font-semibold underline" @click="loadData">Reintentar</button>
+    </div>
+    <p v-if="(showCreateModal || showEditModal) && !planningStore.clientsReady && planningStore.clientsLoading" role="status" class="text-sm">
+      Cargando el formulario de visita…
+    </p>
 
     <!-- Contenido Principal (Grid Adaptable) -->
     <main class="grid min-w-0 grid-cols-1 gap-4 lg:grid-cols-[minmax(0,2.15fr)_minmax(0,1fr)]">
@@ -1279,7 +1298,7 @@ const handleQuickComplete = (visit: Visit) => {
 
     <!-- Modales Globales -->
     <VisitFormModal
-      :show="showCreateModal || showEditModal"
+      :show="(showCreateModal || showEditModal) && planningStore.clientsReady"
       :visit="editingVisit"
       :selected-date="selectedDate"
       :saving="isSavingVisit"

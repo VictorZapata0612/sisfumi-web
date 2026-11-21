@@ -3,6 +3,7 @@ import { ref, computed } from 'vue'
 import { defineStore } from 'pinia'
 import { httpsCallable } from 'firebase/functions'
 import { functions } from '@/firebase/config'
+import { useAuthStore } from '@/stores/auth'
 
 // ✅ NUEVO: reintento automático para llamadas a Cloud Functions.
 // Motivo: cuando una función lleva un rato sin tráfico, Cloud Run la escala
@@ -122,6 +123,25 @@ export const usePlanningStore = defineStore('planning', () => {
   const selectedCalendarUid = ref('internal')
   const lastSyncUpdate = ref(0) // Para la sincronización bidireccional
 
+  const calendarLoading = ref(false)
+  const calendarError = ref(false)
+  const clientsLoading = ref(false)
+  const clientsError = ref(false)
+  const clientsReady = ref(false)
+  let latestRequest = 0
+  let clientsScope = ''
+  let clientsRequest: Promise<void> | undefined
+  let clientsLoadedAt = 0
+
+  const getPlanningData = httpsCallable<Record<string, unknown>, {
+    monthlyVisits?: Visit[]
+    pendingVisits?: Visit[]
+    clients?: Client[]
+    technicians?: Technician[]
+    googleEvents?: GoogleEvent[]
+    needsAuthRefresh?: boolean
+  }>(functions, 'getConsolidatedPlanningData')
+
   // --- Getters ---
   const allCalendarEvents = computed(() => {
     const internalEvents = monthlyVisits.value.map((v) => ({
@@ -159,46 +179,81 @@ export const usePlanningStore = defineStore('planning', () => {
     calendarTargetUid: string | null,
     dateRange?: { startDateISO: string; endDateISO: string },
   ) {
+    const requestId = ++latestRequest
+    const auth = useAuthStore()
+    const scope = JSON.stringify([auth.user?.uid, auth.userRole, auth.userZone, zone])
+    if (scope !== clientsScope) {
+      clientsScope = scope
+      clientsRequest = undefined
+      clientsLoadedAt = 0
+      clientsReady.value = false
+      clients.value = []
+      monthlyVisits.value = []
+      pendingVisits.value = []
+      technicians.value = []
+    }
+
     loading.value = true
     error.value = null
+    calendarLoading.value = false
+    calendarError.value = false
     needsAuthRefresh.value = false
+    googleEvents.value = []
+
+    const params = { year, month, zone, ...dateRange }
+    if (!clientsRequest && (!clientsLoadedAt || Date.now() - clientsLoadedAt >= 60_000)) {
+      clientsLoading.value = true
+      clientsError.value = false
+      const catalogRequest = callWithRetry(() => getPlanningData({ ...params, section: 'clients' }))
+        .then(({ data }) => {
+          if (clientsRequest !== catalogRequest) return
+          clients.value = data.clients || []
+          clientsLoadedAt = Date.now()
+          clientsReady.value = true
+        })
+        .catch((err: unknown) => {
+          if (clientsRequest !== catalogRequest) return
+          console.error('Error al cargar el catálogo de Planeación:', err)
+          clientsError.value = true
+        })
+        .finally(() => {
+          if (clientsRequest !== catalogRequest) return
+          clientsLoading.value = false
+          clientsRequest = undefined
+        })
+      clientsRequest = catalogRequest
+    }
+
+    if (calendarTargetUid && calendarTargetUid !== 'internal') {
+      calendarLoading.value = true
+      void callWithRetry(() => getPlanningData({ ...params, calendarTargetUid, section: 'google' }))
+        .then(({ data }) => {
+          if (requestId !== latestRequest) return
+          needsAuthRefresh.value = !!data.needsAuthRefresh
+          googleEvents.value = data.googleEvents || []
+        })
+        .catch((err: unknown) => {
+          if (requestId !== latestRequest) return
+          console.error('Error al cargar Google Calendar:', err)
+          calendarError.value = true
+        })
+        .finally(() => {
+          if (requestId === latestRequest) calendarLoading.value = false
+        })
+    }
 
     try {
-      const getPlanningDataFn = httpsCallable(functions, 'getConsolidatedPlanningData')
-      const result = (await callWithRetry(() =>
-        getPlanningDataFn({
-          year,
-          month,
-          zone,
-          calendarTargetUid,
-          ...dateRange,
-        }),
-      )) as {
-        data: {
-          monthlyVisits: Visit[]
-          pendingVisits: Visit[]
-          clients: Client[]
-          technicians: Technician[]
-          googleEvents?: GoogleEvent[]
-          needsAuthRefresh?: boolean
-        }
-      }
-
-      if (result.data.needsAuthRefresh) {
-        needsAuthRefresh.value = true
-        return
-      }
-
-      monthlyVisits.value = result.data.monthlyVisits || []
-      pendingVisits.value = result.data.pendingVisits || []
-      clients.value = result.data.clients || []
-      technicians.value = result.data.technicians || []
-      googleEvents.value = result.data.googleEvents || []
-    } catch (err: any) {
-      console.error('Error en fetchPlanningData:', err)
-      error.value = `No se pudieron cargar los datos: ${err.message}`
+      const { data } = await callWithRetry(() => getPlanningData({ ...params, section: 'visits' }))
+      if (requestId !== latestRequest) return
+      monthlyVisits.value = data.monthlyVisits || []
+      pendingVisits.value = data.pendingVisits || []
+      technicians.value = data.technicians || []
+    } catch (err: unknown) {
+      if (requestId !== latestRequest) return
+      console.error('Error al cargar las visitas:', err)
+      error.value = 'No se pudieron cargar las visitas.'
     } finally {
-      loading.value = false
+      if (requestId === latestRequest) loading.value = false
     }
   }
 
@@ -316,6 +371,11 @@ export const usePlanningStore = defineStore('planning', () => {
   return {
     loading,
     error,
+    calendarLoading,
+    calendarError,
+    clientsLoading,
+    clientsError,
+    clientsReady,
     monthlyVisits,
     pendingVisits,
     clients,
