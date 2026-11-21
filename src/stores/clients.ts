@@ -11,6 +11,11 @@ export interface Client {
   ciudad: string
   zona: string
   estado: string
+  razonSocial?: string
+  nit?: string
+  numeroIdentificacion?: string
+  tipo?: string
+  createdAt?: string | { seconds?: number; _seconds?: number }
   // Añadimos más campos para el perfil
   departamento?: string
   sucursales?: { nombre: string; direccion: string; zona?: string }[]

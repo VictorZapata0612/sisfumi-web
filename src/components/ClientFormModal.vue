@@ -23,14 +23,13 @@ const emit = defineEmits(['close', 'save', 'delete-inactive', 'delete-permanent'
 
 const isEditMode = computed(() => !!props.clientId)
 
-const deleteButtonText = computed(() => {
-  return form.value.estado === 'Inactivo' ? 'Eliminar Permanente' : 'Inactivar Cliente'
-})
-const deleteButtonClass = computed(() => {
-  return form.value.estado === 'Inactivo' ? 'btn-danger' : 'btn-red'
-})
+const savedStatus = ref<string | null>(null)
+const loadFailed = ref(false)
+const canDeletePermanently = computed(() => savedStatus.value === 'Inactivo')
+const deleteButtonText = computed(() => canDeletePermanently.value ? 'Eliminar permanentemente' : 'Inactivar cliente')
 
 const loading = ref(false)
+const saving = ref(false)
 const errorMessage = ref<string | null>(null)
 
 // Form state
@@ -56,11 +55,15 @@ const cities = ref<string[]>([])
 
 const loadInitialData = async () => {
   loading.value = true
+  errorMessage.value = null
+  loadFailed.value = false
+  savedStatus.value = null
   try {
     if (props.clientId) {
       const getClient = httpsCallable(functions, 'getClientById')
       const clientResult = await getClient({ clientId: props.clientId })
       const client = (clientResult.data as { client: typeof form.value }).client
+      savedStatus.value = client.estado
       // Mapear datos del cliente al formulario, asegurando compatibilidad
       form.value = {
         ...form.value,
@@ -91,6 +94,7 @@ const loadInitialData = async () => {
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error)
     errorMessage.value = 'Error al cargar datos: ' + message
+    loadFailed.value = true
   } finally {
     loading.value = false
   }
@@ -103,9 +107,12 @@ watch(
       loadInitialData()
     }
   },
+  { immediate: true },
 )
 
 const handleSave = async () => {
+  if (loading.value || loadFailed.value) return
+  saving.value = true
   loading.value = true
   errorMessage.value = null
 
@@ -147,6 +154,7 @@ const handleSave = async () => {
 
   if (errors.length > 0) {
     errorMessage.value = errors.join('\n')
+    saving.value = false
     loading.value = false
     return
   }
@@ -185,6 +193,7 @@ const handleSave = async () => {
     const message = error instanceof Error ? error.message : String(error)
     errorMessage.value = 'Error al guardar: ' + message
   } finally {
+    saving.value = false
     loading.value = false
   }
 }
@@ -229,7 +238,8 @@ const handleDepartmentChange = () => {
 }
 
 const handleDelete = async () => {
-  if (form.value.estado === 'Inactivo') {
+  if (loading.value || loadFailed.value || !props.clientId) return
+  if (canDeletePermanently.value) {
     emit('delete-permanent', props.clientId)
   } else {
     emit('delete-inactive', props.clientId)
@@ -288,41 +298,44 @@ const emailFinancieroError = computed(() => {
 
 <template>
   <div v-if="show" class="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6" role="dialog"
-    aria-modal="true">
+    aria-modal="true" aria-labelledby="client-form-title" @keydown.esc.stop="!loading && emit('close')">
     <!-- Backdrop con desenfoque -->
     <div class="fixed inset-0 bg-[#0a0a0a]/80 backdrop-blur-sm transition-opacity" @click="!loading && emit('close')">
     </div>
 
     <!-- Modal Panel -->
     <div
-      class="relative bg-[#151515] rounded-xl border border-white/10 shadow-2xl w-full max-w-6xl transform transition-all flex flex-col max-h-[90vh] overflow-hidden">
-      <!-- Header -->
-      <div class="flex items-center justify-between p-4 sm:p-6 border-b border-white/10 bg-[#0a0a0a]/30">
-        <h3 class="text-xl font-bold text-white flex items-center gap-2">
-          <i :class="clientId ? 'fas fa-edit text-yellow-500' : 'fas fa-user-plus text-green-500'"></i>
-          {{ clientId ? 'Editar Cliente' : 'Registrar Nuevo Cliente' }}
-        </h3>
-      </div>
-      <button @click="emit('close')"
-        class="absolute top-4 right-4 text-gray-400 hover:text-white transition-colors focus:outline-none z-10"
-        :disabled="loading">
-        <i class="fas fa-times text-xl"></i>
-      </button>
+      class="relative bg-[var(--shell-surface)] rounded-xl border border-[var(--shell-border)] shadow-2xl w-full max-w-6xl transform transition-all flex flex-col max-h-[90vh] overflow-hidden">
+      <header class="form-heading flex shrink-0 items-start gap-3 border-b border-[var(--shell-border)] p-4 sm:p-5">
+        <span class="form-icon grid size-11 shrink-0 place-items-center rounded-xl" aria-hidden="true">
+          <i class="fas" :class="isEditMode ? 'fa-edit' : 'fa-user-plus'"></i>
+        </span>
+        <div class="min-w-0 flex-1">
+          <h2 id="client-form-title" class="text-xl font-extrabold">{{ isEditMode ? 'Editar cliente' : 'Nuevo cliente' }}</h2>
+          <p class="mt-1 text-sm text-[var(--shell-muted)]">
+            {{ isEditMode ? (form.nombreComercial || 'Actualiza los datos del cliente.') : 'Registra los datos, contactos y sucursales del cliente.' }}
+          </p>
+        </div>
+        <button type="button" class="form-button shrink-0" aria-label="Cerrar formulario"
+          :disabled="loading" @click="emit('close')">
+          <i class="fas fa-times" aria-hidden="true"></i>
+        </button>
+      </header>
 
-      <!-- Loading State -->
-      <div v-if="loading" class="flex flex-col items-center justify-center p-12">
-        <i class="fas fa-circle-notch fa-spin text-4xl text-cyan-500 mb-4"></i>
-        <p class="text-gray-400">Cargando información del cliente...</p>
-      </div>
+      <p v-if="loading" role="status" class="px-5 py-3 text-sm text-[var(--shell-muted)]">
+        <i class="fas fa-circle-notch fa-spin mr-2" aria-hidden="true"></i>
+        {{ saving ? 'Guardando cliente…' : 'Cargando datos del cliente…' }}
+      </p>
 
       <!-- Content -->
-      <form v-else @submit.prevent="handleSave" class="p-4 sm:p-6 overflow-y-auto custom-scrollbar flex flex-col gap-6">
+      <form v-if="(!loading || saving) && !loadFailed" id="client-editor" novalidate @submit.prevent="handleSave" class="form-body min-h-0 overflow-y-auto p-4 sm:p-5">
+        <fieldset :disabled="loading">
         <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
           <!-- Columna Izquierda: Datos Principales -->
           <div class="space-y-6">
             <!-- Datos Generales -->
-            <div class="bg-white/5 rounded-lg p-4 border border-white/10">
-              <h4 class="text-sm font-bold text-cyan-400 uppercase tracking-wide border-b border-white/10 pb-2 mb-4">
+            <div class="bg-[var(--shell-input)] rounded-lg p-4 border border-[var(--shell-border)]">
+              <h4 class="text-sm font-bold form-section-title border-b border-[var(--shell-border)] pb-2 mb-4">
                 <i class="fas fa-id-card mr-2"></i> Datos Generales
               </h4>
               <div class="space-y-4">
@@ -347,8 +360,8 @@ const emailFinancieroError = computed(() => {
             </div>
 
             <!-- Ubicación -->
-            <div class="bg-white/5 rounded-lg p-4 border border-white/10">
-              <h4 class="text-sm font-bold text-cyan-400 uppercase tracking-wide border-b border-white/10 pb-2 mb-4">
+            <div class="bg-[var(--shell-input)] rounded-lg p-4 border border-[var(--shell-border)]">
+              <h4 class="text-sm font-bold text-cyan-400 uppercase tracking-wide border-b border-[var(--shell-border)] pb-2 mb-4">
                 <i class="fas fa-map-marker-alt mr-2"></i> Ubicación Principal
               </h4>
               <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -361,7 +374,7 @@ const emailFinancieroError = computed(() => {
                       <option value="">Seleccione...</option>
                       <option v-for="dep in departments" :key="dep" :value="dep">{{ dep }}</option>
                     </select>
-                    <div class="absolute inset-y-0 right-0 flex items-center px-2 pointer-events-none text-gray-400">
+                    <div class="absolute inset-y-0 right-0 flex items-center px-2 pointer-events-none text-[var(--shell-muted)]">
                       <i class="fas fa-chevron-down text-xs"></i>
                     </div>
                   </div>
@@ -374,7 +387,7 @@ const emailFinancieroError = computed(() => {
                       <option value="">Seleccione...</option>
                       <option v-for="city in cities" :key="city" :value="city">{{ city }}</option>
                     </select>
-                    <div class="absolute inset-y-0 right-0 flex items-center px-2 pointer-events-none text-gray-400">
+                    <div class="absolute inset-y-0 right-0 flex items-center px-2 pointer-events-none text-[var(--shell-muted)]">
                       <i class="fas fa-chevron-down text-xs"></i>
                     </div>
                   </div>
@@ -388,8 +401,8 @@ const emailFinancieroError = computed(() => {
             </div>
 
             <!-- Clasificación -->
-            <div class="bg-white/5 rounded-lg p-4 border border-white/10">
-              <h4 class="text-sm font-bold text-cyan-400 uppercase tracking-wide border-b border-white/10 pb-2 mb-4">
+            <div class="bg-[var(--shell-input)] rounded-lg p-4 border border-[var(--shell-border)]">
+              <h4 class="text-sm font-bold text-cyan-400 uppercase tracking-wide border-b border-[var(--shell-border)] pb-2 mb-4">
                 <i class="fas fa-tags mr-2"></i> Clasificación
               </h4>
               <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -441,14 +454,14 @@ const emailFinancieroError = computed(() => {
           <!-- Columna Derecha: Contactos y Sucursales -->
           <div class="space-y-6">
             <!-- Contactos -->
-            <div class="bg-white/5 rounded-lg p-4 border border-white/10">
-              <h4 class="text-sm font-bold text-cyan-400 uppercase tracking-wide border-b border-white/10 pb-2 mb-4">
+            <div class="bg-[var(--shell-input)] rounded-lg p-4 border border-[var(--shell-border)]">
+              <h4 class="text-sm font-bold text-cyan-400 uppercase tracking-wide border-b border-[var(--shell-border)] pb-2 mb-4">
                 <i class="fas fa-address-book mr-2"></i> Contactos
               </h4>
               <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <!-- Contacto Principal -->
                 <div class="space-y-3">
-                  <p class="text-xs font-bold text-gray-400 uppercase">Principal / Operativo</p>
+                  <p class="text-xs font-bold text-[var(--shell-muted)] uppercase">Principal / Operativo</p>
                   <div>
                     <label class="form-label">Nombre</label>
                     <input v-model="form.contactoPrincipal.nombre" type="text" class="input-field-dark w-full py-1.5" />
@@ -467,7 +480,7 @@ const emailFinancieroError = computed(() => {
 
                 <!-- Contacto Financiero -->
                 <div class="space-y-3">
-                  <p class="text-xs font-bold text-gray-400 uppercase">Financiero</p>
+                  <p class="text-xs font-bold text-[var(--shell-muted)] uppercase">Financiero</p>
                   <div>
                     <label class="form-label">Nombre</label>
                     <input v-model="form.contactoFinanciero.nombre" type="text"
@@ -489,8 +502,8 @@ const emailFinancieroError = computed(() => {
             </div>
 
             <!-- Sucursales -->
-            <div class="bg-white/5 rounded-lg p-4 border border-white/10 flex flex-col h-[320px]">
-              <div class="flex justify-between items-center border-b border-white/10 pb-2 mb-4">
+            <div class="bg-[var(--shell-input)] rounded-lg p-4 border border-[var(--shell-border)] flex flex-col h-[320px]">
+              <div class="flex justify-between items-center border-b border-[var(--shell-border)] pb-2 mb-4">
                 <h4 class="text-sm font-bold text-cyan-400 uppercase tracking-wide">
                   <i class="fas fa-store-alt mr-2"></i> Sucursales
                 </h4>
@@ -500,11 +513,11 @@ const emailFinancieroError = computed(() => {
               </div>
 
               <div class="flex-grow overflow-y-auto custom-scrollbar space-y-3 pr-2">
-                <div v-if="form.sucursales.length === 0" class="text-center py-8 text-gray-500">
+                <div v-if="form.sucursales.length === 0" class="text-center py-8 text-[var(--shell-muted)]">
                   <p>No hay sucursales registradas.</p>
                 </div>
                 <div v-for="(sucursal, index) in form.sucursales" :key="index"
-                  class="bg-[#0a0a0a] p-3 rounded border border-white/10 relative group">
+                  class="bg-[var(--shell-input)] p-3 rounded border border-[var(--shell-border)] relative group">
                   <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mb-2">
                     <input v-model="sucursal.nombre" type="text" placeholder="Nombre Sucursal"
                       class="input-field-dark w-full py-1.5 text-sm" />
@@ -527,8 +540,8 @@ const emailFinancieroError = computed(() => {
             </div>
 
             <!-- Estado -->
-            <div class="bg-white/5 rounded-lg p-4 border border-white/10 flex items-center justify-between">
-              <label for="clientStatus" class="font-bold text-gray-300">Estado del Cliente</label>
+            <div class="bg-[var(--shell-input)] rounded-lg p-4 border border-[var(--shell-border)] flex items-center justify-between">
+              <label for="clientStatus" class="font-bold text-[var(--shell-muted)]">Estado del Cliente</label>
               <select v-model="form.estado" id="clientStatus" class="input-field-dark px-3 py-1.5 w-40" :class="form.estado === 'Activo'
                 ? 'border-green-500 text-green-400'
                 : 'border-red-500 text-red-400'
@@ -540,41 +553,56 @@ const emailFinancieroError = computed(() => {
           </div>
         </div>
 
-        <div v-if="errorMessage"
-          class="bg-red-900/30 border border-red-800 text-red-300 p-3 rounded-lg text-sm flex items-start gap-2 whitespace-pre-line">
-          <i class="fas fa-exclamation-circle mt-0.5 text-red-400"></i>
-          <span>{{ errorMessage }}</span>
-        </div>
+        </fieldset>
       </form>
 
-      <!-- Footer Actions -->
-      <div class="p-4 sm:p-6 border-t border-white/10 bg-[#0a0a0a]/30 flex flex-col sm:flex-row justify-between gap-4">
-        <button v-if="isEditMode" @click="handleDelete" type="button" class="btn" :class="deleteButtonClass">
-          <i class="fas fa-trash-alt mr-2"></i> {{ deleteButtonText }}
-        </button>
-        <div v-else class="hidden sm:block"></div>
-        <!-- Spacer -->
+      <p v-if="errorMessage" role="alert" class="form-error mx-4 my-2 max-h-24 shrink-0 overflow-y-auto whitespace-pre-line rounded-lg px-3 py-2 text-sm">
+        {{ errorMessage }}
+      </p>
 
-        <div class="flex gap-3 justify-end w-full sm:w-auto">
-          <button @click="emit('close')" type="button" class="btn btn-secondary">Cancelar</button>
-          <button @click="handleSave" type="button" class="btn btn-primary bg-indigo-600 hover:bg-indigo-700">
-            <i class="fas fa-save mr-2"></i> Guardar Cliente
+      <footer class="form-footer flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-[var(--shell-border)] p-4 sm:px-5">
+        <button v-if="isEditMode && !loadFailed" type="button" class="form-button form-danger" :disabled="loading" @click="handleDelete">
+          <i class="fas" :class="canDeletePermanently ? 'fa-trash-alt' : 'fa-user-slash'" aria-hidden="true"></i>
+          {{ deleteButtonText }}
+        </button>
+        <div class="ml-auto flex flex-wrap justify-end gap-2">
+          <button type="button" class="form-button" :disabled="loading" @click="emit('close')">Cancelar</button>
+          <button v-if="loadFailed" type="button" class="form-button form-primary" @click="loadInitialData">Reintentar</button>
+          <button v-else type="submit" form="client-editor" class="form-button form-primary" :disabled="loading">
+            {{ isEditMode ? 'Guardar cambios' : 'Crear cliente' }}
           </button>
         </div>
-      </div>
+      </footer>
     </div>
   </div>
 </template>
 
 <style scoped>
+.form-heading { background: linear-gradient(115deg, var(--client-tint, #fff0f1), var(--shell-surface) 72%); }
+.form-icon { color: var(--client-accent, #b8000b); background: var(--client-tint, #fff0f1); }
+.form-section-title { color: var(--shell-text); }
+.form-label { display: block; margin-bottom: 0.25rem; color: var(--shell-muted); font-size: 0.8rem; font-weight: 650; }
+.form-body { scrollbar-color: var(--shell-scroll-thumb) var(--shell-scroll-track); }
+.form-footer { background: var(--shell-surface); }
+.form-button {
+  display: inline-flex; min-height: 2.5rem; align-items: center; justify-content: center; gap: 0.5rem;
+  padding: 0.45rem 0.75rem; border: 1px solid var(--shell-border); border-radius: 0.55rem;
+  background: var(--shell-surface); color: var(--shell-text); font-size: 0.8rem; font-weight: 650;
+}
+.form-button:hover { background: var(--shell-input); }
+.form-button:focus-visible { outline: 2px solid #e50914; outline-offset: 2px; }
+.form-button:disabled { opacity: 0.55; cursor: default; }
+.form-primary { border-color: #bc000b; background: #c7000c; color: #fff; }
+.form-primary:hover { background: #a9000a; }
+.form-danger, .form-error { color: var(--client-accent, #b8000b); }
+.form-error { background: var(--client-tint, #fff0f1); }
+
 /* Scoped styles para inputs específicos si no son globales */
 .input-field-dark {
-  background-color: #202020;
-  /* bg-gray-700 -> #202020 */
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  /* border-gray-600 -> border-white/10 */
+  background-color: var(--shell-input);
+  border: 1px solid var(--shell-border);
   border-radius: 0.5rem;
-  color: #fff;
+  color: var(--shell-text);
   padding: 0.5rem 0.75rem;
   transition: all 0.2s;
 }

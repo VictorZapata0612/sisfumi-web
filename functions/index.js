@@ -1050,6 +1050,10 @@ async function resolveOrganizerUid(visitData) {
     }
   }
 
+  if (!organizerUid && visitData.activeOrganizerUid) {
+    organizerUid = visitData.activeOrganizerUid
+  }
+
   if (!organizerUid && visitData.calendarOwnerUid) {
     organizerUid = visitData.calendarOwnerUid
   }
@@ -1506,7 +1510,10 @@ async function deleteCalendarEvent(visitData, uid) {
       .doc(uid)
       .get()
 
-    if (!integrationDoc.exists || !visitData.googleEventId) return
+    if (!visitData.googleEventId) return
+    if (!integrationDoc.exists) {
+      throw new HttpsError('failed-precondition', 'Reconecta el Google Calendar del organizador antes de eliminar la visita.')
+    }
 
     const tokens = integrationDoc.data()
 
@@ -1529,7 +1536,7 @@ async function deleteCalendarEvent(visitData, uid) {
     await calendar.events.delete({
       calendarId: 'primary',
       eventId: visitData.googleEventId,
-      sendNotifications: true,
+      sendUpdates: 'all',
     })
 
     logger.info(`[ESPÍA/calendar] Evento ${visitData.googleEventId} eliminado exitosamente.`)
@@ -1545,17 +1552,17 @@ async function deleteCalendarEvent(visitData, uid) {
     // Si el token expiró sin refresh_token o fue revocado por el usuario
     if (
       error.code === 401 ||
-      error.code === 400 ||
+      error.response?.data?.error === 'invalid_grant' ||
       error.message?.includes('invalid authentication credentials')
     ) {
       logger.error(
-        `[AUTH_FIX] Credenciales inválidas para UID ${uid}. Se elimina integración desactualizada.`,
+        `[AUTH_FIX] Credenciales inválidas para UID ${uid}. Debe reconectarse el calendario.`,
       )
-      await admin.firestore().collection('calendar_integrations').doc(uid).delete()
-      return
+      throw new HttpsError('failed-precondition', 'Reconecta el Google Calendar del organizador antes de eliminar la visita.')
     }
 
     logger.error('Error deleteCalendarEvent:', error)
+    throw error
   }
 }
 // --- El resto de las funciones (Triggers, Callables, etc.) sigue aquí sin cambios ---
@@ -1920,7 +1927,10 @@ exports.deleteVisitAndCalendarEvent = onCall(
       assertVisitZoneAccess(request, visitData)
       const organizerUid = await resolveDeletionOwnerUid(visitData)
 
-      if (visitData.googleEventId && organizerUid && organizerUid !== 'SYSTEM') {
+      if (visitData.googleEventId && organizerUid !== 'SYSTEM') {
+        if (!organizerUid) {
+          throw new HttpsError('failed-precondition', 'No se pudo identificar el calendario vinculado a esta visita.')
+        }
         await deleteCalendarEvent(visitData, organizerUid)
       }
 
@@ -2267,6 +2277,7 @@ exports.updateVisit = onCall({ cors: true }, async (request) => {
     delete updatePayload.assignmentNotificationClaimedAt
     delete updatePayload.googleEventId
     delete updatePayload.activeOrganizerUid
+    delete updatePayload.calendarOwnerUid
     delete updatePayload.calendarEventMissing
     delete updatePayload.estado_facturacion
     delete updatePayload.billingData
@@ -5222,6 +5233,26 @@ exports.exportPaymentDataToExcel = onCall(
 
 // --- Funciones de Disparo (Triggers) ---
 
+function visitCalendarKey(visit) {
+  const visitDateKey = visit.fecha_visita?.toMillis
+    ? visit.fecha_visita.toMillis()
+    : String(visit.fecha_visita || '')
+
+  return JSON.stringify({
+    technicians: Array.isArray(visit.fumigadores_asignados) ? [...visit.fumigadores_asignados].sort() : [],
+    date: visitDateKey,
+    durationMinutes: Number(visit.duracion_minutos) || 60,
+    clientEmails: Array.isArray(visit.client_emails) ? [...visit.client_emails].sort() : [],
+    branch: visit.sucursal || '',
+    zone: visit.zona || '',
+    ubicacion: visit.ubicacion || '',
+    notas: visit.notas_visita || '',
+    tipo: visit.tipo_visita || '',
+    cliente: visit.nombre_cliente || '',
+  })
+
+}
+
 exports.handleVisitWrite = onDocumentWritten(
   { document: 'visitas/{visitId}', secrets: [googleClientSecret] },
   async (event) => {
@@ -5231,7 +5262,6 @@ exports.handleVisitWrite = onDocumentWritten(
   logger.info(`[handleVisitWrite] TRIGGER DISPARADO para visita: ${visitId}`)
 
   const after = event.data.after.exists ? event.data.after.data() : null
-  const before = event.data.before.exists ? event.data.before.data() : null
 
   if (!after) {
     logger.info(`[handleVisitWrite] Abortado: No hay datos 'after' (Visita eliminada).`)
@@ -5243,11 +5273,8 @@ exports.handleVisitWrite = onDocumentWritten(
 
   let isNewOrUpdatedVisit = false
   if (after.estado_visita === 'Programada' && after.fecha_visita) {
-    const visitDate = after.fecha_visita.toDate()
-    const now = new Date()
-    visitDate.setHours(0, 0, 0, 0)
-    now.setHours(0, 0, 0, 0)
-    isNewOrUpdatedVisit = visitDate >= now
+    const colombiaDay = new Intl.DateTimeFormat('sv-SE', { timeZone: 'America/Bogota', dateStyle: 'short' })
+    isNewOrUpdatedVisit = colombiaDay.format(after.fecha_visita.toDate()) >= colombiaDay.format(new Date())
   }
 
   if (!isNewOrUpdatedVisit) {
@@ -5264,19 +5291,7 @@ exports.handleVisitWrite = onDocumentWritten(
     return
   }
 
-  const visitDateKey = after.fecha_visita?.toMillis
-    ? after.fecha_visita.toMillis()
-    : String(after.fecha_visita || '')
-
-  const notificationKey = JSON.stringify({
-    technicians: assignedTechnicians,
-    date: visitDateKey,
-    zone: after.zona || '',
-    ubicacion: after.ubicacion || '',
-    notas: after.notas_visita || '',
-    tipo: after.tipo_visita || '',
-    cliente: after.nombre_cliente || '',
-  })
+  const notificationKey = visitCalendarKey(after)
 
   const currentRef = db.collection('visitas').doc(visitId)
   let proceedWithExecution = false
@@ -5287,7 +5302,8 @@ exports.handleVisitWrite = onDocumentWritten(
       if (!currentDoc.exists) return
       const currentData = currentDoc.data()
 
-      if (currentData.assignmentNotificationKey === notificationKey) {
+      if (currentData.estado_visita !== 'Programada' || visitCalendarKey(currentData) !== notificationKey ||
+        currentData.assignmentNotificationKey === notificationKey) {
         logger.info(`[handleVisitWrite] Abortado en Transacción: Sin cambios reales.`)
         proceedWithExecution = false
         return
@@ -5328,6 +5344,7 @@ exports.handleVisitWrite = onDocumentWritten(
         `No se pudo borrar el evento huérfano del organizador anterior (${previousOwnerUid}):`,
         e,
       )
+      return
     }
     forceRecreate = true
   }

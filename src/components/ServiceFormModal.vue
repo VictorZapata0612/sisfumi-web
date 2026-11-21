@@ -1,6 +1,6 @@
 <!-- eslint-disable @typescript-eslint/no-explicit-any -->
 <script setup lang="ts">
-import { ref, watch, computed, onUnmounted } from 'vue'
+import { ref, watch, computed, nextTick, onUnmounted } from 'vue'
 import type { Service } from '@/stores/services'
 import { useServicesStore } from '@/stores/services'
 import { useAuthStore } from '@/stores/auth'
@@ -11,6 +11,7 @@ const props = defineProps<{
   show: boolean
   service: Service | null
   serviceIndex: number
+  priceMode?: boolean
 }>()
 
 const emit = defineEmits(['close', 'save'])
@@ -67,6 +68,7 @@ const canSetPrice = computed(
 
 const showTooltip = ref(false)
 const isSaving = ref(false)
+const priceInput = ref<HTMLInputElement>()
 let tooltipTimer: ReturnType<typeof setTimeout>
 
 const handleTooltipEnter = () => {
@@ -153,12 +155,18 @@ watch(
         }
       }
       preferredDaysText.value = (form.value.recurrence?.preferredDays || []).join(', ')
+      if (props.priceMode) void nextTick(() => priceInput.value?.focus())
     }
   },
   { immediate: true },
 )
 
 const handleSave = async () => {
+  if (isSaving.value) return
+  if (props.priceMode && (!canSetPrice.value || form.value.valor <= 0)) {
+    showToast({ title: 'Precio requerido', message: 'Ingresa un valor mayor que cero para asignar el precio.', type: 'warning' })
+    return
+  }
   if (!form.value.tipo_servicio || !form.value.frecuencia) {
     showToast({
       title: 'Campos Incompletos',
@@ -261,33 +269,30 @@ const handleSave = async () => {
 </script>
 
 <template>
-  <div v-if="show" class="fixed inset-0 z-[60] flex items-center justify-center p-4" role="dialog" aria-modal="true">
+  <div v-if="show" class="fixed inset-0 z-[60] flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-labelledby="service-form-title" @keydown.esc.stop="!isSaving && $emit('close')">
     <!-- Backdrop -->
     <div class="fixed inset-0 bg-[#0a0a0a]/80 backdrop-blur-sm transition-opacity" @click="!isSaving && $emit('close')">
     </div>
 
     <div
-      class="relative bg-[#151515] rounded-xl border border-white/10 shadow-2xl w-full max-w-2xl flex flex-col max-h-[90vh] overflow-hidden transform transition-all">
-      <!-- Header -->
-      <div class="p-6 bg-[#0a0a0a]/50 border-b border-white/10 flex justify-between items-center">
-        <h2 class="text-xl font-bold text-white flex items-center gap-2">
-          <i :class="isEditMode ? 'fas fa-edit text-yellow-500' : 'fas fa-plus-circle text-green-500'
-            "></i>
-          {{ isEditMode ? 'Editar Servicio' : 'Añadir Nuevo Servicio' }}
-        </h2>
-        <button @click="!isSaving && $emit('close')" class="text-gray-400 hover:text-white transition-colors p-1"
-          :disabled="isSaving">
-          <i class="fas fa-times text-xl"></i>
-        </button>
-      </div>
+      class="service-editor-panel relative flex w-full flex-col overflow-hidden rounded-2xl border border-[var(--shell-border)] bg-[var(--shell-surface)] shadow-2xl" :class="{ 'price-editor': priceMode }">
+      <header class="service-form-heading flex shrink-0 items-start gap-3 p-4 sm:p-5">
+        <span class="service-form-icon grid size-11 shrink-0 place-items-center rounded-xl" aria-hidden="true">
+          <i class="fas" :class="priceMode ? 'fa-dollar-sign' : isEditMode ? 'fa-edit' : 'fa-plus'"></i>
+        </span>
+        <div class="min-w-0 flex-1">
+          <h2 id="service-form-title" class="text-xl font-extrabold">{{ priceMode ? 'Asignar precio' : isEditMode ? 'Editar servicio' : 'Nuevo servicio' }}</h2>
+          <p class="mt-1 text-sm text-[var(--shell-muted)]">{{ servicesStore.selectedClient?.nombreComercial || servicesStore.serviceSheet?.clientName }}</p>
+        </div>
+        <button type="button" aria-label="Cerrar formulario de servicio" class="service-form-button shrink-0"
+          :disabled="isSaving" @click="$emit('close')"><i class="fas fa-times" aria-hidden="true"></i></button>
+      </header>
 
-      <form @submit.prevent="handleSave" class="flex-grow overflow-y-auto custom-scrollbar p-6 space-y-6">
+      <form @submit.prevent="handleSave" id="service-editor" class="service-editor-body min-h-0 overflow-y-auto p-4 sm:p-5" :class="{ 'price-body': priceMode }" :aria-busy="isSaving">
         <!-- Configuración Básica -->
-        <div class="bg-white/5 p-4 rounded-lg border border-white/10">
-          <h3 class="text-sm font-bold text-cyan-400 uppercase mb-4 border-b border-white/10 pb-2">
-            Configuración Básica
-          </h3>
-          <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <section class="service-editor-card">
+          <h3 class="editor-section-title"><i class="fas fa-clipboard-list" aria-hidden="true"></i> Datos del servicio</h3>
+          <div class="grid gap-3 sm:grid-cols-2">
             <div>
               <label for="serviceType" class="form-label">Tipo de Servicio <span class="text-red-400">*</span></label>
               <div class="relative">
@@ -298,7 +303,7 @@ const handleSave = async () => {
                     {{ s.name }}
                   </option>
                 </select>
-                <div class="absolute inset-y-0 right-0 flex items-center px-2 pointer-events-none text-gray-400">
+                <div class="absolute inset-y-0 right-0 flex items-center px-2 pointer-events-none text-[var(--shell-muted)]">
                   <i class="fas fa-chevron-down text-xs"></i>
                 </div>
               </div>
@@ -308,9 +313,9 @@ const handleSave = async () => {
                 Frecuencia <span class="text-red-400">*</span>
                 <div class="relative" @mouseenter="handleTooltipEnter" @mouseleave="handleTooltipLeave"
                   @mousemove="resetTooltipTimer">
-                  <i class="fas fa-info-circle text-gray-500 hover:text-cyan-400 cursor-help text-xs"></i>
+                  <i class="fas fa-info-circle text-[var(--shell-muted)] hover:text-cyan-400 cursor-help text-xs"></i>
                   <div
-                    class="absolute bottom-full left-1/2 transform -translate-x-1/2 mb-2 w-48 bg-gray-800 text-xs text-gray-200 p-2 rounded shadow-lg transition-opacity duration-300 ease-in-out pointer-events-none z-10 border border-white/10 text-center"
+                    class="absolute bottom-full left-1/2 transform -translate-x-1/2 mb-2 w-48 bg-gray-800 text-xs text-gray-200 p-2 rounded shadow-lg transition-opacity duration-300 ease-in-out pointer-events-none z-10 border border-[var(--shell-border)] text-center"
                     :class="showTooltip ? 'opacity-100' : 'opacity-0'">
                     Opciones: Mensual, Bimestral, Trimestral, Semestral, Anual, Ocasional.
                   </div>
@@ -324,31 +329,29 @@ const handleSave = async () => {
                     {{ f }}
                   </option>
                 </select>
-                <div class="absolute inset-y-0 right-0 flex items-center px-2 pointer-events-none text-gray-400">
+                <div class="absolute inset-y-0 right-0 flex items-center px-2 pointer-events-none text-[var(--shell-muted)]">
                   <i class="fas fa-chevron-down text-xs"></i>
                 </div>
               </div>
             </div>
           </div>
-        </div>
+        </section>
 
         <!-- Planificación y facturación -->
-        <div class="bg-white/5 p-4 rounded-lg border border-white/10">
-          <h3 class="text-sm font-bold text-cyan-400 uppercase mb-4 border-b border-white/10 pb-2">
-            Planificación y facturación
-          </h3>
-          <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <section class="service-editor-card">
+          <h3 class="editor-section-title"><i class="fas fa-calendar-alt" aria-hidden="true"></i> Planificación y facturación</h3>
+          <div class="grid gap-3 sm:grid-cols-2">
             <div>
               <label for="visitsPerPeriod" class="form-label">Visitas por periodo</label>
               <input v-model.number="form.recurrence!.visitsPerPeriod" type="number" min="1"
                 id="visitsPerPeriod" class="input-field-dark w-full" />
-              <p class="text-xs text-gray-500 mt-1">Para servicios antiguos se conserva una visita.</p>
+              <p class="text-xs text-[var(--shell-muted)] mt-1">Para servicios antiguos se conserva una visita.</p>
             </div>
             <div>
               <label for="preferredDays" class="form-label">Días preferidos</label>
               <input v-model="preferredDaysText" type="text" id="preferredDays" class="input-field-dark w-full"
                 placeholder="Ej.: 2, 4, 6" />
-              <p class="text-xs text-gray-500 mt-1">Días del mes separados por coma.</p>
+              <p class="text-xs text-[var(--shell-muted)] mt-1">Días del mes separados por coma.</p>
             </div>
             <div>
               <label for="billingModel" class="form-label">Modelo de facturación</label>
@@ -374,19 +377,18 @@ const handleSave = async () => {
                 id="additionalVisitValue" class="input-field-dark w-full" />
             </div>
           </div>
-        </div>
+        </section>
 
         <!-- Detalles Financieros y Estado -->
-        <div class="bg-white/5 p-4 rounded-lg border border-white/10">
-          <h3 class="text-sm font-bold text-cyan-400 uppercase mb-4 border-b border-white/10 pb-2">
-            Detalles
-          </h3>
-          <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <section class="service-editor-card" :class="{ 'order-first': priceMode }">
+          <h3 class="editor-section-title"><i class="fas fa-dollar-sign" aria-hidden="true"></i> Valor y estado</h3>
+          <div class="grid gap-3 sm:grid-cols-2">
+            <p v-if="!canSetPrice" class="pricing-note sm:col-span-2">El valor quedará pendiente de asignación.</p>
             <div v-if="canSetPrice">
               <label for="serviceValue" class="form-label">Valor del Servicio</label>
               <div class="relative">
-                <span class="absolute inset-y-0 left-0 pl-3 flex items-center text-gray-400 font-bold">$</span>
-                <input v-model="formattedValor" type="text" id="serviceValue"
+                <span class="absolute inset-y-0 left-0 pl-3 flex items-center text-[var(--shell-muted)] font-bold">$</span>
+                <input v-model="formattedValor" type="text" id="serviceValue" ref="priceInput" inputmode="numeric"
                   class="input-field-dark w-full !pl-8 font-mono" placeholder="0" required />
               </div>
             </div>
@@ -399,57 +401,79 @@ const handleSave = async () => {
                   <option value="Inactivo">Inactivo</option>
                   <option value="Completado">Completado</option>
                 </select>
-                <div class="absolute inset-y-0 right-0 flex items-center px-2 pointer-events-none text-gray-400">
+                <div class="absolute inset-y-0 right-0 flex items-center px-2 pointer-events-none text-[var(--shell-muted)]">
                   <i class="fas fa-chevron-down text-xs"></i>
                 </div>
               </div>
             </div>
           </div>
-        </div>
+        </section>
 
         <!-- Asignación de Sucursales -->
-        <div>
-          <label for="serviceSucursales" class="form-label mb-2 block">Asignar a Sucursales</label>
-          <div class="bg-[#0a0a0a]/50 rounded-lg border border-white/10 p-2 max-h-40 overflow-y-auto custom-scrollbar">
-            <div v-if="sucursalesOptions.length === 0" class="text-gray-500 text-sm p-2 text-center">
+        <section class="service-editor-card" aria-labelledby="service-branches-title">
+          <h3 id="service-branches-title" class="editor-section-title"><i class="fas fa-store" aria-hidden="true"></i> Sucursales</h3>
+          <div class="bg-[var(--shell-input)] rounded-lg border border-[var(--shell-border)] p-2 max-h-40 overflow-y-auto custom-scrollbar">
+            <div v-if="sucursalesOptions.length === 0" class="text-[var(--shell-muted)] text-sm p-2 text-center">
               No hay sucursales disponibles.
             </div>
             <div v-else class="grid grid-cols-1 sm:grid-cols-2 gap-2">
               <label v-for="sucursal in sucursalesOptions" :key="sucursal.value"
-                class="flex items-center p-2 rounded hover:bg-white/5 cursor-pointer transition-colors" :class="form.sucursales_asignadas.includes(sucursal.value)
+                class="flex items-center p-2 rounded hover:bg-[var(--shell-input)] cursor-pointer transition-colors" :class="form.sucursales_asignadas.includes(sucursal.value)
                   ? 'bg-red-900/20 border border-red-500/30'
                   : ''
                   ">
                 <input type="checkbox" :value="sucursal.value" v-model="form.sucursales_asignadas"
-                  class="rounded border-white/10 text-[#d60000] focus:ring-[#d60000] bg-[#202020] mr-2" />
-                <span class="text-sm text-gray-200">{{ sucursal.text }}</span>
+                  class="rounded border-[var(--shell-border)] text-[#d60000] focus:ring-[#d60000] bg-[var(--shell-input)] mr-2" />
+                <span class="text-sm text-[var(--shell-text)]">{{ sucursal.text }}</span>
               </label>
             </div>
           </div>
-          <p class="text-xs text-gray-500 mt-1">Seleccione las sedes donde aplica este servicio.</p>
-        </div>
+          <p class="mt-2 text-xs text-[var(--shell-muted)]">{{ form.sucursales_asignadas.length ? form.sucursales_asignadas.length + ' seleccionadas' : 'Aplica a todas las sucursales si no seleccionas ninguna.' }}</p>
+        </section>
       </form>
 
-      <!-- Footer -->
-      <div class="p-6 border-t border-white/10 bg-[#0a0a0a]/30 flex justify-end gap-3">
-        <button @click="$emit('close')" type="button" class="btn btn-secondary" :disabled="isSaving">Cancelar</button>
-        <button @click="handleSave" type="button"
-          class="btn btn-primary bg-[#d60000] hover:bg-red-700 shadow-lg shadow-red-500/20" :disabled="isSaving">
+      <footer class="flex shrink-0 flex-wrap justify-end gap-2 border-t border-[var(--shell-border)] bg-[var(--shell-input)] p-4 sm:px-5">
+        <button @click="$emit('close')" type="button" class="service-form-button" :disabled="isSaving">Cancelar</button>
+        <button type="submit" form="service-editor" class="service-form-button service-form-primary" :disabled="isSaving">
           <i v-if="isSaving" class="fas fa-circle-notch fa-spin mr-2"></i>
           <i v-else class="fas fa-save mr-2"></i>
-          {{ isSaving ? 'Guardando...' : (isEditMode ? 'Guardar Cambios' : 'Crear Servicio') }}
+          {{ isSaving ? 'Guardando...' : (priceMode ? 'Guardar precio' : isEditMode ? 'Guardar cambios' : 'Crear servicio') }}
         </button>
-      </div>
+      </footer>
     </div>
   </div>
 </template>
 
 <style scoped>
+.service-editor-panel { max-width: 58rem; max-height: calc(100dvh - 2rem); color: var(--shell-text); }
+.price-editor { max-width: 42rem; }
+.service-editor-body { display: grid; gap: 0.85rem; scrollbar-color: var(--shell-scroll-thumb) var(--shell-scroll-track); }
+.service-editor-card { min-width: 0; padding: 0.9rem; border: 1px solid var(--shell-border); border-radius: 0.75rem; }
+.editor-section-title {
+  display: flex; align-items: center; gap: 0.55rem;
+  margin-bottom: 0.8rem; padding-bottom: 0.65rem; border-bottom: 1px solid var(--shell-border);
+  font-size: 0.9rem; font-weight: 750;
+}
+.editor-section-title i { color: var(--service-accent); }
+.pricing-note { padding: 0.6rem; border-radius: 0.55rem; background: var(--service-tint); color: var(--service-accent); font-size: 0.8rem; }
+@media (min-width: 900px) {
+  .service-editor-body:not(.price-body) { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: start; }
+}
+
+.service-form-heading { border-bottom: 1px solid var(--shell-border); background: linear-gradient(115deg, var(--service-tint), var(--shell-surface) 72%); }
+.service-form-icon { background: var(--service-tint); color: var(--service-accent); }
+.form-label { display: block; color: var(--shell-muted); font-size: 0.8rem; font-weight: 650; margin-bottom: 0.25rem; }
+.service-form-button { display: inline-flex; min-height: 2.5rem; align-items: center; justify-content: center; padding: 0.45rem 0.75rem; border: 1px solid var(--shell-border); border-radius: 0.55rem; background: var(--shell-surface); color: var(--shell-text); font-size: 0.8rem; font-weight: 650; }
+.service-form-button:hover { background: var(--shell-input); }
+.service-form-button:disabled { opacity: 0.55; }
+.service-form-primary { background: #c7000c; color: #fff; border-color: #bc000b; }
+.service-form-primary:hover { background: #a9000a; }
+
 .input-field-dark {
-  background-color: #202020;
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  background-color: var(--shell-input);
+  border: 1px solid var(--shell-border);
   border-radius: 0.5rem;
-  color: #fff;
+  color: var(--shell-text);
   padding: 0.5rem 0.75rem;
   transition: all 0.2s;
 }

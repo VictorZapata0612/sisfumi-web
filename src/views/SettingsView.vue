@@ -88,11 +88,9 @@ const selectedZone = ref('')
 const selectedColor = ref('#ffffff')
 
 // Estado para el formulario de plantillas
-const editingTemplate = ref<
-  VisitTemplate | { templateName?: string; tipo_visita?: string; notas_visita?: string }
->({})
+const editingTemplate = ref<Partial<VisitTemplate>>({})
 
-const isTemplateEditMode = computed(() => 'id' in editingTemplate.value)
+const isTemplateEditMode = computed(() => Boolean(editingTemplate.value.id))
 
 const availableServices = computed(() => settingsStore.businessData.serviceTypes || [])
 
@@ -256,10 +254,12 @@ const cancelEditingTemplate = () => {
 }
 
 const saveTemplate = async () => {
-  if (!editingTemplate.value.templateName || !editingTemplate.value.tipo_visita) {
+  if (!editingTemplate.value.templateName?.trim() || (editingTemplate.value.notesOnly
+    ? !editingTemplate.value.notas_visita?.trim()
+    : !editingTemplate.value.tipo_visita)) {
     showToast({
       title: 'Campos Incompletos',
-      message: 'El nombre y el tipo de servicio de la plantilla son obligatorios.',
+      message: editingTemplate.value.notesOnly ? 'Completa el nombre y la nota.' : 'Completa el nombre y el tipo de servicio.',
       type: 'error',
     })
     return
@@ -788,7 +788,10 @@ const handleImportClick = () => {
                 <input v-model="editingTemplate.templateName" type="text" class="input-field-dark w-full"
                   placeholder="Ej: Mantenimiento Mensual">
               </div>
-              <div>
+              <label class="flex items-center gap-2 text-sm">
+                <input v-model="editingTemplate.notesOnly" type="checkbox" /> Solo notas
+              </label>
+              <div v-if="!editingTemplate.notesOnly">
                 <label class="form-label">Tipo de Servicio</label>
                 <select v-model="editingTemplate.tipo_visita" class="input-field-dark w-full">
                   <option disabled value="">Seleccione...</option>
@@ -826,7 +829,7 @@ const handleImportClick = () => {
                 <div>
                   <p class="font-bold text-white text-sm">{{ t.templateName }}</p>
                   <span class="text-xs text-indigo-300 bg-indigo-900/30 px-2 py-0.5 rounded mt-1 inline-block">{{
-                    t.tipo_visita }}</span>
+                    t.notesOnly ? 'Solo notas' : t.tipo_visita }}</span>
                 </div>
                 <div class="flex gap-1">
                   <button @click="startEditingTemplate(t)"

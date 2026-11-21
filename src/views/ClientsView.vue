@@ -1,6 +1,7 @@
 <!-- eslint-disable @typescript-eslint/no-explicit-any -->
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref, computed, reactive, defineAsyncComponent } from 'vue'
+import { onMounted, onUnmounted, ref, computed, reactive, watch, nextTick, defineAsyncComponent } from 'vue'
+import type { Client } from '@/stores/clients'
 import { useClientsStore } from '@/stores/clients'
 import { useAuthStore } from '@/stores/auth'
 import { useDialog } from '@/composables/useDialog'
@@ -19,6 +20,22 @@ const ClientImportExportModal = defineAsyncComponent(() => import('@/components/
 // Referencias para los filtros
 const searchTerm = ref('')
 const statusFilter = ref('Activo')
+const typeFilter = ref('')
+const branchFilter = ref('')
+const pageSize = 12
+const registrationFormatter = new Intl.DateTimeFormat('es-CO', {
+  dateStyle: 'medium',
+  timeZone: 'America/Bogota',
+})
+
+function formatRegistration(value: Client['createdAt']) {
+  const seconds = typeof value === 'object' ? value?.seconds ?? value?._seconds : undefined
+  const date = typeof value === 'string' ? new Date(value) : new Date((seconds ?? NaN) * 1000)
+  return Number.isNaN(date.getTime()) ? '—' : registrationFormatter.format(date)
+}
+const matches = ref<Client[]>([])
+const localMode = computed(() => Boolean(searchTerm.value.trim() || typeFilter.value || branchFilter.value))
+let requestVersion = 0
 
 // Estado de paginación local
 const pagination = reactive({
@@ -33,7 +50,28 @@ const showFormModal = ref(false)
 const showImportModal = ref(false)
 const editingClientId = ref<string | null>(null)
 const { showDialog } = useDialog()
-const loadMoreTrigger = ref<HTMLElement | null>(null)
+const profileDialog = ref<HTMLDialogElement>()
+const profileSections = [
+  { id: 'summary', label: 'Resumen', icon: 'fa-building' },
+  { id: 'branches', label: 'Sucursales', icon: 'fa-store' },
+  { id: 'history', label: 'Historial', icon: 'fa-history' },
+] as const
+const profileSection = ref<(typeof profileSections)[number]['id']>('summary')
+const profileBody = ref<HTMLElement>()
+
+watch(profileSection, () => {
+  if (profileBody.value) profileBody.value.scrollTop = 0
+})
+
+function visitStatus(status: string | undefined) {
+  if (status === 'Realizada') return 'complete'
+  if (status === 'Cancelada') return 'cancelled'
+  return status === 'Programada' ? 'scheduled' : undefined
+}
+watch(showProfileModal, (open) => {
+  if (open) profileDialog.value?.showModal()
+  else profileDialog.value?.close()
+}, { flush: 'post' })
 
 const normalizeSearchText = (value: string) =>
   value
@@ -43,9 +81,9 @@ const normalizeSearchText = (value: string) =>
     .trim()
     .replace(/\s+/g, ' ')
 
-const matchesSearch = (client: any, term: string) => {
+const matchesSearch = (client: Client, term: string) => {
   const normalizedTerm = normalizeSearchText(term)
-  return [client.nombreComercial, client.ciudad, client.zona]
+  return [client.nombreComercial, client.razonSocial, client.nit, client.numeroIdentificacion, client.ciudad, client.zona, ...((client.sucursales ?? []).map((branch) => branch.nombre))]
     .filter(Boolean)
     .some((value) => normalizeSearchText(String(value)).includes(normalizedTerm))
 }
@@ -59,6 +97,7 @@ const canChangeZone = computed(() => {
 })
 
 const viewClientProfile = (clientId: string) => {
+  profileSection.value = 'summary'
   clientsStore.fetchClientProfile(clientId)
   showProfileModal.value = true
 }
@@ -68,53 +107,68 @@ const initializeFilters = () => {
     statusFilter.value = 'Activo' // Forzar a ver solo activos
   }
 }
-const fetchNextBatch = async () => {
-  clientsStore.loading = true
-  try {
-    const isSearching = Boolean(searchTerm.value.trim())
-    let newClients: any[]
-    if (isSearching) {
-      const getAllClients = httpsCallable(functions, 'getAllClients')
-      const result = await getAllClients()
-      const fetchedClients = (result.data as { clients: any[] }).clients
-      newClients = fetchedClients.filter((client) =>
-        (statusFilter.value === 'Todos' || client.estado === statusFilter.value) &&
-        matchesSearch(client, searchTerm.value),
-      )
-    } else {
-      const getClientsPage = httpsCallable(functions, 'getClientsPage')
-      const result = await getClientsPage({
-        status: statusFilter.value === 'Todos' ? undefined : statusFilter.value,
-        pageSize: 12,
-        startAfterDocId: pagination.pageHistory[pagination.currentPage - 1],
-      })
-      newClients = (result.data as { clients: any[] }).clients
-    }
-    // Append instead of replace for infinite scroll
-    if (pagination.currentPage === 1) {
-      clientsStore.clients = newClients
-    } else {
-      clientsStore.clients.push(...newClients)
-    }
+function showLocalPage() {
+  const start = (pagination.currentPage - 1) * pageSize
+  clientsStore.clients = matches.value.slice(start, start + pageSize)
+  pagination.isLastPage = start + pageSize >= matches.value.length
+}
 
-    if (newClients.length > 0) {
-      const lastId = newClients[newClients.length - 1].id
-      if (pagination.pageHistory.length === pagination.currentPage) {
-        pagination.pageHistory.push(lastId)
-      }
+async function fetchPage(page: number) {
+  const version = ++requestVersion
+  const status = statusFilter.value
+  const search = searchTerm.value
+  const type = typeFilter.value
+  const branch = normalizeSearchText(branchFilter.value)
+  clientsStore.loading = true
+  clientsStore.error = null
+  try {
+    if (localMode.value) {
+      const result = await httpsCallable<unknown, { clients: Client[] }>(functions, 'getAllClients')()
+      if (version !== requestVersion) return
+      matches.value = result.data.clients.filter((client) =>
+        (status === 'Todos' || client.estado === status) &&
+        (!type || client.tipo?.toUpperCase() === type) &&
+        (!branch || client.sucursales?.some((item) => normalizeSearchText(item.nombre || '').includes(branch))) &&
+        (!search.trim() || matchesSearch(client, search)),
+      ).sort((a, b) => (a.nombreComercial || '').localeCompare(b.nombreComercial || '', 'es-CO'))
+      pagination.currentPage = page
+      showLocalPage()
+    } else {
+      const result = await httpsCallable<unknown, { clients: Client[] }>(functions, 'getClientsPage')({
+        status: status === 'Todos' ? undefined : status,
+        pageSize: pageSize + 1,
+        startAfterDocId: pagination.pageHistory[page - 1],
+      })
+      if (version !== requestVersion) return
+      clientsStore.clients = result.data.clients.slice(0, pageSize)
+      pagination.currentPage = page
+      pagination.isLastPage = result.data.clients.length <= pageSize
+      if (!pagination.isLastPage) pagination.pageHistory[page] = clientsStore.clients[pageSize - 1]!.id
     }
-    pagination.isLastPage = isSearching || newClients.length < 12
-  } catch (error: any) {
-    clientsStore.error = 'No se pudieron cargar los clientes. ' + error.message
+  } catch (error: unknown) {
+    if (version === requestVersion) {
+      clientsStore.error = error instanceof Error ? error.message : 'No se pudieron cargar los clientes.'
+    }
   } finally {
-    clientsStore.loading = false
+    if (version === requestVersion) clientsStore.loading = false
   }
 }
 
-const resetAndFetch = () => {
+function resetAndFetch() {
+  clearTimeout(searchTimeout)
   pagination.currentPage = 1
   pagination.pageHistory = [null]
-  fetchNextBatch()
+  void fetchPage(1)
+}
+
+function changePage(page: number) {
+  if (clientsStore.loading || page < 1) return
+  if (localMode.value) {
+    pagination.currentPage = page
+    showLocalPage()
+  } else {
+    void fetchPage(page)
+  }
 }
 
 const openCreateModal = () => {
@@ -137,11 +191,12 @@ const handleClientSave = () => {
 const handleInactive = async (clientId: string | null) => {
   if (!clientId) return
   showDialog({
-    title: 'Confirmar Inactivación',
+    appearance: 'client',
+    title: 'Inactivar cliente',
     message:
       '¿Está seguro de que desea marcar este cliente como "Inactivo"? Se ocultará de las listas principales.',
     isConfirmation: true,
-    confirmationText: 'Sí, Inactivar',
+    confirmationText: 'Inactivar cliente',
     async onConfirm() {
       try {
         await clientsStore.updateClientStatus(clientId, 'Inactivo')
@@ -157,10 +212,11 @@ const handleInactive = async (clientId: string | null) => {
 const handlePermanentDelete = async (clientId: string | null) => {
   if (!clientId) return
   showDialog({
-    title: '¡ACCIÓN IRREVERSIBLE!',
+    appearance: 'client',
+    title: 'Eliminar cliente permanentemente',
     message: `Está a punto de eliminar permanentemente este cliente y todos sus datos. Esta acción no se puede deshacer. <br><br> Escriba <strong>ELIMINAR</strong> para confirmar.`,
     isConfirmation: true,
-    confirmationText: 'Eliminar Permanentemente',
+    confirmationText: 'Eliminar cliente',
     confirmationKeyword: 'ELIMINAR',
     async onConfirm() {
       try {
@@ -174,393 +230,291 @@ const handlePermanentDelete = async (clientId: string | null) => {
   })
 }
 
-let observer: IntersectionObserver
+let searchTimeout: ReturnType<typeof setTimeout> | undefined
 
 onMounted(() => {
-  // Si se pasa un filtro de ciudad en la URL (desde el dashboard)
-  if (route.query.cityFilter) {
-    searchTerm.value = route.query.cityFilter as string
-  }
-
+  if (typeof route.query.cityFilter === 'string') searchTerm.value = route.query.cityFilter
   initializeFilters()
   resetAndFetch()
-
-  const clientId = route.query.clientIdToOpen
-  if (typeof clientId === 'string' && clientId) {
-    viewClientProfile(clientId)
-    void router.replace({ query: { ...route.query, clientIdToOpen: undefined } })
-  }
-
-  // Infinite Scroll Observer
-  observer = new IntersectionObserver((entries) => {
-    const entry = entries[0]
-    if (entry?.isIntersecting && !clientsStore.loading && !pagination.isLastPage) {
-      pagination.currentPage++
-      fetchNextBatch()
-    }
-  }, { rootMargin: '100px' })
-
-  if (loadMoreTrigger.value) observer.observe(loadMoreTrigger.value)
 })
+
+watch(() => route.query.clientIdToOpen ?? route.query.itemIdToOpen, async (id) => {
+  if (typeof id !== 'string' || !id) return
+  await nextTick()
+  viewClientProfile(id)
+  void router.replace({ query: { ...route.query, clientIdToOpen: undefined, itemIdToOpen: undefined } })
+}, { immediate: true })
 
 onUnmounted(() => {
-  if (observer) observer.disconnect()
+  clearTimeout(searchTimeout)
+  requestVersion++
 })
 
-const handleFilterChange = () => {
-  resetAndFetch()
-}
-
-let searchTimeout: number
-const handleSearch = () => {
+function handleSearch() {
   clearTimeout(searchTimeout)
-  searchTimeout = setTimeout(() => {
-    resetAndFetch()
-  }, 400)
+  requestVersion++
+  clientsStore.loading = true
+  searchTimeout = setTimeout(resetAndFetch, 350)
 }
 </script>
 
 <template>
-  <main class="p-4 md:p-8 overflow-y-auto min-h-screen bg-[#0a0a0a] text-gray-100">
-    <!-- Header: Responsive (Columna en móvil, Fila en PC) -->
-    <header class="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 mb-6">
-      <div>
-        <h1 class="text-2xl md:text-3xl font-bold text-white">Gestión de Clientes</h1>
-        <p class="text-sm text-gray-400 mt-1">Administra tu cartera y contactos</p>
+  <section class="clients-page space-y-4">
+    <header class="flex flex-wrap items-center justify-between gap-4 py-2">
+      <div class="flex items-center gap-3">
+        <span class="client-icon grid size-12 shrink-0 place-items-center rounded-xl text-xl" aria-hidden="true">
+          <i class="fas fa-users"></i>
+        </span>
+        <div>
+          <h1 class="text-2xl font-extrabold tracking-tight sm:text-3xl">Clientes</h1>
+          <p class="client-muted mt-1 text-sm">Gestiona tus clientes, contactos y sucursales.</p>
+        </div>
       </div>
-
-      <!-- Botonera: Stack en móvil -->
-      <div class="flex flex-wrap items-center gap-2 w-full md:w-auto">
-        <button @click="showImportModal = true" class="btn btn-secondary flex-1 md:flex-none justify-center text-sm">
-          <i class="fas fa-file-csv mr-2"></i><span class="hidden sm:inline">Importar / Exportar</span>
+      <div class="flex flex-wrap items-center gap-2">
+        <button type="button" class="client-button" @click="showImportModal = true">
+          <i class="fas fa-file-csv" aria-hidden="true"></i> Importar / exportar
         </button>
-        <button @click="openCreateModal"
-          class="btn btn-primary bg-[#d60000] hover:bg-red-700 w-full md:w-auto mt-2 md:mt-0 justify-center shadow-lg shadow-red-500/20">
-          <i class="fas fa-plus mr-2"></i>Añadir Cliente
+        <button type="button" class="client-button client-primary" @click="openCreateModal">
+          <i class="fas fa-plus" aria-hidden="true"></i> Nuevo cliente
         </button>
       </div>
     </header>
 
-    <!-- Filtros: Responsive -->
-    <div
-      class="flex flex-col md:flex-row items-center gap-4 mb-6 bg-[#151515] p-4 rounded-lg border border-white/10 shadow-lg">
-      <div class="relative flex-grow w-full">
-        <i class="fas fa-search absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"></i>
-        <input v-model="searchTerm" @input="handleSearch" type="search"
-          placeholder="Buscar por nombre, ciudad o zona..."
-          class="w-full pl-10 pr-3 py-2 text-white bg-[#0a0a0a] border border-white/10 rounded-md focus:outline-none focus:ring-2 focus:ring-[#d60000] placeholder-gray-500" />
-      </div>
-      <div v-if="canChangeZone">
-        <select v-model="statusFilter" @change="handleFilterChange"
-          class="w-full md:w-48 text-white bg-[#0a0a0a] border border-white/10 rounded-md focus:outline-none focus:ring-2 focus:ring-[#d60000] px-3 py-2">
-          <option value="Todos">Todos los Estados</option>
+    <section class="clients-panel grid gap-3 p-4 sm:grid-cols-2 xl:grid-cols-[2fr_1fr_1fr_1fr]" aria-label="Filtros de clientes">
+      <label class="grid gap-1 text-xs font-semibold">
+        Búsqueda
+        <input v-model="searchTerm" @input="handleSearch" type="search" class="client-field"
+          placeholder="Nombre, documento o ciudad…" />
+      </label>
+      <label v-if="canChangeZone" class="grid gap-1 text-xs font-semibold">
+        Estado
+        <select v-model="statusFilter" @change="resetAndFetch" class="client-field">
+          <option value="Todos">Todos</option>
           <option value="Activo">Activo</option>
           <option value="Inactivo">Inactivo</option>
         </select>
+      </label>
+      <label class="grid gap-1 text-xs font-semibold">
+        Tipo
+        <select v-model="typeFilter" @change="resetAndFetch" class="client-field">
+          <option value="">Todos</option>
+          <option value="DIRECTO">Directo</option>
+          <option value="ALIADO">Aliado</option>
+        </select>
+      </label>
+      <label class="grid gap-1 text-xs font-semibold">
+        Sucursal
+        <input v-model="branchFilter" @input="handleSearch" type="search" class="client-field"
+          placeholder="Nombre de sucursal" />
+      </label>
+    </section>
+
+    <section class="clients-panel overflow-hidden" aria-label="Directorio de clientes" :aria-busy="clientsStore.loading">
+      <p v-if="clientsStore.loading" class="client-muted p-8 text-center text-sm" role="status">Cargando clientes…</p>
+      <div v-else-if="clientsStore.error" class="p-8 text-center text-sm" role="alert">
+        <p>{{ clientsStore.error }}</p>
+        <button type="button" class="client-button mt-3" @click="resetAndFetch">Reintentar</button>
       </div>
-    </div>
+      <p v-else-if="!clientsStore.clients.length" class="client-muted p-8 text-center text-sm">No se encontraron clientes con estos filtros.</p>
 
-    <!-- Estados de Carga y Error -->
-    <div v-if="clientsStore.loading" class="grid grid-cols-1 md:grid-cols-4 gap-6">
-      <div v-for="i in 8" :key="i"
-        class="bg-[#151515] p-4 rounded-lg shadow-lg animate-pulse h-32 border border-white/10"></div>
-    </div>
-
-    <div v-else-if="clientsStore.error"
-      class="text-center text-red-400 p-8 bg-[#151515] rounded-lg border border-red-900/50">
-      <i class="fas fa-exclamation-triangle text-4xl mb-4"></i>
-      <p>Error: {{ clientsStore.error }}</p>
-    </div>
-
-    <div v-else-if="clientsStore.clients.length === 0" class="text-center text-gray-500 py-16">
-      <i class="fas fa-folder-open text-5xl mb-4 opacity-50"></i>
-      <p>No se encontraron clientes que coincidan con los filtros.</p>
-    </div>
-
-    <!-- CONTENIDO PRINCIPAL -->
-    <div v-else>
-      <!-- VISTA MÓVIL (Cards): Visible solo en pantallas pequeñas (< md) -->
-      <div class="md:hidden grid grid-cols-1 sm:grid-cols-2 gap-4">
-        <div v-for="client in clientsStore.clients" :key="client.id" @click="viewClientProfile(client.id)"
-          class="bg-[#151515] p-5 rounded-lg shadow-md border border-white/10 active:bg-white/5 transition-colors cursor-pointer">
-          <div class="flex justify-between items-start mb-3">
-            <h3 class="font-bold text-lg text-white truncate max-w-[70%]">
-              {{ client.nombreComercial }}
-            </h3>
-            <span class="text-xs font-bold px-2 py-1 rounded-full" :class="client.estado === 'Activo'
-              ? 'bg-green-500/20 text-green-300'
-              : 'bg-red-500/20 text-red-300'
-              ">
-              {{ client.estado }}
-            </span>
-          </div>
-          <div class="space-y-1 text-sm text-gray-400">
-            <p class="flex items-center">
-              <i class="fas fa-map-marker-alt w-5 text-center mr-1"></i>
-              {{ client.ciudad || 'Sin ciudad' }}
-            </p>
-            <p class="flex items-center">
-              <i class="fas fa-map w-5 text-center mr-1"></i> {{ client.zona || 'Sin zona' }}
-            </p>
-          </div>
-          <div class="mt-4 pt-3 border-t border-white/10 text-center">
-            <span class="text-cyan-400 text-sm font-medium">Ver Perfil</span>
-          </div>
-        </div>
-      </div>
-
-      <!-- VISTA DE ESCRITORIO (Tabla): Visible solo en pantallas medianas y grandes (>= md) -->
-      <div class="hidden md:block bg-[#151515] rounded-xl border border-white/10 shadow-xl overflow-hidden">
-        <div class="overflow-x-auto">
-          <table class="min-w-full divide-y divide-white/5">
-            <thead class="bg-[#0a0a0a]/50">
+      <template v-else>
+        <div class="hidden overflow-x-auto md:block">
+          <table class="clients-table w-full text-left text-sm">
+            <thead>
               <tr>
-                <th scope="col" class="px-6 py-4 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">
-                  Cliente / Razón Social
-                </th>
-                <th scope="col" class="px-6 py-4 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">
-                  Ubicación
-                </th>
-                <th scope="col" class="px-6 py-4 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">
-                  Estado
-                </th>
-                <th scope="col"
-                  class="px-6 py-4 text-center text-xs font-medium text-gray-400 uppercase tracking-wider">
-                  Acciones
-                </th>
+                <th scope="col">Cliente / ID</th>
+                <th scope="col">Documento</th>
+                <th scope="col">Contacto</th>
+                <th scope="col">Sucursales</th>
+                <th scope="col">Estado</th>
+                <th scope="col">Registro</th>
+                <th scope="col">Acciones</th>
               </tr>
             </thead>
-            <tbody class="divide-y divide-white/5 bg-[#151515]">
-              <tr v-for="client in clientsStore.clients" :key="client.id"
-                class="hover:bg-white/5 transition-colors group cursor-pointer" @click="viewClientProfile(client.id)">
-                <td class="px-6 py-4 whitespace-nowrap">
-                  <div class="flex items-center">
-                    <div
-                      class="flex-shrink-0 h-10 w-10 bg-white/10 rounded-full flex items-center justify-center text-cyan-400 font-bold border border-white/10">
-                      {{ client.nombreComercial.charAt(0).toUpperCase() }}
-                    </div>
-                    <div class="ml-4">
-                      <div class="text-sm font-bold text-white group-hover:text-cyan-400 transition-colors">
-                        {{ client.nombreComercial }}
-                      </div>
-                      <div class="text-xs text-gray-500">
-                        ID: {{ client.id.substring(0, 8) }}...
-                      </div>
-                    </div>
-                  </div>
+            <tbody>
+              <tr v-for="client in clientsStore.clients" :key="client.id">
+                <td>
+                  <button type="button" class="client-link text-left font-bold" @click="viewClientProfile(client.id)">
+                    {{ client.nombreComercial || client.razonSocial || 'Sin nombre' }}
+                  </button>
+                  <p v-if="client.razonSocial && client.razonSocial !== client.nombreComercial" class="client-muted text-xs">{{ client.razonSocial }}</p>
+                  <p class="client-muted text-xs" :title="client.id">ID {{ client.id.slice(0, 8) }}</p>
                 </td>
-                <td class="px-6 py-4 whitespace-nowrap">
-                  <div class="text-sm text-gray-300">{{ client.ciudad || '---' }}</div>
-                  <div class="text-xs text-gray-500">{{ client.zona || 'Sin Zona' }}</div>
+                <td>{{ client.nit || client.numeroIdentificacion || '—' }}</td>
+                <td>
+                  <p>{{ client.contactoPrincipal?.nombre || '—' }}</p>
+                  <p v-if="client.contactoPrincipal?.celular || client.contactoPrincipal?.email" class="client-muted break-all text-xs">
+                    {{ client.contactoPrincipal?.celular || client.contactoPrincipal?.email }}
+                  </p>
                 </td>
-                <td class="px-6 py-4 whitespace-nowrap">
-                  <span class="px-3 py-1 inline-flex text-xs leading-5 font-semibold rounded-full" :class="client.estado === 'Activo'
-                    ? 'bg-green-900/50 text-green-400'
-                    : 'bg-red-900/50 text-red-400'
-                    ">
-                    {{ client.estado }}
-                  </span>
+                <td>
+                  <p>{{ client.sucursales?.length ?? '—' }}</p>
+                  <p class="client-muted text-xs">{{ client.ciudad || client.zona }}</p>
                 </td>
-                <td class="px-6 py-4 whitespace-nowrap text-center text-sm font-medium">
-                  <button @click.stop="viewClientProfile(client.id)"
-                    class="text-cyan-400 hover:text-cyan-300 bg-white/5 hover:bg-white/10 p-2 rounded-lg transition-all"
-                    title="Ver Perfil">
-                    <i class="fas fa-eye"></i>
+                <td><span class="client-status" :data-active="client.estado === 'Activo'">{{ client.estado || 'Sin estado' }}</span></td>
+                <td>{{ formatRegistration(client.createdAt) }}</td>
+                <td>
+                  <button type="button" class="client-button client-action" :aria-label="'Ver ficha de ' + (client.nombreComercial || client.id)" @click="viewClientProfile(client.id)">
+                    <i class="fas fa-eye" aria-hidden="true"></i>
                   </button>
                 </td>
               </tr>
             </tbody>
           </table>
         </div>
-      </div>
-    </div>
 
-    <!-- Infinite Scroll Trigger -->
-    <div ref="loadMoreTrigger" class="h-10 mt-4 flex justify-center items-center">
-      <div v-if="clientsStore.loading && pagination.currentPage > 1" class="text-cyan-500">
-        <i class="fas fa-circle-notch fa-spin"></i> Cargando más...
-      </div>
-    </div>
-
-    <!-- Modal de Perfil de Cliente -->
-    <div v-if="showProfileModal"
-      class="fixed inset-0 bg-[#0a0a0a]/80 flex items-center justify-center z-50 p-4 backdrop-blur-sm">
-      <div
-        class="bg-[#151515] p-4 md:p-8 rounded-lg shadow-xl w-full max-w-5xl relative max-h-[90vh] flex flex-col border border-white/10">
-        <button @click="showProfileModal = false"
-          class="absolute top-4 right-4 text-gray-400 hover:text-white text-2xl transition-colors z-10">
-          &times;
-        </button>
-
-        <!-- Contenido del Modal -->
-        <div v-if="clientsStore.loadingProfile" class="text-center text-gray-400 py-12">
-          <i class="fas fa-spinner fa-spin text-4xl text-cyan-500"></i>
-          <p class="mt-4">Cargando perfil completo...</p>
-        </div>
-
-        <div v-else-if="profile" class="flex-grow overflow-y-auto custom-scrollbar -mr-4 pr-4">
-          <!-- Header Perfil -->
-          <div class="flex flex-col md:flex-row items-start mb-8 pb-6 border-b border-white/10 gap-4">
-            <div class="bg-white/5 p-4 rounded-xl hidden md:block">
-              <i class="fas fa-building text-4xl text-cyan-400"></i>
-            </div>
-            <div class="flex-grow">
-              <h2 class="text-2xl md:text-3xl font-bold text-white">
-                {{ profile.client.nombreComercial }}
-              </h2>
-              <div class="flex items-center gap-2 mt-1 text-gray-400">
-                <i class="fas fa-map-marker-alt text-sm"></i>
-                <p>{{ profile.client.ciudad }}, {{ profile.client.departamento }}</p>
-              </div>
-              <div class="mt-3">
-                <span class="text-xs font-bold px-3 py-1 rounded-full border" :class="profile.client.estado === 'Activo'
-                  ? 'bg-green-500/10 text-green-400 border-green-500/30'
-                  : 'bg-red-500/10 text-red-400 border-red-500/30'
-                  ">
-                  {{ profile.client.estado }}
-                </span>
-              </div>
-            </div>
-            <button @click="openEditModal(profile.client.id)" class="btn btn-secondary w-full md:w-auto mt-2 md:mt-0">
-              <i class="fas fa-edit mr-2"></i>Editar Cliente
+        <ul class="md:hidden">
+          <li v-for="client in clientsStore.clients" :key="client.id" class="client-mobile-row">
+            <button type="button" class="flex w-full items-start justify-between gap-3 p-4 text-left" @click="viewClientProfile(client.id)">
+              <span class="min-w-0">
+                <strong class="block break-words">{{ client.nombreComercial || client.razonSocial || 'Sin nombre' }}</strong>
+                <span class="client-muted text-xs">{{ [client.nit || client.numeroIdentificacion, client.ciudad].filter(Boolean).join(' · ') }}</span>
+              </span>
+              <span class="client-status" :data-active="client.estado === 'Activo'">{{ client.estado || 'Sin estado' }}</span>
             </button>
-          </div>
+          </li>
+        </ul>
+      </template>
 
-          <div class="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-8">
-            <!-- Columna Izquierda -->
-            <div class="space-y-8">
-              <div>
-                <h3 class="text-lg font-bold mb-4 text-cyan-400 border-l-4 border-cyan-500 pl-3">
-                  Sucursales y Contactos
-                </h3>
-                <div class="space-y-3">
-                  <div v-for="(sucursal, index) in profile.client.sucursales" :key="`${sucursal.nombre}-${sucursal.direccion}-${index}`"
-                    class="bg-white/5 p-4 rounded-lg border border-white/10">
-                    <div class="flex items-start">
-                      <i class="fas fa-store text-gray-400 mt-1 mr-3"></i>
-                      <div>
-                        <p class="font-semibold text-white">{{ sucursal.nombre }}</p>
-                        <p class="text-sm text-gray-400">{{ sucursal.direccion }}</p>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-4">
-                  <div class="bg-white/5 p-3 rounded-lg border border-white/10">
-                    <p class="text-xs text-gray-400 uppercase tracking-wider mb-1">Principal</p>
-                    <p class="font-semibold text-white truncate">
-                      <i class="fas fa-user-tie mr-2 text-blue-400"></i>
-                      {{ profile.client.contactoPrincipal?.nombre || 'N/A' }}
-                    </p>
-                  </div>
-                  <div class="bg-white/5 p-3 rounded-lg border border-white/10">
-                    <p class="text-xs text-gray-400 uppercase tracking-wider mb-1">Financiero</p>
-                    <p class="font-semibold text-white truncate">
-                      <i class="fas fa-file-invoice-dollar mr-2 text-green-400"></i>
-                      {{ profile.client.contactoFinanciero?.nombre || 'N/A' }}
-                    </p>
-                  </div>
-                </div>
-              </div>
-
-              <div>
-                <h3 class="text-lg font-bold mb-4 text-cyan-400 border-l-4 border-cyan-500 pl-3">
-                  Servicios Contratados
-                </h3>
-                <div class="space-y-2 max-h-60 overflow-y-auto custom-scrollbar pr-2 bg-[#0a0a0a]/30 p-2 rounded-lg">
-                  <template v-if="
-                    profile.serviceSheet?.services && profile.serviceSheet.services.length > 0
-                  ">
-                    <div v-for="service in profile.serviceSheet.services as any[]" :key="service.tipo_servicio"
-                      class="bg-white/5 p-3 rounded flex justify-between items-center">
-                      <span class="font-semibold text-white">{{ service.tipo_servicio }}</span>
-                      <span class="text-xs bg-white/10 px-2 py-1 rounded text-gray-300">{{
-                        service.frecuencia
-                        }}</span>
-                    </div>
-                  </template>
-                  <div v-else class="text-center py-4 text-gray-500">
-                    <i class="fas fa-clipboard-list mb-2 block text-2xl"></i>
-                    No hay servicios configurados.
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <!-- Columna Derecha -->
-            <div class="space-y-8">
-              <div>
-                <h3 class="text-lg font-bold mb-4 text-cyan-400 border-l-4 border-cyan-500 pl-3">
-                  Próximas Visitas
-                </h3>
-                <div class="space-y-2">
-                  <template v-if="profile.upcomingVisits && profile.upcomingVisits.length > 0">
-                    <div v-for="visit in profile.upcomingVisits as any[]" :key="visit.id"
-                      class="bg-blue-900/20 border border-blue-900/50 p-3 rounded-lg flex justify-between items-center">
-                      <div>
-                        <p class="font-bold text-blue-100">{{ visit.tipo_visita }}</p>
-                        <p class="text-xs text-blue-300">
-                          {{
-                            new Date(visit.fecha_visita).toLocaleDateString('es-ES', {
-                              weekday: 'long',
-                              day: 'numeric',
-                              month: 'long',
-                            })
-                          }}
-                        </p>
-                      </div>
-                      <i class="fas fa-calendar-alt text-blue-400"></i>
-                    </div>
-                  </template>
-                  <p v-else class="text-sm text-gray-500 italic bg-[#0a0a0a]/30 p-3 rounded">
-                    No hay visitas próximas programadas.
-                  </p>
-                </div>
-              </div>
-
-              <div>
-                <h3 class="text-lg font-bold mb-4 text-cyan-400 border-l-4 border-cyan-500 pl-3">
-                  Historial Reciente
-                </h3>
-                <div class="space-y-2 max-h-80 overflow-y-auto custom-scrollbar pr-2">
-                  <template v-if="profile.visitHistory && profile.visitHistory.length > 0">
-                    <div v-for="visit in profile.visitHistory as any[]" :key="visit.id"
-                      class="bg-white/5 p-3 rounded-lg flex justify-between items-center border border-white/10 hover:border-white/20 transition-colors">
-                      <div>
-                        <p class="font-semibold text-white text-sm">{{ visit.tipo_visita }}</p>
-                        <p class="text-xs text-gray-400 mt-1">
-                          <i class="fas fa-user-hard-hat mr-1"></i>
-                          {{ visit.fumigadores_asignados?.join(', ') || 'N/A' }}
-                        </p>
-                      </div>
-                      <div class="text-right">
-                        <span class="text-xs font-bold px-2 py-0.5 rounded" :class="visit.estado_visita === 'Realizada'
-                          ? 'bg-green-900/50 text-green-400'
-                          : 'bg-yellow-900/50 text-yellow-400'
-                          ">
-                          {{ visit.estado_visita }}
-                        </span>
-                        <p class="text-xs text-gray-500 mt-1">
-                          {{ new Date(visit.fecha_visita).toLocaleDateString('es-ES') }}
-                        </p>
-                      </div>
-                    </div>
-                  </template>
-                  <p v-else class="text-sm text-gray-500 italic text-center py-4">
-                    No hay historial disponible.
-                  </p>
-                </div>
-              </div>
-            </div>
-          </div>
+      <footer v-if="!clientsStore.error && (pagination.currentPage > 1 || clientsStore.clients.length)"
+        class="client-footer flex flex-wrap items-center justify-between gap-2 px-4 py-3 text-sm">
+        <span class="client-muted">Página {{ pagination.currentPage }}<template v-if="!clientsStore.loading && localMode"> · {{ matches.length }} resultados</template></span>
+        <div class="flex gap-2">
+          <button type="button" class="client-button" :disabled="clientsStore.loading || pagination.currentPage === 1" @click="changePage(pagination.currentPage - 1)">Anterior</button>
+          <button type="button" class="client-button" :disabled="clientsStore.loading || pagination.isLastPage" @click="changePage(pagination.currentPage + 1)">Siguiente</button>
         </div>
-        <div v-else-if="clientsStore.error" class="text-center text-red-400 py-12">
-          <i class="fas fa-exclamation-triangle text-4xl mb-4"></i>
-          <p>{{ clientsStore.error }}</p>
+      </footer>
+    </section>
+
+    <dialog ref="profileDialog" class="client-dialog clients-panel" aria-labelledby="client-profile-title"
+      @cancel.prevent="showProfileModal = false">
+      <div class="profile-shell">
+        <header class="profile-header flex items-start gap-3 p-4 sm:p-5">
+          <span class="client-icon grid size-11 shrink-0 place-items-center rounded-xl text-lg" aria-hidden="true">
+            <i class="fas fa-building"></i>
+          </span>
+          <div class="min-w-0 flex-1">
+            <p v-if="profile" class="client-muted text-xs font-semibold">Ficha de cliente</p>
+            <h2 id="client-profile-title" class="break-words text-lg font-extrabold leading-tight sm:text-2xl">
+              {{ profile?.client.nombreComercial || profile?.client.razonSocial || 'Ficha de cliente' }}
+            </h2>
+            <div v-if="profile" class="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+              <span class="client-status" :data-active="profile.client.estado === 'Activo'">{{ profile.client.estado || 'Sin estado' }}</span>
+              <span class="client-muted">{{ [profile.client.ciudad, profile.client.departamento].filter(Boolean).join(', ') }}</span>
+            </div>
+          </div>
+          <button v-if="profile && !clientsStore.loadingProfile" type="button" class="client-button client-primary shrink-0"
+            aria-label="Editar cliente" @click="openEditModal(profile.client.id)">
+            <i class="fas fa-edit" aria-hidden="true"></i><span class="hidden sm:inline">Editar cliente</span>
+          </button>
+          <button type="button" class="client-button shrink-0" aria-label="Cerrar ficha" autofocus @click="showProfileModal = false">
+            <i class="fas fa-times" aria-hidden="true"></i>
+          </button>
+        </header>
+
+        <nav v-if="profile && !clientsStore.loadingProfile" class="profile-nav" aria-label="Secciones de la ficha">
+          <button v-for="section in profileSections" :key="section.id" type="button"
+            :aria-pressed="profileSection === section.id" @click="profileSection = section.id">
+            <i class="fas" :class="section.icon" aria-hidden="true"></i>{{ section.label }}
+          </button>
+        </nav>
+
+        <div ref="profileBody" class="profile-body p-4 sm:p-5">
+          <p v-if="clientsStore.loadingProfile" class="client-muted py-8 text-center text-sm" role="status">Cargando ficha del cliente…</p>
+          <template v-else-if="profile">
+            <div v-if="profileSection === 'summary'" class="grid gap-4 md:grid-cols-[0.95fr_1.05fr]">
+              <div class="space-y-4">
+                <section class="profile-card">
+                  <h3 class="profile-card-title"><i class="fas fa-id-card client-accent" aria-hidden="true"></i> Información general</h3>
+                  <dl class="space-y-2 p-4 text-sm">
+                    <div v-for="[label, value] in [
+                      ['Razón social', profile.client.razonSocial],
+                      ['Documento', profile.client.nit || profile.client.numeroIdentificacion],
+                      ['Tipo de cliente', profile.client.tipo],
+                      ['Zona', profile.client.zona],
+                      ['Registro', formatRegistration(profile.client.createdAt)],
+                    ]" :key="label" class="grid grid-cols-[7rem_1fr] gap-2">
+                      <dt class="client-muted">{{ label }}</dt>
+                      <dd class="min-w-0 break-words font-semibold">{{ value || '—' }}</dd>
+                    </div>
+                  </dl>
+                </section>
+
+                <section class="profile-card">
+                  <h3 class="profile-card-title"><i class="fas fa-address-book client-accent" aria-hidden="true"></i> Contactos</h3>
+                  <div v-for="entry in [
+                    { label: 'Principal', contact: profile.client.contactoPrincipal },
+                    { label: 'Financiero', contact: profile.client.contactoFinanciero },
+                  ]" :key="entry.label" class="profile-row px-4 py-3 text-sm">
+                    <p class="client-muted text-xs">{{ entry.label }}</p>
+                    <p class="font-semibold">{{ entry.contact?.nombre || 'Sin contacto registrado' }}</p>
+                    <a v-if="entry.contact?.celular" :href="'tel:' + entry.contact.celular" class="client-link block text-xs">{{ entry.contact.celular }}</a>
+                    <a v-if="entry.contact?.email" :href="'mailto:' + entry.contact.email" class="client-link block break-all text-xs">{{ entry.contact.email }}</a>
+                  </div>
+                </section>
+              </div>
+
+              <div class="space-y-4">
+                <section class="profile-card">
+                  <h3 class="profile-card-title"><i class="fas fa-clipboard-list client-accent" aria-hidden="true"></i> Servicios contratados</h3>
+                  <ul v-if="profile.serviceSheet?.services.length">
+                    <li v-for="(service, index) in profile.serviceSheet.services as any[]" :key="index" class="profile-row flex flex-wrap items-center justify-between gap-2 px-4 py-3 text-sm">
+                      <span class="font-semibold">{{ service.tipo_servicio }}</span>
+                      <span v-if="service.frecuencia" class="client-status">{{ service.frecuencia }}</span>
+                    </li>
+                  </ul>
+                  <p v-else class="client-muted p-4 text-sm">No hay servicios configurados.</p>
+                </section>
+
+                <section class="profile-card">
+                  <h3 class="profile-card-title"><i class="fas fa-calendar-alt client-accent" aria-hidden="true"></i> Próximas visitas</h3>
+                  <ul v-if="profile.upcomingVisits.length">
+                    <li v-for="visit in profile.upcomingVisits as any[]" :key="visit.id" class="profile-row px-4 py-3 text-sm">
+                      <p class="font-semibold">{{ visit.tipo_visita }}</p>
+                      <p class="client-muted mt-1 text-xs">{{ formatRegistration(visit.fecha_visita) }}</p>
+                    </li>
+                  </ul>
+                  <p v-else class="client-muted p-4 text-sm">No hay próximas visitas programadas.</p>
+                </section>
+              </div>
+            </div>
+
+            <section v-else-if="profileSection === 'branches'" class="profile-card">
+              <h3 class="profile-card-title"><i class="fas fa-store client-accent" aria-hidden="true"></i> Sucursales registradas</h3>
+              <ul v-if="profile.client.sucursales?.length">
+                <li v-for="(branch, index) in profile.client.sucursales" :key="index" class="profile-row flex flex-wrap items-start justify-between gap-2 px-4 py-3 text-sm">
+                  <div>
+                    <p class="font-semibold">{{ branch.nombre || 'Sucursal sin nombre' }}</p>
+                    <p class="client-muted">{{ branch.direccion || 'Sin dirección registrada' }}</p>
+                  </div>
+                  <span v-if="branch.zona" class="client-status">{{ branch.zona }}</span>
+                </li>
+              </ul>
+              <p v-else class="client-muted p-4 text-sm">Este cliente no tiene sucursales registradas.</p>
+            </section>
+
+            <section v-else class="profile-card">
+              <h3 class="profile-card-title"><i class="fas fa-history client-accent" aria-hidden="true"></i> Historial reciente de visitas</h3>
+              <div v-if="profile.visitHistory.length" class="overflow-x-auto">
+                <table class="clients-table w-full text-left text-sm">
+                  <thead><tr><th scope="col">Servicio</th><th scope="col">Fecha</th><th scope="col">Técnicos</th><th scope="col">Estado</th></tr></thead>
+                  <tbody>
+                    <tr v-for="visit in profile.visitHistory as any[]" :key="visit.id">
+                      <td class="font-semibold">{{ visit.tipo_visita }}</td>
+                      <td>{{ formatRegistration(visit.fecha_visita) }}</td>
+                      <td>{{ visit.fumigadores_asignados?.join(', ') || 'Sin asignar' }}</td>
+                      <td><span class="client-status visit-status" :data-status="visitStatus(visit.estado_visita)">{{ visit.estado_visita || 'Sin estado' }}</span></td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <p v-else class="client-muted p-4 text-sm">No hay visitas en el historial.</p>
+            </section>
+          </template>
+          <p v-else class="client-muted py-8 text-center text-sm" role="alert">{{ clientsStore.error || 'No se pudo cargar la ficha.' }}</p>
         </div>
       </div>
-    </div>
+    </dialog>
 
     <!-- Modal de Formulario para Crear/Editar -->
     <ClientFormModal :show="showFormModal" :client-id="editingClientId" @close="showFormModal = false"
@@ -568,5 +522,71 @@ const handleSearch = () => {
 
     <!-- Modal de Importación/Exportación -->
     <ClientImportExportModal :show="showImportModal" @close="showImportModal = false" @refresh="resetAndFetch" />
-  </main>
+  </section>
 </template>
+
+<style scoped>
+.clients-page { color: var(--shell-text); }
+.clients-panel { border: 1px solid var(--shell-border); border-radius: 0.9rem; background: var(--shell-surface); }
+.client-muted { color: var(--shell-muted); }
+.client-accent, .client-link:hover { color: var(--client-accent, #b8000b); }
+.client-link:hover { text-decoration: underline; }
+.client-icon { color: var(--client-accent, #b8000b); background: var(--client-tint, #fff0f1); }
+.client-field, .client-button {
+  min-height: 2.5rem;
+  border: 1px solid var(--shell-border);
+  border-radius: 0.55rem;
+  background: var(--shell-surface);
+  color: var(--shell-text);
+  padding: 0.45rem 0.7rem;
+}
+.client-field { width: 100%; font-size: 0.875rem; font-weight: 400; }
+.client-button { display: inline-flex; align-items: center; justify-content: center; gap: 0.5rem; font-size: 0.8rem; font-weight: 650; }
+.client-button:hover { background: var(--shell-input); }
+.client-button:disabled { opacity: 0.45; cursor: default; }
+.client-primary { border-color: #bc000b; background: #c7000c; color: #fff; }
+.client-primary:hover { background: #a9000a; }
+.client-action { min-height: 2rem; padding: 0.35rem 0.55rem; }
+.client-field:focus-visible, .client-button:focus-visible, .client-link:focus-visible { outline: 2px solid #e50914; outline-offset: 2px; }
+.clients-table th, .clients-table td { padding: 0.75rem; border-bottom: 1px solid var(--shell-border); vertical-align: middle; }
+.clients-table th { background: var(--shell-input); font-size: 0.75rem; white-space: nowrap; }
+.clients-table td:first-child { min-width: 10rem; }
+.clients-table tbody tr:hover { background: var(--shell-input); }
+.client-footer, .client-mobile-row + .client-mobile-row { border-top: 1px solid var(--shell-border); }
+.client-status { display: inline-block; white-space: nowrap; padding: 0.2rem 0.55rem; border-radius: 999px; font-size: 0.7rem; font-weight: 700; color: var(--shell-muted); background: var(--shell-input); }
+.client-status[data-active='true'] { color: #086534; background: #dbf2e4; }
+.client-dialog {
+  width: min(66rem, calc(100vw - 2rem));
+  max-height: calc(100dvh - 2rem);
+  margin: auto;
+  padding: 0;
+  overflow: hidden;
+  color: var(--shell-text);
+  box-shadow: 0 24px 64px #0005;
+}
+.profile-shell { display: flex; flex-direction: column; max-height: min(48rem, calc(100dvh - 2rem)); }
+.profile-header, .profile-nav { flex-shrink: 0; border-bottom: 1px solid var(--shell-border); }
+.profile-header { background: linear-gradient(110deg, var(--client-tint, #fff0f1), var(--shell-surface) 70%); }
+.profile-nav { display: flex; gap: 0.25rem; overflow-x: auto; padding-inline: 0.75rem; }
+.profile-nav button {
+  display: flex; align-items: center; gap: 0.5rem; flex-shrink: 0;
+  padding: 0.8rem 0.65rem; border-bottom: 2px solid transparent;
+  color: var(--shell-muted); font-size: 0.85rem; font-weight: 650;
+}
+.profile-nav button[aria-pressed='true'] { border-color: #e50914; color: var(--client-accent, #b8000b); }
+.profile-nav button:hover { background: var(--shell-input); color: var(--shell-text); }
+.profile-nav button:focus-visible { outline: 2px solid #e50914; outline-offset: -3px; }
+.profile-body { min-height: 0; overflow: auto; scrollbar-color: var(--shell-scroll-thumb) var(--shell-scroll-track); }
+.profile-card { border: 1px solid var(--shell-border); border-radius: 0.75rem; overflow: hidden; }
+.profile-card-title { display: flex; align-items: center; gap: 0.55rem; padding: 0.85rem 1rem; background: var(--shell-input); font-size: 0.9rem; font-weight: 750; }
+.profile-row + .profile-row { border-top: 1px solid var(--shell-border); }
+.visit-status[data-status='complete'] { color: #086534; background: #dbf2e4; }
+.visit-status[data-status='scheduled'] { color: #23518a; background: #e7effd; }
+.visit-status[data-status='cancelled'] { color: #a20d16; background: #ffe8e9; }
+[data-theme='dark'] .visit-status[data-status='complete'] { color: #a4e9b9; background: #173c27; }
+[data-theme='dark'] .visit-status[data-status='scheduled'] { color: #b0d0ff; background: #233753; }
+[data-theme='dark'] .visit-status[data-status='cancelled'] { color: #ffb0b4; background: #4d2428; }
+.client-dialog::backdrop { background: #0009; }
+[data-theme='dark'] .clients-page { color-scheme: dark; --client-accent: #ff8087; --client-tint: #412328; }
+[data-theme='dark'] .client-status[data-active='true'] { color: #a4e9b9; background: #173c27; }
+</style>

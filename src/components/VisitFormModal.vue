@@ -50,6 +50,121 @@ const showClientResults = ref(false)
 const clientSearchContainer = ref<HTMLElement | null>(null)
 const isSubmitting = ref(false)
 
+const visitEnd = ref('')
+const lastStart = ref<number | null>(null)
+const templateName = ref('')
+const namingTemplate = ref(false)
+const managedTemplateId = ref('')
+const editingNoteTemplate = ref<VisitTemplate | null>(null)
+const templateBody = ref('')
+const savingTemplate = ref(false)
+const canSaveNoteTemplate = computed(() => ['Administrador', 'Jefe'].includes(authStore.userRole ?? ''))
+const availableTemplates = computed(() => planningStore.visitTemplates.filter((item) =>
+  item.notas_visita?.trim() || (!isEditMode.value && !item.notesOnly),
+))
+const selectedTemplate = computed(() => availableTemplates.value.find((item) => item.id === managedTemplateId.value))
+const templateNeedsNotes = computed(() => editingNoteTemplate.value?.notesOnly !== false &&
+  !editingNoteTemplate.value?.tipo_visita)
+
+function colombiaTimestamp(value: string) {
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(value)) return NaN
+  return Date.parse(value + ':00-05:00')
+}
+
+const visitStart = computed(() => colombiaTimestamp(
+  (localVisit.value.fecha_visita_date || '') + 'T' + (localVisit.value.fecha_visita_time || ''),
+))
+const durationMinutes = computed(() => (colombiaTimestamp(visitEnd.value) - visitStart.value) / 60000)
+const durationLabel = computed(() => {
+  const minutes = durationMinutes.value
+  if (!Number.isFinite(minutes) || minutes <= 0) return ''
+  return [Math.floor(minutes / 60) ? Math.floor(minutes / 60) + ' h' : '', minutes % 60 ? minutes % 60 + ' min' : ''].filter(Boolean).join(' ')
+})
+
+function initializeTimeRange() {
+  const start = visitStart.value
+  lastStart.value = Number.isFinite(start) ? start : null
+  if (lastStart.value === null) {
+    visitEnd.value = ''
+    return
+  }
+  const stored = Number(localVisit.value.duracion_minutos)
+  const duration = Number.isFinite(stored) && stored > 0 ? stored : 60
+  const end = formatColombiaDateTime(new Date(start + duration * 60000))
+  visitEnd.value = end.date + 'T' + end.time
+}
+
+function shiftVisitEnd() {
+  const start = visitStart.value
+  if (!Number.isFinite(start)) return
+  const oldEnd = colombiaTimestamp(visitEnd.value)
+  const duration = lastStart.value === null ? 0 : oldEnd - lastStart.value
+  lastStart.value = start
+  const end = formatColombiaDateTime(new Date(start + (duration > 0 ? duration : 3600000)))
+  visitEnd.value = end.date + 'T' + end.time
+}
+
+function insertNoteTemplate() {
+  const note = selectedTemplate.value?.notas_visita?.trim()
+  if (note) localVisit.value.notas_visita = [localVisit.value.notas_visita?.trim(), note].filter(Boolean).join('\n\n')
+}
+
+function openNoteTemplateEditor(template?: VisitTemplate) {
+  editingNoteTemplate.value = template ?? null
+  templateName.value = template?.templateName ?? ''
+  templateBody.value = template?.notas_visita ?? localVisit.value.notas_visita ?? ''
+  namingTemplate.value = true
+}
+
+function editSelectedNoteTemplate() {
+  const template = selectedTemplate.value
+  if (template) openNoteTemplateEditor(template)
+}
+
+function deleteSelectedNoteTemplate() {
+  const template = selectedTemplate.value
+  if (!template || !canSaveNoteTemplate.value || savingTemplate.value) return
+  showDialog({
+    appearance: 'planning',
+    title: 'Eliminar plantilla',
+    message: 'La plantilla dejará de estar disponible para futuras visitas. Las notas ya copiadas se conservarán.',
+    isConfirmation: true,
+    confirmationText: 'Eliminar plantilla',
+    async onConfirm() {
+      savingTemplate.value = true
+      try {
+        await planningStore.deleteVisitTemplate(template.id)
+        managedTemplateId.value = ''
+        if (editingNoteTemplate.value?.id === template.id) namingTemplate.value = false
+        showToast({ title: 'Plantilla eliminada', message: template.templateName, type: 'success' })
+      } catch (error) {
+        showToast({ title: 'Error al eliminar la plantilla', message: error instanceof Error ? error.message : 'Inténtalo de nuevo.', type: 'error' })
+      } finally {
+        savingTemplate.value = false
+      }
+    },
+  })
+}
+
+async function saveNoteTemplate() {
+  const name = templateName.value.trim()
+  const note = templateBody.value.trim()
+  if (!name || (templateNeedsNotes.value && !note) || !canSaveNoteTemplate.value || savingTemplate.value) return
+  const template = editingNoteTemplate.value
+  savingTemplate.value = true
+  try {
+    await planningStore.saveVisitTemplate(template
+      ? { id: template.id, templateName: name, tipo_visita: template.tipo_visita, notesOnly: template.notesOnly ?? false, notas_visita: note }
+      : { templateName: name, tipo_visita: '', notas_visita: note, notesOnly: true })
+    namingTemplate.value = false
+    showToast({ title: 'Plantilla guardada', message: name, type: 'success' })
+  } catch (error) {
+    showToast({ title: 'Error al guardar la plantilla', message: error instanceof Error ? error.message : 'Inténtalo de nuevo.', type: 'error' })
+  } finally {
+    savingTemplate.value = false
+  }
+}
+
 // Nombre del cliente actual para mostrar en la etiqueta
 const currentClientName = computed(() => {
   const client = planningStore.clients.find((c: Client) => c.id === localVisit.value.id_cliente)
@@ -115,7 +230,7 @@ const formatColombiaDateTime = (date: Date) => {
     day: '2-digit',
     hour: '2-digit',
     minute: '2-digit',
-    hour12: false,
+    hourCycle: 'h23',
   }).formatToParts(date)
   const values = Object.fromEntries(parts.map((part) => [part.type, part.value]))
   return {
@@ -201,7 +316,12 @@ const availableLocations = computed(() => {
 watch(
   () => props.show,
   (newVal) => {
-    if (newVal) activeTab.value = 'details'
+    if (newVal) {
+      activeTab.value = 'details'
+      namingTemplate.value = false
+      managedTemplateId.value = ''
+      editingNoteTemplate.value = null
+    }
     if (!newVal) isSubmitting.value = false
 
     if (newVal) {
@@ -242,6 +362,7 @@ watch(
           isUrgent: false
         }
       }
+      initializeTimeRange()
     }
   },
 )
@@ -335,6 +456,10 @@ const applyTemplate = (templateId: string) => {
 
 const handleSubmit = async () => {
   if (isSubmitting.value || props.saving) return
+  if (!Number.isFinite(durationMinutes.value) || durationMinutes.value <= 0) {
+    showToast({ title: 'Revisa el horario', message: 'El fin de la visita debe ser posterior al inicio.', type: 'warning' })
+    return
+  }
   isSubmitting.value = true
 
   const client = planningStore.clients.find((c: Client) => c.id === localVisit.value.id_cliente)
@@ -355,19 +480,16 @@ const handleSubmit = async () => {
     ...localVisit.value,
     sucursal: sucursalNombre // <-- LO INCLUIDOS EN EL OBJETO QUE VIAJA A FIREBASE
   }
-  visitToSave.duracion_minutos = visitToSave.duracion_minutos || 60
-  const combinedDateTime = new Date(
-    `${localVisit.value.fecha_visita_date}T${localVisit.value.fecha_visita_time || '00:00'}:00`,
-  )
+  visitToSave.duracion_minutos = durationMinutes.value
+  const combinedDateTime = new Date(visitStart.value)
   visitToSave.fecha_visita = combinedDateTime.toISOString()
   delete visitToSave.fecha_visita_date
   delete visitToSave.fecha_visita_time
 
-  if (planningStore.selectedCalendarUid && planningStore.selectedCalendarUid !== 'internal') {
-    visitToSave.calendarOwnerUid = planningStore.selectedCalendarUid
-  } else {
-    // @ts-ignore
-    visitToSave.calendarOwnerUid = authStore.user?.uid
+  if (!visitToSave.id) {
+    visitToSave.calendarOwnerUid = planningStore.selectedCalendarUid !== 'internal'
+      ? planningStore.selectedCalendarUid
+      : authStore.user?.uid
   }
 
   const technicians = visitToSave.fumigadores_asignados || []
@@ -389,6 +511,7 @@ const handleSubmit = async () => {
 
     if (result.data.hasConflict) {
       showDialog({
+        appearance: 'planning',
         title: 'Conflicto de Horario',
         message: `El técnico <strong>${result.data.conflictingTechnician}</strong> ya tiene una visita con <strong>${result.data.conflictingClient}</strong>. <br><br>¿Desea ignorar el aviso y programar de todas formas?`,
         isConfirmation: true,
@@ -415,6 +538,7 @@ const handleSubmit = async () => {
 const handleDelete = async () => {
   if (localVisit.value.id) {
     showDialog({
+      appearance: 'planning',
       title: 'Eliminar Visita',
       message: '¿Estás seguro de que deseas eliminar esta visita programada? Esta acción no se puede deshacer.',
       isConfirmation: true,
@@ -466,96 +590,79 @@ const addChatNote = () => {
 
 <template>
   <div v-if="show" class="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6" role="dialog"
-    aria-modal="true">
+    aria-modal="true" aria-labelledby="visit-form-title" @keydown.esc.stop="!saving && !isSubmitting && $emit('close')">
     <!-- Backdrop -->
-    <div class="fixed inset-0 bg-[#0a0a0a]/80 backdrop-blur-sm transition-opacity" @click="$emit('close')"></div>
+    <div class="fixed inset-0 bg-[#0a0a0a]/80 backdrop-blur-sm transition-opacity" @click="!saving && !isSubmitting && $emit('close')"></div>
 
     <!-- Modal Panel -->
     <div
-      class="relative bg-[#151515] rounded-2xl border border-white/10 shadow-2xl w-full max-w-3xl flex flex-col max-h-[95vh] overflow-hidden transform transition-all animate-fade-in">
+      class="relative bg-[var(--shell-surface)] rounded-2xl border border-[var(--shell-border)] shadow-2xl w-full max-w-4xl flex flex-col max-h-[calc(100dvh-2rem)] overflow-hidden transform transition-all animate-fade-in">
 
       <!-- Header -->
-      <div class="p-6 bg-[#0a0a0a]/50 border-b border-white/10 flex justify-between items-start">
+      <div class="visit-form-header flex shrink-0 items-start justify-between gap-3 p-4 sm:p-5">
         <div class="flex items-center gap-4">
-          <div class="p-3 rounded-xl bg-red-500/10 text-[#d60000]">
+          <div class="visit-form-icon grid size-11 shrink-0 place-items-center rounded-xl">
             <i class="fas fa-calendar-check text-2xl"></i>
           </div>
           <div>
-            <h2 class="text-xl font-bold text-white">
+            <h2 id="visit-form-title" class="text-xl font-extrabold">
               {{ isEditMode ? 'Gestionar Visita' : 'Programar Visita' }}
             </h2>
-            <p class="text-xs text-gray-500 font-bold uppercase tracking-widest mt-0.5">Módulo de Planeación Operativa
-            </p>
+            <p class="mt-1 text-sm text-[var(--shell-muted)]">{{ localVisit.nombre_cliente || 'Planeación de servicios' }}</p>
           </div>
         </div>
-        <button @click="$emit('close')" class="text-gray-400 hover:text-white transition-colors p-1">
+        <button @click="!saving && !isSubmitting && $emit('close')" class="visit-form-button" type="button" aria-label="Cerrar formulario de visita" :disabled="saving || isSubmitting">
           <i class="fas fa-times text-xl"></i>
         </button>
       </div>
 
       <!-- Tab Navigation -->
-      <div class="flex px-6 bg-[#0a0a0a]/20 border-b border-white/10">
-        <button @click="activeTab = 'details'"
-          class="py-3 px-6 text-sm font-bold uppercase tracking-wider transition-all border-b-2"
-          :class="activeTab === 'details' ? 'border-[#d60000] text-white' : 'border-transparent text-gray-500 hover:text-gray-300'">
+      <div class="visit-tabs flex shrink-0 overflow-x-auto px-3" role="group" aria-label="Secciones de la visita">
+        <button type="button" :aria-pressed="activeTab === 'details'" @click="activeTab = 'details'"
+          class="visit-tab shrink-0 border-b-2 px-3 py-3 text-sm font-semibold"
+          :class="activeTab === 'details' ? 'border-[#d60000] visit-active' : 'border-transparent text-[var(--shell-muted)]'">
           Información General
         </button>
-        <button v-if="isEditMode" @click="activeTab = 'history'"
-          class="py-3 px-6 text-sm font-bold uppercase tracking-wider transition-all border-b-2"
-          :class="activeTab === 'history' ? 'border-[#d60000] text-white' : 'border-transparent text-gray-500 hover:text-gray-300'">
+        <button v-if="isEditMode" type="button" :aria-pressed="activeTab === 'history'" @click="activeTab = 'history'"
+          class="visit-tab shrink-0 border-b-2 px-3 py-3 text-sm font-semibold"
+          :class="activeTab === 'history' ? 'border-[#d60000] visit-active' : 'border-transparent text-[var(--shell-muted)]'">
           Historial de Cambios
         </button>
-        <button v-if="isEditMode" @click="activeTab = 'chat'"
-          class="py-3 px-6 text-sm font-bold uppercase tracking-wider transition-all border-b-2"
-          :class="activeTab === 'chat' ? 'border-[#d60000] text-white' : 'border-transparent text-gray-500 hover:text-gray-300'">
+        <button v-if="isEditMode" type="button" :aria-pressed="activeTab === 'chat'" @click="activeTab = 'chat'"
+          class="visit-tab shrink-0 border-b-2 px-3 py-3 text-sm font-semibold"
+          :class="activeTab === 'chat' ? 'border-[#d60000] visit-active' : 'border-transparent text-[var(--shell-muted)]'">
           Notas Internas
         </button>
       </div>
 
       <!-- Main Form -->
-      <form @submit.prevent="handleSubmit" class="flex-grow overflow-y-auto custom-scrollbar p-6 space-y-6">
+      <form @submit.prevent="handleSubmit" class="visit-form-body min-h-0 flex-1 space-y-4 overflow-y-auto p-4 sm:p-5">
 
         <!-- Pestaña: DETALLES -->
         <div v-show="activeTab === 'details'" class="space-y-6 animate-fade-in">
 
           <!-- Sección: Plantilla y Cliente -->
           <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <div v-if="!isEditMode && planningStore.visitTemplates.length > 0">
-              <label class="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2 block">Utilizar
-                Plantilla</label>
-              <div class="relative">
-                <select @change="applyTemplate(($event.target as HTMLSelectElement).value)"
-                  class="input-field-dark w-full appearance-none">
-                  <option value="">-- Selección Manual --</option>
-                  <option v-for="t in planningStore.visitTemplates" :key="t.id" :value="t.id">{{ t.templateName }}
-                  </option>
-                </select>
-                <div class="absolute inset-y-0 right-0 flex items-center px-2 pointer-events-none text-gray-500">
-                  <i class="fas fa-magic text-xs"></i>
-                </div>
-              </div>
-            </div>
-
-            <div :class="{ 'md:col-span-2': isEditMode || planningStore.visitTemplates.length === 0 }">
-              <label class="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2 block">Cliente <span
+            <div class="md:col-span-2">
+              <label class="text-xs font-bold text-[var(--shell-muted)] uppercase tracking-wider mb-2 block">Cliente <span
                   class="text-[#d60000]">*</span></label>
               <div ref="clientSearchContainer" class="relative">
                 <input v-model="clientSearchTerm" type="search" class="input-field-dark w-full"
                   placeholder="Buscar cliente..." autocomplete="off" @focus="showClientResults = true"
                   @input="handleClientSearchInput" />
                 <i
-                  class="fas fa-search absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none"></i>
+                  class="fas fa-search absolute right-3 top-1/2 -translate-y-1/2 text-[var(--shell-muted)] pointer-events-none"></i>
 
                 <div v-if="showClientResults"
-                  class="absolute left-0 right-0 top-full mt-2 z-30 max-h-56 overflow-y-auto custom-scrollbar bg-[#151515] border border-white/10 rounded-lg shadow-2xl">
+                  class="absolute left-0 right-0 top-full mt-2 z-30 max-h-56 overflow-y-auto custom-scrollbar bg-[var(--shell-surface)] border border-[var(--shell-border)] rounded-lg shadow-2xl">
                   <button v-for="client in filteredClients" :key="client.id" type="button"
-                    class="block w-full px-4 py-3 text-left hover:bg-white/5 border-b border-white/5 last:border-0"
+                    class="block w-full px-4 py-3 text-left hover:bg-[var(--shell-input)] border-b border-white/5 last:border-0"
                     @click="selectClient(client)">
-                    <span class="block text-sm font-semibold text-white">{{ client.nombreComercial }}</span>
-                    <span class="block text-xs text-gray-400">{{ client.ciudad || client.zona || 'Sin ubicación'
+                    <span class="block text-sm font-semibold text-[var(--shell-text)]">{{ client.nombreComercial }}</span>
+                    <span class="block text-xs text-[var(--shell-muted)]">{{ client.ciudad || client.zona || 'Sin ubicación'
                       }}</span>
                   </button>
-                  <div v-if="filteredClients.length === 0" class="px-4 py-5 text-center text-sm text-gray-500">
+                  <div v-if="filteredClients.length === 0" class="px-4 py-5 text-center text-sm text-[var(--shell-muted)]">
                     No se encontraron clientes.
                   </div>
                 </div>
@@ -566,9 +673,9 @@ const addChatNote = () => {
           </div>
 
           <!-- Sección: Servicio y Ubicación -->
-          <div class="grid grid-cols-1 md:grid-cols-2 gap-6 p-4 bg-white/5 rounded-xl border border-white/10">
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-6 p-4 bg-[var(--shell-input)] rounded-xl border border-[var(--shell-border)]">
             <div>
-              <label class="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2 block">Servicio a
+              <label class="text-xs font-bold text-[var(--shell-muted)] uppercase tracking-wider mb-2 block">Servicio a
                 Realizar</label>
               <select v-model="localVisit.tipo_visita" class="input-field-dark w-full" required
                 :disabled="!localVisit.id_cliente">
@@ -580,7 +687,7 @@ const addChatNote = () => {
               </select>
             </div>
             <div>
-              <label class="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2 block">Punto de Servicio /
+              <label class="text-xs font-bold text-[var(--shell-muted)] uppercase tracking-wider mb-2 block">Punto de Servicio /
                 Ubicación</label>
               <select v-model="localVisit.ubicacion" class="input-field-dark w-full" required
                 :disabled="!localVisit.id_cliente">
@@ -591,17 +698,23 @@ const addChatNote = () => {
           </div>
 
           <!-- Sección: Fecha, Hora y Estado -->
-          <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+          <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div>
-              <label class="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2 block">Fecha</label>
-              <input type="date" v-model="localVisit.fecha_visita_date" class="input-field-dark w-full" required />
+              <label class="text-xs font-bold text-[var(--shell-muted)] uppercase tracking-wider mb-2 block">Fecha</label>
+              <input type="date" aria-label="Fecha de inicio" v-model="localVisit.fecha_visita_date" @change="shiftVisitEnd" class="input-field-dark w-full" required />
             </div>
             <div>
-              <label class="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2 block">Hora Estimada</label>
-              <input type="time" v-model="localVisit.fecha_visita_time" class="input-field-dark w-full" />
+              <label class="text-xs font-bold text-[var(--shell-muted)] uppercase tracking-wider mb-2 block">Hora de inicio</label>
+              <input type="time" aria-label="Hora de inicio" v-model="localVisit.fecha_visita_time" class="input-field-dark w-full" required @change="shiftVisitEnd" />
             </div>
             <div>
-              <label class="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2 block">Estado de
+              <label for="visitEnd" class="form-label block text-xs font-bold">Fecha y hora de fin</label>
+              <input id="visitEnd" v-model="visitEnd" type="datetime-local" class="input-field-dark mt-2 w-full" required />
+              <p v-if="durationLabel" class="mt-1 text-xs text-[var(--shell-muted)]">Duración: {{ durationLabel }} · Hora de Colombia</p>
+              <p v-else-if="visitEnd" class="mt-1 text-xs visit-active">El fin debe ser posterior al inicio.</p>
+            </div>
+            <div>
+              <label class="text-xs font-bold text-[var(--shell-muted)] uppercase tracking-wider mb-2 block">Estado de
                 Gestión</label>
               <select v-model="localVisit.estado_visita" class="input-field-dark w-full" required>
                 <option>Programada</option>
@@ -613,18 +726,18 @@ const addChatNote = () => {
 
           <!-- Sección: Técnicos -->
           <div>
-            <label class="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2 block">Asignación de
+            <label class="text-xs font-bold text-[var(--shell-muted)] uppercase tracking-wider mb-2 block">Asignación de
               Técnicos</label>
             <div
-              class="bg-[#0a0a0a]/50 p-2 rounded-xl border border-white/10 min-h-[100px] max-h-40 overflow-y-auto custom-scrollbar">
+              class="bg-[var(--shell-input)] p-2 rounded-xl border border-[var(--shell-border)] min-h-[100px] max-h-40 overflow-y-auto custom-scrollbar">
               <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
                 <label v-for="tech in sortedTechnicians" :key="tech.id"
-                  class="flex items-center p-2 rounded-lg hover:bg-white/5 cursor-pointer transition-colors border border-transparent"
+                  class="flex items-center p-2 rounded-lg hover:bg-[var(--shell-input)] cursor-pointer transition-colors border border-transparent"
                   :class="localVisit.fumigadores_asignados?.includes(tech.nombreCompleto) ? 'bg-red-900/20 border-red-500/30' : ''">
                   <input type="checkbox" :value="tech.nombreCompleto" v-model="localVisit.fumigadores_asignados"
-                    class="rounded border-white/10 text-[#d60000] focus:ring-[#d60000] bg-[#202020] mr-3">
+                    class="rounded border-[var(--shell-border)] text-[#d60000] focus:ring-[#d60000] bg-[var(--shell-input)] mr-3">
                   <div class="flex flex-col">
-                    <span class="text-sm text-gray-200">{{ tech.nombreCompleto }}</span>
+                    <span class="text-sm text-[var(--shell-muted)]">{{ tech.nombreCompleto }}</span>
                     <span v-if="(tech as any).zona === localVisit.zona"
                       class="text-[9px] text-green-400 font-bold uppercase tracking-wider">Recomendado</span>
                   </div>
@@ -635,16 +748,59 @@ const addChatNote = () => {
 
           <!-- Sección: Notas -->
           <div>
-            <label class="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2 block">Observaciones y
+            <label class="text-xs font-bold text-[var(--shell-muted)] uppercase tracking-wider mb-2 block">Observaciones y
               Notas</label>
+            <section v-if="availableTemplates.length || canSaveNoteTemplate"
+              class="mb-3 rounded-xl border border-[var(--shell-border)] bg-[var(--shell-input)] p-3" aria-label="Plantillas">
+              <h3 class="mb-2 text-sm font-bold"><i class="fas fa-file-alt visit-active mr-1" aria-hidden="true"></i> Plantillas</h3>
+              <label v-if="availableTemplates.length" class="grid gap-1 text-xs font-semibold">
+                Selecciona una plantilla
+                <select v-model="managedTemplateId" class="input-field-dark" :disabled="savingTemplate">
+                  <option value="">Sin seleccionar</option>
+                  <option v-for="item in availableTemplates" :key="item.id" :value="item.id">{{ item.templateName }}</option>
+                </select>
+              </label>
+              <div class="mt-2 flex flex-wrap gap-2">
+                <button v-if="selectedTemplate?.notas_visita?.trim()" type="button" class="visit-form-button"
+                  :disabled="savingTemplate" @click="insertNoteTemplate">Insertar nota</button>
+                <button v-if="!isEditMode && selectedTemplate && !selectedTemplate.notesOnly && selectedTemplate.tipo_visita"
+                  type="button" class="visit-form-button" :disabled="savingTemplate"
+                  @click="applyTemplate(selectedTemplate.id)">Aplicar tipo y notas</button>
+                <template v-if="canSaveNoteTemplate">
+                  <button type="button" class="visit-form-button" :disabled="savingTemplate"
+                    @click="openNoteTemplateEditor()">Nueva plantilla</button>
+                  <button v-if="selectedTemplate" type="button" class="visit-form-button" :disabled="savingTemplate"
+                    @click="editSelectedNoteTemplate">Editar</button>
+                  <button v-if="selectedTemplate" type="button" class="visit-form-button visit-active" :disabled="savingTemplate"
+                    @click="deleteSelectedNoteTemplate">Eliminar</button>
+                </template>
+              </div>
+            <div v-if="namingTemplate" class="mt-3 grid gap-2 rounded-lg border border-[var(--shell-border)] bg-[var(--shell-surface)] p-3">
+              <p class="text-sm font-bold">{{ editingNoteTemplate ? 'Editar plantilla' : 'Nueva plantilla de notas' }}</p>
+              <label class="grid gap-1 text-xs font-semibold">
+                Nombre de la plantilla
+                <input v-model="templateName" type="text" maxlength="100" class="input-field-dark" @keydown.enter.prevent="saveNoteTemplate" />
+              </label>
+              <label class="grid gap-1 text-xs font-semibold">
+                Texto de la plantilla
+                <textarea v-model="templateBody" rows="3" class="input-field-dark"></textarea>
+              </label>
+              <div class="flex flex-wrap justify-end gap-2">
+                <button type="button" class="visit-form-button" :disabled="savingTemplate" @click="namingTemplate = false">Cancelar</button>
+                <button type="button" class="visit-form-button visit-primary" :disabled="!templateName.trim() || (templateNeedsNotes && !templateBody.trim()) || savingTemplate" @click="saveNoteTemplate">
+                  {{ savingTemplate ? 'Guardando…' : 'Guardar plantilla' }}
+                </button>
+              </div>
+            </div>
+            </section>
             <textarea v-model="localVisit.notas_visita" rows="3" class="input-field-dark w-full resize-none"
               placeholder="Escribe instrucciones especiales para los técnicos..."></textarea>
           </div>
 
           <!-- Sección: Urgencia y Organizador -->
-          <div class="flex flex-col sm:flex-row items-center justify-between gap-4 pt-4 border-t border-white/10">
+          <div class="flex flex-col sm:flex-row items-center justify-between gap-4 pt-4 border-t border-[var(--shell-border)]">
             <div class="flex items-center gap-4 px-4 py-3 rounded-2xl transition-all w-full sm:w-auto"
-              :class="localVisit.isUrgent ? 'bg-red-500/10 border border-red-500/30' : 'bg-white/5 border border-transparent'">
+              :class="localVisit.isUrgent ? 'bg-red-500/10 border border-red-500/30' : 'bg-[var(--shell-input)] border border-transparent'">
               <div class="relative inline-flex items-center cursor-pointer">
                 <input type="checkbox" v-model="localVisit.isUrgent" class="sr-only peer" />
                 <div
@@ -653,15 +809,15 @@ const addChatNote = () => {
               </div>
               <div class="flex flex-col">
                 <span class="text-sm font-bold uppercase tracking-wide"
-                  :class="localVisit.isUrgent ? 'text-red-400' : 'text-gray-400'">Marcar como Urgente</span>
-                <span class="text-[10px] text-gray-500">Ignora advertencias de agenda</span>
+                  :class="localVisit.isUrgent ? 'text-red-400' : 'text-[var(--shell-muted)]'">Marcar como Urgente</span>
+                <span class="text-[10px] text-[var(--shell-muted)]">Ignora advertencias de agenda</span>
               </div>
             </div>
 
             <div class="text-right flex flex-col items-end">
-              <span class="text-[10px] text-gray-500 font-bold uppercase tracking-widest">Sincronización de
+              <span class="text-[10px] text-[var(--shell-muted)] font-bold uppercase tracking-widest">Sincronización de
                 Calendario</span>
-              <p class="text-sm text-gray-300 flex items-center gap-2">
+              <p class="text-sm text-[var(--shell-muted)] flex items-center gap-2">
                 <i class="fas fa-user-circle text-[#d60000]"></i>
                 {{ organizerName || 'Cargando...' }}
               </p>
@@ -670,11 +826,11 @@ const addChatNote = () => {
         </div>
 
 <!-- Sección: Correos de Clientes Invitados (Dinámico por Cliente) -->
-          <div class="p-4 bg-white/5 rounded-xl border border-white/10 space-y-3">
-            <label class="text-xs font-bold text-gray-400 uppercase tracking-wider flex items-center gap-2">
+          <div class="p-4 bg-[var(--shell-input)] rounded-xl border border-[var(--shell-border)] space-y-3">
+            <label class="text-xs font-bold text-[var(--shell-muted)] uppercase tracking-wider flex items-center gap-2">
               <i class="fas fa-envelope text-[#d60000]"></i> Correos del Cliente a Invitar ({{ currentClientName }})
             </label>
-            <p class="text-[11px] text-gray-500">
+            <p class="text-[11px] text-[var(--shell-muted)]">
               Añade un nuevo correo o selecciona de la lista de contactos frecuentes de este cliente.
             </p>
 
@@ -698,7 +854,7 @@ const addChatNote = () => {
 
             <!-- 2. Correos frecuentes guardados del cliente (Historial) -->
             <div v-if="clientSavedEmails.length > 0" class="space-y-1 pt-2 border-t border-white/5">
-              <span class="text-[10px] text-gray-400 font-bold uppercase">Contactos guardados del cliente:</span>
+              <span class="text-[10px] text-[var(--shell-muted)] font-bold uppercase">Contactos guardados del cliente:</span>
               <div class="flex flex-wrap gap-2">
                 <button
                   v-for="email in clientSavedEmails"
@@ -706,7 +862,7 @@ const addChatNote = () => {
                   type="button"
                   @click="toggleClientEmail(email)"
                   class="text-xs px-3 py-1.5 rounded-lg border transition-all flex items-center gap-2"
-                  :class="localVisit.client_emails?.includes(email) ? 'bg-red-900/40 border-red-500 text-white' : 'bg-white/5 border-white/10 text-gray-400 hover:text-white'"
+                  :class="localVisit.client_emails?.includes(email) ? 'bg-red-900/40 border-red-500 text-white' : 'bg-[var(--shell-input)] border-[var(--shell-border)] text-[var(--shell-muted)] hover:text-white'"
                 >
                   <i class="fas" :class="localVisit.client_emails?.includes(email) ? 'fa-check-square text-red-400' : 'fa-square'"></i>
                   {{ email }}
@@ -743,16 +899,16 @@ const addChatNote = () => {
             class="space-y-4 relative before:absolute before:inset-y-0 before:left-4 before:w-0.5 before:bg-white/10">
             <div v-for="log in visit.history" :key="log.id" class="relative pl-10">
               <div
-                class="absolute left-2.5 top-1.5 w-3 h-3 bg-[#d60000] rounded-full border-2 border-[#151515] shadow-sm shadow-red-500/50">
+                class="absolute left-2.5 top-1.5 w-3 h-3 bg-[#d60000] rounded-full border-2 border-[var(--shell-surface)] shadow-sm shadow-red-500/50">
               </div>
-              <div class="bg-[#0a0a0a]/40 border border-white/10 p-4 rounded-xl">
+              <div class="bg-[var(--shell-input)] border border-[var(--shell-border)] p-4 rounded-xl">
                 <div class="flex justify-between items-start mb-2">
                   <span class="text-xs font-bold text-[#d60000] uppercase tracking-wider">{{ log.action }}</span>
-                  <span class="text-[10px] text-gray-500 font-mono">{{ new Date(log.timestamp.toDate()).toLocaleString()
+                  <span class="text-[10px] text-[var(--shell-muted)] font-mono">{{ new Date(log.timestamp.toDate()).toLocaleString()
                     }}</span>
                 </div>
-                <p class="text-sm text-gray-200 leading-relaxed">{{ log.details }}</p>
-                <div class="mt-2 flex items-center gap-2 text-xs text-gray-500">
+                <p class="text-sm text-[var(--shell-muted)] leading-relaxed">{{ log.details }}</p>
+                <div class="mt-2 flex items-center gap-2 text-xs text-[var(--shell-muted)]">
                   <i class="fas fa-user-circle"></i>
                   <span>{{ log.userEmail }}</span>
                 </div>
@@ -764,23 +920,23 @@ const addChatNote = () => {
         <!-- Pestaña: CHAT INTERNO -->
         <div v-show="activeTab === 'chat'" class="space-y-4 animate-fade-in h-full flex flex-col">
           <div
-            class="flex-grow bg-[#0a0a0a]/30 rounded-lg p-4 border border-white/10 overflow-y-auto custom-scrollbar min-h-[200px]">
-            <div v-if="!localVisit.internalNotes?.length" class="text-center text-gray-500 py-8">
+            class="flex-grow bg-[var(--shell-input)] rounded-lg p-4 border border-[var(--shell-border)] overflow-y-auto custom-scrollbar min-h-[200px]">
+            <div v-if="!localVisit.internalNotes?.length" class="text-center text-[var(--shell-muted)] py-8">
               No hay notas internas registradas.
             </div>
             <div v-else class="space-y-3">
               <div v-for="note in localVisit.internalNotes" :key="note.id"
-                class="bg-white/5 p-3 rounded-lg border border-white/5">
-                <div class="flex justify-between text-xs text-gray-400 mb-1">
-                  <span class="font-bold text-cyan-400">{{ note.author }}</span>
+                class="bg-[var(--shell-input)] p-3 rounded-lg border border-white/5">
+                <div class="flex justify-between text-xs text-[var(--shell-muted)] mb-1">
+                  <span class="font-bold visit-active">{{ note.author }}</span>
                   <span>{{ new Date(note.timestamp).toLocaleString() }}</span>
                 </div>
-                <p class="text-sm text-gray-200">{{ note.text }}</p>
+                <p class="text-sm text-[var(--shell-muted)]">{{ note.text }}</p>
               </div>
             </div>
           </div>
           <div class="flex gap-2">
-            <input v-model="newChatNote" @keyup.enter="addChatNote" type="text" class="input-field-dark w-full"
+            <input v-model="newChatNote" @keydown.enter.prevent="addChatNote" type="text" class="input-field-dark w-full"
               placeholder="Escribe una nota rápida..." />
             <button @click="addChatNote" type="button" class="btn btn-primary bg-[#d60000]"><i
                 class="fas fa-paper-plane"></i></button>
@@ -790,7 +946,7 @@ const addChatNote = () => {
       </form>
 
       <!-- Footer Actions -->
-      <div class="p-6 bg-[#0a0a0a]/50 border-t border-white/10 flex flex-col sm:flex-row justify-between gap-4">
+      <div class="visit-footer flex shrink-0 flex-wrap justify-between gap-3 p-4 sm:px-5">
         <button v-if="isEditMode" @click.prevent="handleDelete" type="button"
           class="text-red-400 hover:text-white hover:bg-red-600 transition-all px-4 py-2 rounded-lg font-bold text-sm flex items-center justify-center gap-2">
           <i class="fas fa-trash-alt"></i>
@@ -798,11 +954,11 @@ const addChatNote = () => {
         </button>
         <div v-else class="hidden sm:block"></div>
 
-        <div class="flex gap-3 justify-end">
-          <button @click="$emit('close')" type="button" :disabled="isSubmitting || saving"
-            class="btn btn-secondary bg-white/5 hover:bg-white/10 border-white/10 disabled:opacity-50">Cancelar</button>
+        <div class="ml-auto flex flex-wrap justify-end gap-2">
+          <button @click="!saving && !isSubmitting && $emit('close')" type="button" :disabled="isSubmitting || saving"
+            class="visit-form-button">Cancelar</button>
           <button @click="handleSubmit" type="button" :disabled="isSubmitting || saving"
-            class="btn btn-primary bg-[#d60000] hover:bg-red-700 shadow-lg shadow-red-500/20 px-8 disabled:opacity-50">
+            class="visit-form-button visit-primary">
             <i v-if="isSubmitting || saving" class="fas fa-spinner fa-spin mr-2"></i>
             <i v-else class="fas fa-save mr-2"></i>
             {{ isSubmitting || saving ? (isEditMode ? 'Guardando...' : 'Creando visita...') : (isEditMode ? 'Guardar Cambios' : 'Confirmar Programación') }}
@@ -815,6 +971,21 @@ const addChatNote = () => {
 </template>
 
 <style scoped>
+.visit-form-header { border-bottom: 1px solid var(--shell-border); background: linear-gradient(115deg, var(--planning-tint), var(--shell-surface) 72%); }
+.visit-form-icon { background: var(--planning-tint); color: var(--planning-accent); }
+.visit-tabs, .visit-footer { border-color: var(--shell-border); }
+.visit-tabs { border-bottom-width: 1px; }
+.visit-active { color: var(--planning-accent); }
+.visit-tab:hover { background: var(--shell-input); }
+.visit-form-body { scrollbar-color: var(--shell-scroll-thumb) var(--shell-scroll-track); }
+.visit-footer { border-top-width: 1px; background: var(--shell-input); }
+.visit-form-button { display: inline-flex; min-height: 2.5rem; align-items: center; justify-content: center; padding: 0.45rem 0.75rem; border: 1px solid var(--shell-border); border-radius: 0.55rem; background: var(--shell-surface); color: var(--shell-text); font-size: 0.8rem; font-weight: 650; }
+.visit-form-button:hover { background: var(--shell-input); }
+.visit-form-button:disabled { opacity: 0.55; }
+.visit-primary { background: #c7000c; color: #fff; border-color: #bc000b; }
+.visit-primary:hover { background: #a9000a; }
+@media (prefers-reduced-motion: reduce) { .animate-fade-in { animation: none !important; } }
+
 .animate-fade-in {
   animation: fadeIn 0.3s ease-out;
 }
@@ -832,12 +1003,12 @@ const addChatNote = () => {
 }
 
 .input-field-dark {
-  background-color: #202020;
+  background-color: var(--shell-input);
   /* gray-800 -> #202020 */
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  /* gray-700 -> border-white/10 */
+  border: 1px solid var(--shell-border);
+  /* gray-700 -> border-[var(--shell-border)] */
   border-radius: 0.75rem;
-  color: #f3f4f6;
+  color: var(--shell-text);
   padding: 0.625rem 0.875rem;
   transition: all 0.2s ease-in-out;
   font-size: 0.875rem;
@@ -848,7 +1019,7 @@ const addChatNote = () => {
   border-color: #d60000;
   /* indigo-500 -> brand-red */
   box-shadow: 0 0 0 4px rgba(214, 0, 0, 0.1);
-  background-color: #111827;
+  background-color: var(--shell-input);
   /* gray-900 */
 }
 
@@ -861,7 +1032,7 @@ const addChatNote = () => {
 }
 
 .custom-scrollbar::-webkit-scrollbar-thumb {
-  background-color: #4b5563;
+  background-color: var(--shell-scroll-thumb);
   border-radius: 10px;
 }
 

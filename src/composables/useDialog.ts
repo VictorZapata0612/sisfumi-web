@@ -4,6 +4,7 @@ export interface DialogOptions {
   title: string
   message: string
   isConfirmation?: boolean
+  appearance?: 'client' | 'planning'
   confirmationText?: string
   confirmationKeyword?: string
   // Soporte para selección de técnicos (usado en Planeación)

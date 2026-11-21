@@ -1,6 +1,6 @@
 <!-- eslint-disable @typescript-eslint/no-explicit-any -->
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 import { httpsCallable } from 'firebase/functions'
 import { functions } from '@/firebase/config'
 import ExcelJS from 'exceljs'
@@ -14,11 +14,18 @@ import {
   DEPARTAMENTOS, CIUDADES_POR_DEP
 } from '@/data/catalogs'
 
-defineProps<{
+const props = defineProps<{
   show: boolean
 }>()
 
 const emit = defineEmits(['close', 'refresh'])
+
+const dialog = ref<HTMLDialogElement>()
+const feedback = ref('')
+watch([() => props.show, dialog], ([show, element]) => {
+  if (show && !element?.open) element?.showModal()
+  if (!show && element?.open) element.close()
+}, { flush: 'post' })
 
 const loading = ref(false)
 const processing = ref(false)
@@ -342,7 +349,7 @@ const downloadTemplate = async () => {
 
   } catch (error: any) {
     console.error('Error generando plantilla:', error)
-    alert('Error al generar la plantilla: ' + error.message)
+    feedback.value = 'Error al generar la plantilla: ' + error.message
   } finally {
     loading.value = false
   }
@@ -351,13 +358,15 @@ const downloadTemplate = async () => {
 const handleFileChange = (event: Event) => {
   const target = event.target as HTMLInputElement
   if (target.files && target.files[0]) {
+    feedback.value = ''
     selectedFile.value = target.files[0]
     importStats.value = null
   }
 }
 
 const analyzeFile = async () => {
-  if (!selectedFile.value) return
+  if (!selectedFile.value || processing.value) return
+  feedback.value = ''
 
   processing.value = true
   importStats.value = null
@@ -449,17 +458,21 @@ const analyzeFile = async () => {
       showConfirmation.value = true
     } catch (error: any) {
       console.error('Error al procesar el archivo Excel:', error)
-      alert(`Error crítico de lectura: ${error.message}`)
+      feedback.value = `Error crítico de lectura: ${error.message}`
     } finally {
       processing.value = false
     }
   }
 
+  reader.onerror = () => {
+    feedback.value = 'No se pudo leer el archivo Excel.'
+    processing.value = false
+  }
   reader.readAsArrayBuffer(selectedFile.value)
 }
 
 const confirmImport = async () => {
-  if (!importPreview.value) return
+  if (!importPreview.value?.validRows.length || processing.value) return
 
   processing.value = true
   importProgress.value = 0
@@ -507,7 +520,7 @@ const exportClients = async () => {
     const clients = (result.data as any).clients || []
 
     if (clients.length === 0) {
-      alert('No hay clientes para exportar.')
+      feedback.value = 'No hay clientes para exportar.'
       return
     }
 
@@ -567,13 +580,15 @@ const exportClients = async () => {
 
   } catch (error) {
     console.error('Error exportando:', error)
-    alert('Error al exportar clientes.')
+    feedback.value = 'No se pudo exportar el directorio.'
   } finally {
     loading.value = false
   }
 }
 
 const close = () => {
+  if (processing.value || loading.value) return
+  feedback.value = ''
   selectedFile.value = null
   importStats.value = null
   importPreview.value = null
@@ -584,177 +599,140 @@ const close = () => {
 </script>
 
 <template>
-  <div v-if="show" class="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6" role="dialog"
-    aria-modal="true">
-    <!-- Backdrop -->
-    <div class="fixed inset-0 bg-[#0a0a0a]/80 backdrop-blur-sm transition-opacity" @click="!processing && close()">
+  <dialog ref="dialog" class="transfer-dialog" aria-labelledby="client-transfer-title" @cancel.prevent="close">
+    <div class="transfer-shell">
+      <header class="transfer-header flex items-start gap-3 p-4 sm:p-5">
+        <span class="transfer-icon grid size-11 shrink-0 place-items-center rounded-xl" aria-hidden="true">
+          <i class="fas fa-file-excel"></i>
+        </span>
+        <div class="min-w-0 flex-1">
+          <h2 id="client-transfer-title" class="text-lg font-extrabold sm:text-xl">Importar y exportar clientes</h2>
+          <p class="muted mt-1 text-sm">{{ showConfirmation ? 'Revisa las filas antes de importarlas.' : 'Carga clientes desde Excel o descarga el directorio.' }}</p>
+        </div>
+        <button type="button" autofocus class="transfer-button shrink-0" aria-label="Cerrar importación y exportación"
+          :disabled="processing || loading" @click="close"><i class="fas fa-times" aria-hidden="true"></i></button>
+      </header>
+
+      <div class="transfer-body space-y-4 p-4 sm:p-5">
+        <p v-if="feedback" role="alert" class="transfer-error rounded-lg p-3 text-sm">{{ feedback }}</p>
+        <template v-if="!showConfirmation">
+          <div class="grid gap-4 sm:grid-cols-2">
+            <section class="transfer-card flex flex-col items-start gap-2">
+              <h3 class="font-bold">Plantilla de importación</h3>
+              <p class="muted flex-1 text-sm">Descarga el archivo con los campos que debes completar.</p>
+              <button type="button" class="transfer-button" :disabled="processing || loading" @click="downloadTemplate">
+                <i class="fas fa-download" aria-hidden="true"></i> Descargar plantilla
+              </button>
+            </section>
+            <section class="transfer-card flex flex-col items-start gap-2">
+              <h3 class="font-bold">Exportar directorio</h3>
+              <p class="muted flex-1 text-sm">Descarga en Excel los clientes disponibles para tu usuario.</p>
+              <button type="button" class="transfer-button" :disabled="processing || loading" @click="exportClients">
+                <i class="fas fa-file-export" aria-hidden="true"></i> {{ loading ? 'Preparando Excel…' : 'Exportar clientes' }}
+              </button>
+            </section>
+          </div>
+
+          <section class="transfer-card">
+            <h3 class="font-bold">Importar desde Excel</h3>
+            <label for="client-import-file" class="muted mt-1 block text-sm">Selecciona un archivo .xlsx o .xls</label>
+            <input id="client-import-file" ref="fileInput" type="file" accept=".xlsx,.xls"
+              class="transfer-file mt-3 block w-full text-sm" :disabled="processing || loading" @change="handleFileChange" />
+          </section>
+
+          <section v-if="importStats" class="transfer-card" aria-label="Resultado de importación">
+            <h3 class="mb-3 font-bold">Resultado de la importación</h3>
+            <dl class="transfer-metrics">
+              <div><dt>Filas leídas</dt><dd>{{ importStats.total }}</dd></div>
+              <div><dt>Importadas</dt><dd>{{ importStats.success }}</dd></div>
+              <div><dt>Con errores</dt><dd>{{ importStats.failed }}</dd></div>
+            </dl>
+            <ul v-if="importStats.errors.length" class="transfer-error mt-3 max-h-40 space-y-1 overflow-y-auto rounded-lg p-3 text-xs">
+              <li v-for="(error, idx) in importStats.errors" :key="idx">{{ error }}</li>
+            </ul>
+          </section>
+        </template>
+
+        <section v-else-if="importPreview" class="transfer-card space-y-3">
+          <h3 class="font-bold">Revisión del archivo</h3>
+          <p v-if="selectedFile" class="muted break-all text-sm">{{ selectedFile.name }}</p>
+          <dl class="transfer-metrics">
+            <div><dt>Filas leídas</dt><dd>{{ importPreview.total }}</dd></div>
+            <div><dt>Válidas</dt><dd>{{ importPreview.validRows.length }}</dd></div>
+            <div><dt>Con errores</dt><dd>{{ importPreview.invalidRows.length }}</dd></div>
+          </dl>
+          <div v-if="importPreview.invalidRows.length" class="transfer-error rounded-lg p-3">
+            <h4 class="text-sm font-bold">Filas que se omitirán</h4>
+            <ul class="mt-2 max-h-44 space-y-2 overflow-y-auto text-xs">
+              <li v-for="item in importPreview.invalidRows" :key="item.row">
+                <strong>Fila {{ item.row }}</strong> · {{ item.errors.join(', ') }}
+              </li>
+            </ul>
+          </div>
+          <p v-else class="muted text-sm">Todas las filas están listas para importar.</p>
+          <div v-if="processing">
+            <label for="client-import-progress" class="text-sm font-semibold">Importando · {{ importProgress }}%</label>
+            <progress id="client-import-progress" :value="importProgress" max="100" class="mt-1 block w-full accent-[#e50914]"></progress>
+          </div>
+        </section>
+      </div>
+
+      <footer class="transfer-footer flex shrink-0 flex-wrap justify-end gap-2 p-4 sm:px-5">
+        <template v-if="showConfirmation">
+          <button type="button" class="transfer-button" :disabled="processing" @click="showConfirmation = false">Volver</button>
+          <button type="button" class="transfer-button transfer-primary" :disabled="processing || !importPreview?.validRows.length" @click="confirmImport">
+            {{ processing ? 'Importando…' : 'Importar filas válidas' }}
+          </button>
+        </template>
+        <template v-else>
+          <button type="button" class="transfer-button" :disabled="processing || loading" @click="close">Cerrar</button>
+          <button type="button" class="transfer-button transfer-primary" :disabled="!selectedFile || processing || loading" @click="analyzeFile">
+            {{ processing ? 'Analizando…' : 'Analizar archivo' }}
+          </button>
+        </template>
+      </footer>
     </div>
-
-    <!-- Modal Panel -->
-    <div
-      class="relative bg-[#151515] rounded-xl border border-white/10 shadow-2xl w-full max-w-2xl transform transition-all flex flex-col overflow-hidden">
-      <!-- Header -->
-      <div class="flex items-center justify-between p-6 border-b border-white/10 bg-[#0a0a0a]/30">
-        <h3 class="text-xl font-bold text-white flex items-center gap-2">
-          <i class="fas fa-file-excel text-green-500"></i>
-          Importar / Exportar Clientes
-        </h3>
-        <button @click="close" class="text-gray-400 hover:text-white transition-colors focus:outline-none"
-          :disabled="processing">
-          <i class="fas fa-times text-xl"></i>
-        </button>
-      </div>
-
-      <!-- Content -->
-      <div v-if="!showConfirmation" class="p-6 space-y-8">
-        <!-- Sección 1: Descargar Plantilla -->
-        <div class="flex items-center justify-between bg-white/5 p-4 rounded-lg border border-white/10">
-          <div>
-            <h4 class="text-sm font-bold text-white mb-1">1. Descargar Plantilla Excel</h4>
-            <p class="text-xs text-gray-400">Obtén el formato .xlsx correcto para importar.</p>
-          </div>
-          <button @click="downloadTemplate" class="btn btn-secondary text-sm">
-            <i class="fas fa-download mr-2"></i> Plantilla
-          </button>
-        </div>
-
-        <!-- Sección 2: Importar Archivo -->
-        <div class="space-y-4">
-          <h4 class="text-sm font-bold text-white">2. Subir Archivo Excel</h4>
-
-          <div class="flex gap-4">
-            <input ref="fileInput" type="file" accept=".xlsx, .xls" @change="handleFileChange" class="block w-full text-sm text-gray-400
-                file:mr-4 file:py-2 file:px-4
-                file:rounded-lg file:border-0
-                file:text-sm file:font-semibold
-                file:bg-indigo-600 file:text-white
-                hover:file:bg-indigo-700
-                cursor-pointer bg-[#0a0a0a]/50 rounded-lg border border-white/10" :disabled="processing" />
-          </div>
-
-          <div v-if="selectedFile" class="flex justify-end">
-            <button @click="analyzeFile" class="btn btn-primary bg-blue-600 hover:bg-blue-700 w-full sm:w-auto"
-              :disabled="processing">
-              <i v-if="processing" class="fas fa-circle-notch fa-spin mr-2"></i>
-              <i v-else class="fas fa-search mr-2"></i>
-              {{ processing ? 'Procesando...' : 'Iniciar Importación' }}
-            </button>
-          </div>
-
-          <!-- Resultados de Importación -->
-          <div v-if="importStats" class="mt-4 p-4 rounded-lg bg-[#0a0a0a]/50 border border-white/10">
-            <h5 class="text-sm font-bold text-gray-300 mb-2">Resultados:</h5>
-            <div class="grid grid-cols-3 gap-4 text-center mb-3">
-              <div class="bg-[#151515] p-2 rounded">
-                <span class="block text-xs text-gray-500">Total Filas</span>
-                <span class="font-bold text-white">{{ importStats.total }}</span>
-              </div>
-              <div class="bg-green-900/20 p-2 rounded border border-green-900/50">
-                <span class="block text-xs text-green-400">Exitosos</span>
-                <span class="font-bold text-green-400">{{ importStats.success }}</span>
-              </div>
-              <div class="bg-red-900/20 p-2 rounded border border-red-900/50">
-                <span class="block text-xs text-red-400">Fallidos</span>
-                <span class="font-bold text-red-400">{{ importStats.failed }}</span>
-              </div>
-            </div>
-
-            <div v-if="importStats.errors.length > 0" class="mt-2">
-              <p class="text-xs text-red-400 font-bold mb-1">Errores:</p>
-              <ul class="text-xs text-red-300 max-h-32 overflow-y-auto custom-scrollbar space-y-1 pl-2">
-                <li v-for="(err, idx) in importStats.errors" :key="idx">- {{ err }}</li>
-              </ul>
-            </div>
-          </div>
-        </div>
-
-        <!-- Sección 3: Exportar (Opcional) -->
-        <div class="border-t border-white/10 pt-6 mt-6">
-          <div class="flex items-center justify-between">
-            <div>
-              <h4 class="text-sm font-bold text-white mb-1">Exportar Base de Datos</h4>
-              <p class="text-xs text-gray-400">Descarga todos los clientes actuales en Excel.</p>
-            </div>
-            <button @click="exportClients" class="btn btn-secondary text-sm" :disabled="loading || processing">
-              <i class="fas fa-file-export mr-2"></i>
-              {{ loading ? 'Exportando...' : 'Exportar Todo' }}
-            </button>
-          </div>
-        </div>
-      </div>
-
-      <!-- VISTA DE CONFIRMACIÓN -->
-      <div v-else class="p-6 space-y-6">
-        <div class="text-center">
-          <h4 class="text-xl font-bold text-white mb-2">Resumen de Análisis</h4>
-          <p class="text-gray-400 text-sm">Revisa los datos antes de confirmar la importación.</p>
-        </div>
-
-        <!-- Tarjetas de Resumen -->
-        <div class="grid grid-cols-3 gap-4 text-center" v-if="importPreview">
-          <div class="bg-white/5 p-4 rounded-xl border border-white/10">
-            <span class="block text-xs text-gray-400 uppercase font-bold">Total Filas</span>
-            <span class="text-2xl font-bold text-white">{{ importPreview.total }}</span>
-          </div>
-          <div class="bg-green-900/20 p-4 rounded-xl border border-green-500/30">
-            <span class="block text-xs text-green-400 uppercase font-bold">Válidos</span>
-            <span class="text-2xl font-bold text-green-400">{{ importPreview.validRows.length }}</span>
-          </div>
-          <div class="bg-red-900/20 p-4 rounded-xl border border-red-500/30">
-            <span class="block text-xs text-red-400 uppercase font-bold">Con Errores</span>
-            <span class="text-2xl font-bold text-red-400">{{ importPreview.invalidRows.length }}</span>
-          </div>
-        </div>
-
-        <!-- Lista de Errores -->
-        <div v-if="importPreview && importPreview.invalidRows.length > 0"
-          class="bg-red-900/10 border border-red-900/50 rounded-lg p-4">
-          <h5 class="text-red-400 font-bold text-sm mb-2 flex items-center gap-2">
-            <i class="fas fa-exclamation-triangle"></i>
-            Detalle de Errores (No se importarán)
-          </h5>
-          <ul class="text-xs text-red-300 space-y-2 max-h-48 overflow-y-auto custom-scrollbar pr-2">
-            <li v-for="item in importPreview.invalidRows" :key="item.row"
-              class="border-b border-red-900/30 pb-1 last:border-0">
-              <span class="font-bold">Fila {{ item.row }}:</span> {{ item.errors.join(', ') }}
-            </li>
-          </ul>
-        </div>
-
-        <div v-else class="bg-green-900/10 border border-green-900/50 rounded-lg p-4 text-center">
-          <p class="text-green-400 text-sm font-medium">
-            <i class="fas fa-check-circle mr-2"></i>
-            ¡Todo se ve perfecto! No se encontraron errores.
-          </p>
-        </div>
-
-        <!-- Barra de Progreso -->
-        <div v-if="processing" class="space-y-2 animate-pulse">
-          <div class="flex justify-between text-xs text-gray-400 font-bold uppercase">
-            <span>Procesando...</span>
-            <span>{{ importProgress }}%</span>
-          </div>
-          <div class="w-full bg-[#0a0a0a] rounded-full h-3 overflow-hidden border border-white/10">
-            <div
-              class="bg-green-500 h-full rounded-full transition-all duration-300 ease-out shadow-[0_0_10px_rgba(34,197,94,0.5)]"
-              :style="{ width: `${importProgress}%` }"></div>
-          </div>
-        </div>
-
-        <!-- Botones de Acción -->
-        <div class="flex gap-3 justify-end pt-4 border-t border-white/10">
-          <button @click="showConfirmation = false" class="btn btn-secondary" :disabled="processing">
-            <i class="fas fa-arrow-left mr-2"></i> Volver
-          </button>
-          <button @click="confirmImport"
-            class="btn btn-primary bg-green-600 hover:bg-green-700 shadow-lg shadow-green-500/20"
-            :disabled="processing || importPreview?.validRows.length === 0">
-            <i v-if="processing" class="fas fa-circle-notch fa-spin mr-2"></i>
-            <i v-else class="fas fa-file-import mr-2"></i>
-            {{ processing ? 'Importando...' : `Confirmar Importación (${importPreview?.validRows.length})` }}
-          </button>
-        </div>
-      </div>
-    </div>
-  </div>
+  </dialog>
 </template>
+
+<style scoped>
+.transfer-dialog {
+  width: min(46rem, calc(100vw - 2rem));
+  max-height: calc(100dvh - 2rem);
+  margin: auto;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--shell-border);
+  border-radius: 1rem;
+  background: var(--shell-surface);
+  color: var(--shell-text);
+  box-shadow: 0 24px 64px #0005;
+}
+.transfer-dialog::backdrop { background: #0009; }
+.transfer-shell { display: flex; flex-direction: column; max-height: calc(100dvh - 2rem - 2px); }
+.transfer-header { flex-shrink: 0; border-bottom: 1px solid var(--shell-border); background: linear-gradient(115deg, var(--client-tint, #fff0f1), var(--shell-surface) 72%); }
+.transfer-icon, .transfer-error { background: var(--client-tint, #fff0f1); color: var(--client-accent, #b8000b); }
+.transfer-body { min-height: 0; overflow-y: auto; scrollbar-color: var(--shell-scroll-thumb) var(--shell-scroll-track); }
+.transfer-card { border: 1px solid var(--shell-border); border-radius: 0.75rem; padding: 1rem; }
+.muted { color: var(--shell-muted); }
+.transfer-footer { border-top: 1px solid var(--shell-border); background: var(--shell-input); }
+.transfer-button {
+  display: inline-flex; min-height: 2.5rem; align-items: center; justify-content: center; gap: 0.5rem;
+  padding: 0.45rem 0.75rem; border: 1px solid var(--shell-border); border-radius: 0.55rem;
+  background: var(--shell-surface); color: var(--shell-text); font-size: 0.8rem; font-weight: 650;
+}
+.transfer-button:hover { background: var(--shell-input); }
+.transfer-primary { border-color: #bc000b; background: #c7000c; color: #fff; }
+.transfer-primary:hover { background: #a9000a; }
+.transfer-button:disabled { opacity: 0.5; cursor: default; }
+.transfer-button:focus-visible, .transfer-file:focus-visible { outline: 2px solid #e50914; outline-offset: 2px; }
+.transfer-file { border: 1px dashed var(--shell-border); border-radius: 0.65rem; background: var(--shell-input); }
+.transfer-file::file-selector-button {
+  margin-right: 0.6rem; padding: 0.65rem; border: 0; border-right: 1px solid var(--shell-border);
+  background: var(--shell-surface); color: var(--shell-text); font-weight: 650; cursor: pointer;
+}
+.transfer-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.5rem; }
+.transfer-metrics > div { padding: 0.5rem; border-radius: 0.55rem; background: var(--shell-input); }
+.transfer-metrics dt { color: var(--shell-muted); font-size: 0.75rem; }
+.transfer-metrics dd { font-size: 1.25rem; font-weight: 750; }
+</style>

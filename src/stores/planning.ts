@@ -95,6 +95,7 @@ export interface GoogleEvent {
 export interface VisitTemplate {
   id: string
   templateName: string
+  notesOnly?: boolean
   tipo_visita: string
   notas_visita?: string
 }

@@ -44,13 +44,17 @@ const currentDate = ref(new Date())
 const selectedDate = ref<Date | null>(new Date())
 const selectedZone = ref('Todos')
 const selectedTechnician = ref('todos')
+const calendarStatus = ref('')
+const locationFilter = ref('')
 const dayEventsStatusFilter = ref<'Todos' | 'Programada' | 'Realizada' | 'Cancelada'>('Todos')
-const calendarView = ref<'month' | 'week' | 'agenda'>('month')
+const calendarView = ref<'month' | 'week' | 'day' | 'agenda'>('month')
 const selectedCalendarUid = ref('internal')
 
 const showCreateModal = ref(false)
 const showEditModal = ref(false)
-const editingVisit = ref(null)
+const editingVisit = ref<any>(null)
+const externalEvent = ref<{ title: string; start: Date; end: Date; link?: string }>()
+const externalDialog = ref<HTMLDialogElement>()
 
 // --- Nuevos estados para las funcionalidades solicitadas ---
 const selectedVisitIds = ref<string[]>([])
@@ -119,8 +123,8 @@ const calendarGridDays = computed(() => {
   const firstDay = new Date(year, month, 1)
   const lastDay = new Date(year, month + 1, 0)
 
-  const startDayOfWeek = firstDay.getDay()
-  const endDayOfWeek = lastDay.getDay()
+  const startDayOfWeek = (firstDay.getDay() + 6) % 7
+  const endDayOfWeek = (lastDay.getDay() + 6) % 7
 
   // Días del mes anterior
   for (let i = startDayOfWeek; i > 0; i--) {
@@ -158,47 +162,60 @@ const daysInWeek = computed(() => {
   return weekDays
 })
 
-const agendaEvents = computed(() => {
-  const events = (allCalendarEvents.value as any[])
-    .filter((event) => {
-      const eventDate = new Date(event.start)
-      return (
-        eventDate.getMonth() === currentDate.value.getMonth() &&
-        eventDate.getFullYear() === currentDate.value.getFullYear()
-      )
-    })
-    .sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime())
-  return events
+const visibleEvents = computed(() => {
+  const location = locationFilter.value.trim().toLocaleLowerCase('es-CO')
+  return allCalendarEvents.value.filter((event) => {
+    if (event.source === 'google') return !calendarStatus.value && !location
+    const visit = event.extendedProps
+    return (selectedTechnician.value === 'todos' || visit?.fumigadores_asignados?.includes(selectedTechnician.value)) &&
+      (!calendarStatus.value || visit?.estado_visita === calendarStatus.value) &&
+      (!location || visit?.ubicacion?.toLocaleLowerCase('es-CO').includes(location))
+  }).sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime())
 })
+
+const agendaEvents = computed(() => visibleEvents.value.filter((event) => {
+  const date = new Date(event.start)
+  return date.getMonth() === currentDate.value.getMonth() && date.getFullYear() === currentDate.value.getFullYear()
+}))
 
 const eventsByDay = computed(() => {
-  const eventsMap = new Map<number, any[]>()
-  const filteredEvents =
-    selectedTechnician.value === 'todos'
-      ? allCalendarEvents.value
-      : allCalendarEvents.value.filter((e: any) =>
-          e.source === 'google'
-            ? true
-            : e.extendedProps?.fumigadores_asignados?.includes(selectedTechnician.value),
-        )
-
-  filteredEvents.forEach((event) => {
-    const day = new Date(event.start).getDate()
-    // Aseguramos que el evento sea del mes actual para el mapa
-    const eventDate = new Date(event.start)
-    const belongsToVisibleRange =
-      calendarView.value === 'week' ||
-      (eventDate.getMonth() === currentDate.value.getMonth() &&
-        eventDate.getFullYear() === currentDate.value.getFullYear())
-    if (belongsToVisibleRange) {
-      if (!eventsMap.has(day)) {
-        eventsMap.set(day, [])
-      }
-      eventsMap.get(day)?.push(event)
-    }
-  })
-  return eventsMap
+  const days = new Map<string, (typeof visibleEvents.value)>()
+  for (const event of visibleEvents.value) {
+    const key = new Date(event.start).toDateString()
+    const entries = days.get(key) ?? []
+    entries.push(event)
+    days.set(key, entries)
+  }
+  return days
 })
+
+const conflictIds = computed(() => {
+  const conflicts = new Set<string>()
+  const latestByTechnician = new Map<string, { end: number; id: string }>()
+  const events = [...allCalendarEvents.value].sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime())
+  for (const event of events) {
+    if (event.source !== 'internal' || event.extendedProps?.estado_visita !== 'Programada' || !event.end) continue
+    const start = new Date(event.start).getTime()
+    const end = new Date(event.end).getTime()
+    if (!(end > start)) continue
+    for (const name of new Set<string>(event.extendedProps.fumigadores_asignados ?? [])) {
+      const previous = latestByTechnician.get(name)
+      if (previous && previous.end > start) {
+        conflicts.add(previous.id)
+        conflicts.add(event.id)
+      }
+      if (!previous || end > previous.end) latestByTechnician.set(name, { end, id: event.id })
+    }
+  }
+  return conflicts
+})
+const conflictEvents = computed(() => {
+  const events = calendarView.value === 'day' ? selectedDateEvents.value
+    : calendarView.value === 'week' ? daysInWeek.value.flatMap(({ date }) => eventsByDay.value.get(date.toDateString()) ?? [])
+      : agendaEvents.value
+  return events.filter((event) => conflictIds.value.has(event.id))
+})
+const showConflicts = ref(false)
 
 const isToday = (day: Date) => {
   const today = new Date()
@@ -209,28 +226,9 @@ const isToday = (day: Date) => {
   )
 }
 
-const selectedDateEvents = computed(() => {
-  if (!selectedDate.value) return []
-  // Para obtener eventos del día seleccionado, filtramos sobre todos los eventos
-  // porque eventsByDay solo tiene índices del mes actual visualizado
-  const targetDateStr = selectedDate.value.toDateString()
-
-  const events = allCalendarEvents.value.filter((e) => {
-    return new Date(e.start).toDateString() === targetDateStr
-  })
-
-  if (selectedTechnician.value !== 'todos') {
-    return events
-      .filter((e: any) =>
-        e.source === 'google'
-          ? true
-          : e.extendedProps?.fumigadores_asignados?.includes(selectedTechnician.value),
-      )
-      .sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime())
-  }
-
-  return events.sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime())
-})
+const selectedDateEvents = computed(() =>
+  selectedDate.value ? eventsByDay.value.get(selectedDate.value.toDateString()) ?? [] : [],
+)
 
 const filteredSelectedDateEvents = computed(() => {
   if (dayEventsStatusFilter.value === 'Todos') {
@@ -272,6 +270,20 @@ const getTechnicianColor = (techName: string | undefined): string => {
     if (technician.googleColorId) return googleCalendarColors[technician.googleColorId] || '#4a5568'
   }
   return '#4a5568'
+}
+
+const visitTimeFormatter = new Intl.DateTimeFormat('es-CO', { timeZone: 'America/Bogota', hour: '2-digit', minute: '2-digit', hour12: false })
+const visitDayFormatter = new Intl.DateTimeFormat('es-CO', { timeZone: 'America/Bogota', day: 'numeric', month: 'short' })
+function formatVisitRange(event: { start: string | Date; end?: string | Date }) {
+  const start = new Date(event.start)
+  if (!Number.isFinite(start.getTime())) return '—'
+  const startLabel = visitTimeFormatter.format(start)
+  if (!event.end) return startLabel
+  const end = new Date(event.end)
+  if (!(end.getTime() > start.getTime())) return startLabel
+  const endDay = visitDayFormatter.format(end)
+  return startLabel + ' – ' + visitTimeFormatter.format(end) +
+    (endDay === visitDayFormatter.format(start) ? '' : ' (' + endDay + ')')
 }
 
 const getEventStyle = (event: any) => {
@@ -335,6 +347,7 @@ watch(
 watch(needsAuthRefresh, (newVal) => {
   if (newVal) {
     showDialog({
+      appearance: 'planning',
       title: 'Reconexión Necesaria',
       message:
         'Tu conexión con Google Calendar ha expirado. Por favor, vuelve a conectar tu cuenta.',
@@ -349,15 +362,32 @@ watch(needsAuthRefresh, (newVal) => {
   }
 })
 
-const changeMonth = (offset: number) => {
-  currentDate.value.setMonth(currentDate.value.getMonth() + offset)
-  currentDate.value = new Date(currentDate.value)
-  if (calendarView.value === 'week') {
-    selectedDate.value = new Date(currentDate.value)
+function movePeriod(offset: number) {
+  const reference = selectedDate.value || currentDate.value
+  if (calendarView.value === 'week' || calendarView.value === 'day') {
+    const next = new Date(reference)
+    next.setDate(next.getDate() + offset * (calendarView.value === 'week' ? 7 : 1))
+    selectedDate.value = next
+    currentDate.value = next
+  } else {
+    const next = new Date(currentDate.value.getFullYear(), currentDate.value.getMonth() + offset, 1)
+    selectedDate.value = next
+    currentDate.value = next
   }
   planningStore.clearCalendarData()
   loadData()
 }
+
+const periodLabel = computed(() => {
+  const format = new Intl.DateTimeFormat('es-CO', { day: 'numeric', month: 'short', year: 'numeric' })
+  if (calendarView.value === 'day' && selectedDate.value) return format.format(selectedDate.value)
+  if (calendarView.value === 'week') {
+    const first = daysInWeek.value[0]?.date
+    const last = daysInWeek.value[6]?.date
+    if (first && last) return format.format(first) + ' – ' + format.format(last)
+  }
+  return currentMonthDisplay.value
+})
 
 const selectDay = (day: { date: Date; isCurrentMonth?: boolean }) => {
   if (!day.isCurrentMonth) {
@@ -376,16 +406,9 @@ const selectDay = (day: { date: Date; isCurrentMonth?: boolean }) => {
 
 const goToToday = () => {
   const today = new Date()
-  const isSameMonth =
-    today.getMonth() === currentDate.value.getMonth() &&
-    today.getFullYear() === currentDate.value.getFullYear()
-
-  if (calendarView.value === 'month' && !isSameMonth) {
-    selectDay({ date: today, isCurrentMonth: false })
-  } else {
-    selectedDate.value = today
-    if (isMobile.value) showDayDetailsModal.value = true
-  }
+  selectedDate.value = today
+  currentDate.value = today
+  loadData()
 }
 
 const openCreateModal = () => {
@@ -393,18 +416,17 @@ const openCreateModal = () => {
   showCreateModal.value = true
 }
 
-const showGoogleEventDetails = (event: any) => {
-  const formatTime = (dateStr: string) => {
-    return new Date(dateStr).toLocaleTimeString('es-CO', {
-      hour: 'numeric',
-      minute: '2-digit',
-      hour12: true,
-    })
+function showGoogleEventDetails(event: any) {
+  let link: string | undefined
+  try {
+    const target = new URL(event.extendedProps?.htmlLink)
+    if (target.protocol === 'https:' && ['calendar.google.com', 'www.google.com'].includes(target.hostname)) link = target.href
+  } catch {
+    // Los eventos sin vínculo siguen mostrando su horario.
   }
-  showDialog({
-    title: 'Detalle del Evento de Google',
-    message: `<strong>Título:</strong> ${event.title}<br><strong>Inicio:</strong> ${formatTime(event.start)}<br><strong>Fin:</strong> ${formatTime(event.end)}<br><br><a href="${event.extendedProps.htmlLink}" target="_blank" class="btn btn-primary bg-blue-600 mt-4">Ver en Google Calendar</a>`,
-  })
+  externalEvent.value = { title: event.title, start: new Date(event.start), end: new Date(event.end), link }
+  showDayDetailsModal.value = false
+  externalDialog.value?.showModal()
 }
 
 const openEditModal = (event: any) => {
@@ -415,7 +437,9 @@ const openEditModal = (event: any) => {
   const visitWithHistory = { ...event, history: [] }
   planningStore
     .fetchVisitHistory(event.id)
-    .then((history: any) => (visitWithHistory.history = history))
+    .then((history) => {
+      if (editingVisit.value?.id === event.id) editingVisit.value.history = history
+    })
   editingVisit.value = visitWithHistory
 
   // Cerrar modal de detalles si está abierto (móvil)
@@ -463,6 +487,7 @@ const handleSaveVisit = async (visitData: any) => {
 
 const handleDeleteVisit = async (visitId: string) => {
   showDialog({
+    appearance: 'planning',
     title: 'Confirmar Eliminación',
     message: '¿Está seguro de que desea eliminar esta visita?',
     isConfirmation: true,
@@ -493,20 +518,22 @@ const handleDeleteVisit = async (visitId: string) => {
 
 const handleBatchAssign = () => {
   const selectedTechnicians: string[] = []
+  const visitIds = [...selectedVisitIds.value]
   showDialog({
+    appearance: 'planning',
     title: 'Asignar Técnicos en Bloque',
     message: `Selecciona los técnicos para asignar a las ${selectedVisitIds.value.length} visitas.`,
     isConfirmation: true,
     confirmationText: 'Asignar',
     technicianSelection: {
       available: technicians.value,
-      selected: [],
+      selected: selectedTechnicians,
     },
     async onConfirm() {
       if (selectedTechnicians.length === 0) return
       isAssigning.value = true
       try {
-        await planningStore.batchAssignVisits(selectedVisitIds.value, selectedTechnicians)
+        await planningStore.batchAssignVisits(visitIds, selectedTechnicians)
         showToast({ title: 'Éxito', message: 'Asignación completada.', type: 'success' })
         selectedVisitIds.value = []
         loadData()
@@ -523,10 +550,7 @@ const showTooltip = (event: MouseEvent, day: { date: Date }) => {
   if (isMobile.value) return // No tooltip on mobile
 
   if (tooltipTimeout.value) clearTimeout(tooltipTimeout.value)
-  const dayNumber = day.date.getDate()
-  const events = (eventsByDay.value.get(dayNumber) || []).sort(
-    (a, b) => new Date(a.start).getTime() - new Date(b.start).getTime(),
-  )
+  const events = eventsByDay.value.get(day.date.toDateString()) ?? []
   if (events.length > 0) {
     const rect = (event.currentTarget as HTMLElement).getBoundingClientRect()
     // Ajustar posición para que no se salga
@@ -549,6 +573,7 @@ const hideTooltip = () => {
 
 const handleQuickComplete = (visit: Visit) => {
   showDialog({
+    appearance: 'planning',
     title: 'Completar Visita',
     message: `¿Marcar visita a "${visit.nombre_cliente}" como "Realizada"?`,
     isConfirmation: true,
@@ -573,23 +598,24 @@ const handleQuickComplete = (visit: Visit) => {
 </script>
 
 <template>
-  <div class="h-full bg-[#0a0a0a] text-gray-100 flex flex-col p-4 md:p-6 overflow-hidden">
+  <div class="planning-page space-y-4">
     <!-- Header Responsive -->
     <header
-      class="flex-shrink-0 mb-6 flex flex-col md:flex-row justify-between items-start md:items-center gap-4"
+      class="planning-header flex flex-wrap items-center justify-between gap-4 py-2"
     >
       <div>
-        <h2 class="text-2xl md:text-3xl font-bold text-white flex items-center gap-3">
+        <h1 class="flex items-center gap-3 text-2xl font-extrabold sm:text-3xl">
+          <span class="planning-icon grid size-11 place-items-center rounded-xl text-xl"><i class="fas fa-calendar-alt" aria-hidden="true"></i></span>
           Planeación
           <button
             @click="loadData"
-            class="text-sm bg-[#151515] p-2 rounded-full hover:text-[#d60000] transition-colors"
+            class="text-sm bg-[var(--shell-surface)] p-2 rounded-full hover:text-[#d60000] transition-colors"
             title="Recargar"
           >
             <i class="fas fa-sync-alt"></i>
           </button>
-        </h2>
-        <p class="text-sm text-gray-400 mt-1">Gestión de agenda y rutas</p>
+        </h1>
+        <p class="text-sm text-[var(--shell-muted)] mt-1">Gestión de agenda y rutas</p>
       </div>
 
       <!-- Botonera Acciones en Bloque -->
@@ -616,9 +642,9 @@ const handleQuickComplete = (visit: Visit) => {
       </div>
 
       <!-- Filtros Responsivos -->
-      <div class="flex flex-wrap items-center gap-3 w-full md:w-auto">
+      <div class="planning-panel flex w-full flex-wrap items-center gap-3 p-3">
         <select
-          v-model="selectedZone"
+          v-model="selectedZone" aria-label="Zona"
           @change="loadData"
           class="input-field-dark text-sm py-1.5 w-full sm:w-auto"
         >
@@ -633,7 +659,7 @@ const handleQuickComplete = (visit: Visit) => {
         </select>
 
         <select
-          v-model="selectedTechnician"
+          v-model="selectedTechnician" aria-label="Técnico"
           class="input-field-dark text-sm py-1.5 w-full sm:w-auto"
         >
           <option value="todos">Todos los Técnicos</option>
@@ -645,7 +671,7 @@ const handleQuickComplete = (visit: Visit) => {
         <!-- ✅ NUEVO: Selector de Calendario para Admins/Jefes -->
         <div v-if="authStore.userRole === 'Administrador' || authStore.userRole === 'Jefe'">
           <select
-            id="calendarAccountSelector"
+            id="calendarAccountSelector" aria-label="Calendario"
             v-model="selectedCalendarUid"
             @change="handleCalendarChange"
             class="input-field-dark text-sm py-1.5 w-full sm:w-auto"
@@ -664,7 +690,7 @@ const handleQuickComplete = (visit: Visit) => {
 
         <button
           @click="openCreateModal"
-          class="btn btn-primary bg-[#d60000] w-full sm:w-auto justify-center shadow-lg"
+          class="planning-primary w-full sm:w-auto"
         >
           <i class="fas fa-plus mr-2"></i>Nueva Visita
         </button>
@@ -672,57 +698,64 @@ const handleQuickComplete = (visit: Visit) => {
     </header>
 
     <!-- Contenido Principal (Grid Adaptable) -->
-    <main class="flex-grow grid grid-cols-1 lg:grid-cols-3 gap-6 overflow-hidden min-h-0">
+    <main class="grid min-w-0 grid-cols-1 gap-4 lg:grid-cols-[minmax(0,2.15fr)_minmax(0,1fr)]">
       <!-- Columna Izquierda: Calendario -->
       <div
-        class="lg:col-span-2 bg-[#151515] rounded-xl shadow-lg border border-white/10 flex flex-col overflow-hidden"
+        class="planning-panel calendar-panel flex min-w-0 flex-col overflow-hidden"
       >
         <!-- Toolbar Calendario -->
         <div
-          class="p-4 border-b border-white/10 bg-[#0a0a0a]/30 flex flex-col sm:flex-row justify-between items-center gap-4"
+          class="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--shell-border)] p-3"
         >
-          <div class="flex items-center gap-2 bg-white/5 p-1 rounded-lg shrink-0">
-            <button @click="changeMonth(-1)" class="p-2 hover:text-white text-gray-400">
+          <div class="flex items-center gap-2 bg-[var(--shell-input)] p-1 rounded-lg shrink-0">
+            <button type="button" @click="movePeriod(-1)" aria-label="Periodo anterior" class="p-2 hover:text-white text-[var(--shell-muted)]">
               <i class="fas fa-chevron-left"></i>
             </button>
-            <span class="w-32 text-center font-bold capitalize select-none text-sm md:text-base">{{
-              currentMonthDisplay
+            <span class="min-w-32 px-1 text-center font-bold capitalize select-none text-sm md:text-base">{{
+              periodLabel
             }}</span>
-            <button @click="changeMonth(1)" class="p-2 hover:text-white text-gray-400">
+            <button type="button" @click="movePeriod(1)" aria-label="Periodo siguiente" class="p-2 hover:text-white text-[var(--shell-muted)]">
               <i class="fas fa-chevron-right"></i>
             </button>
           </div>
 
-          <div class="flex gap-2 bg-white/5 p-1 rounded-lg text-xs font-medium shrink-0">
+          <div class="flex gap-2 bg-[var(--shell-input)] p-1 rounded-lg text-xs font-medium shrink-0">
             <button
-              @click="calendarView = 'month'"
+              type="button" :aria-pressed="calendarView === 'month'" @click="calendarView = 'month'"
               class="px-3 py-1.5 rounded transition-colors"
               :class="
                 calendarView === 'month'
                   ? 'bg-[#d60000] text-white shadow'
-                  : 'text-gray-400 hover:text-white'
+                  : 'text-[var(--shell-muted)] hover:text-white'
               "
             >
               Mes
             </button>
             <button
-              @click="calendarView = 'week'"
+              type="button" :aria-pressed="calendarView === 'week'" @click="calendarView = 'week'"
               class="px-3 py-1.5 rounded transition-colors"
               :class="
                 calendarView === 'week'
                   ? 'bg-[#d60000] text-white shadow'
-                  : 'text-gray-400 hover:text-white'
+                  : 'text-[var(--shell-muted)] hover:text-white'
               "
             >
               Semana
             </button>
             <button
-              @click="calendarView = 'agenda'"
+              type="button" :aria-pressed="calendarView === 'day'" @click="calendarView = 'day'"
+              class="px-3 py-1.5 rounded transition-colors"
+              :class="calendarView === 'day' ? 'bg-[#d60000] text-white shadow' : 'text-[var(--shell-muted)] hover:text-white'"
+            >
+              Día
+            </button>
+            <button
+              type="button" :aria-pressed="calendarView === 'agenda'" @click="calendarView = 'agenda'"
               class="px-3 py-1.5 rounded transition-colors"
               :class="
                 calendarView === 'agenda'
                   ? 'bg-[#d60000] text-white shadow'
-                  : 'text-gray-400 hover:text-white'
+                  : 'text-[var(--shell-muted)] hover:text-white'
               "
             >
               Agenda
@@ -737,16 +770,30 @@ const handleQuickComplete = (visit: Visit) => {
           </button>
         </div>
 
+        <div v-if="conflictEvents.length" class="conflict-bar px-4 py-2 text-sm">
+          <button type="button" class="font-semibold hover:underline" :aria-expanded="showConflicts" @click="showConflicts = !showConflicts">
+            <i class="fas fa-exclamation-triangle mr-1" aria-hidden="true"></i>
+            {{ conflictEvents.length }} visitas con solapamientos
+          </button>
+          <ul v-if="showConflicts" class="mt-2 space-y-1">
+            <li v-for="event in conflictEvents" :key="event.id">
+              <button type="button" class="text-left hover:underline" @click="openEditModal(event)">
+                {{ new Date(event.start).toLocaleString('es-CO', { dateStyle: 'short', timeStyle: 'short' }) }} · {{ event.title }}
+              </button>
+            </li>
+          </ul>
+        </div>
+
         <!-- Vista MES -->
         <div v-if="calendarView === 'month'" class="flex-grow flex flex-col overflow-hidden">
           <!-- Días Semana -->
           <div
-            class="grid grid-cols-7 border-b border-white/10 bg-[#151515]/80 text-center py-2 shrink-0"
+            class="grid grid-cols-7 border-b border-[var(--shell-border)] bg-[var(--shell-surface)] text-center py-2 shrink-0"
           >
             <span
-              v-for="day in ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb']"
+              v-for="day in ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom']"
               :key="day"
-              class="text-xs font-bold text-gray-500 uppercase"
+              class="text-xs font-bold text-[var(--shell-muted)] uppercase"
               >{{ day }}</span
             >
           </div>
@@ -756,21 +803,28 @@ const handleQuickComplete = (visit: Visit) => {
             <div
               v-for="(day, index) in calendarGridDays"
               :key="index"
+              role="button" tabindex="0"
+              :aria-label="day.date.toLocaleDateString('es-CO', { dateStyle: 'full' }) + ' · ' + (eventsByDay.get(day.date.toDateString())?.length ?? 0) + ' eventos'"
+              @keydown.enter.prevent="selectDay(day)" @keydown.space.prevent="selectDay(day)"
               @click="selectDay(day)"
               @mouseenter="showTooltip($event, day)"
               @mouseleave="hideTooltip"
-              class="relative border-b border-r border-white/10 min-h-[60px] md:min-h-[100px] p-1 md:p-2 cursor-pointer transition-colors hover:bg-white/5 flex flex-col"
+              class="relative border-b border-r border-[var(--shell-border)] min-h-[64px] md:min-h-[94px] p-1 md:p-2 cursor-pointer transition-colors hover:bg-[var(--shell-input)] flex flex-col"
               :class="{
-                'bg-[#0a0a0a]/40': !day.isCurrentMonth,
+                'bg-[var(--shell-input)]': !day.isCurrentMonth,
                 'ring-1 ring-inset ring-[#d60000]/50 bg-red-900/10':
                   selectedDate?.toDateString() === day.date.toDateString(),
               }"
             >
               <span
                 class="text-xs font-bold w-6 h-6 flex items-center justify-center rounded-full mb-1"
-                :class="isToday(day.date) ? 'bg-[#d60000] text-white shadow-lg' : 'text-gray-400'"
+                :class="isToday(day.date) ? 'bg-[#d60000] text-white shadow-lg' : 'text-[var(--shell-muted)]'"
               >
                 {{ day.date.getDate() }}
+              </span>
+
+              <span v-if="eventsByDay.get(day.date.toDateString())?.length" class="day-count absolute right-1 top-1.5 rounded-full px-1.5 text-[10px] font-bold sm:right-2">
+                {{ eventsByDay.get(day.date.toDateString())?.length }}
               </span>
 
               <!-- Contenedor Eventos -->
@@ -779,7 +833,7 @@ const handleQuickComplete = (visit: Visit) => {
                   <!-- VISTA MÓVIL: Puntos/Indicadores Compactos -->
                   <div class="md:hidden flex flex-wrap gap-1 content-start absolute inset-0">
                     <div
-                      v-for="event in eventsByDay.get(day.date.getDate())?.slice(0, 8)"
+                      v-for="event in eventsByDay.get(day.date.toDateString())?.slice(0, 8)"
                       :key="event.id"
                       class="w-1.5 h-1.5 rounded-full"
                       :class="event.source === 'google' ? 'bg-yellow-500' : ''"
@@ -794,9 +848,9 @@ const handleQuickComplete = (visit: Visit) => {
                   <!-- VISTA ESCRITORIO: Barras de Texto -->
                   <div class="hidden md:flex flex-col gap-1 absolute inset-0 overflow-hidden">
                     <div
-                      v-for="event in eventsByDay.get(day.date.getDate())?.slice(0, 3)"
+                      v-for="event in eventsByDay.get(day.date.toDateString())?.slice(0, 3)"
                       :key="event.id"
-                      class="text-[10px] px-1.5 py-0.5 rounded truncate text-white shadow-sm border-l-2 leading-tight opacity-90 hover:opacity-100"
+                      class="month-event text-[10px] px-1.5 py-0.5 rounded truncate shadow-sm border-l-2 leading-tight opacity-90 hover:opacity-100"
                       :style="{
                         backgroundColor:
                           event.source === 'google'
@@ -811,10 +865,10 @@ const handleQuickComplete = (visit: Visit) => {
                       {{ event.title }}
                     </div>
                     <span
-                      v-if="(eventsByDay.get(day.date.getDate())?.length || 0) > 3"
-                      class="text-[9px] text-gray-500 pl-1"
+                      v-if="(eventsByDay.get(day.date.toDateString())?.length || 0) > 3"
+                      class="text-[9px] text-[var(--shell-muted)] pl-1"
                     >
-                      +{{ (eventsByDay.get(day.date.getDate())?.length || 0) - 3 }} más
+                      +{{ (eventsByDay.get(day.date.toDateString())?.length || 0) - 3 }} más
                     </span>
                   </div>
                 </div>
@@ -825,15 +879,15 @@ const handleQuickComplete = (visit: Visit) => {
 
         <!-- Vista SEMANA (Con scroll horizontal para móviles) -->
         <div v-else-if="calendarView === 'week'" class="flex-grow overflow-auto">
-          <div class="min-w-[800px] h-full grid grid-cols-7 gap-px bg-white/10">
+          <div class="grid min-w-[720px] grid-cols-7 gap-px bg-[var(--shell-border)]">
             <div
               v-for="day in daysInWeek"
               :key="day.date.toISOString()"
-              class="bg-[#151515] flex flex-col h-full"
-              :class="isToday(day.date) ? 'bg-[#151515]' : 'bg-[#0a0a0a]/20'"
+              class="bg-[var(--shell-surface)] flex flex-col h-full"
+              :class="isToday(day.date) ? 'bg-[var(--shell-surface)]' : 'bg-[var(--shell-input)]'"
             >
-              <div class="p-2 text-center border-b border-white/10 sticky top-0 bg-[#151515] z-10">
-                <p class="text-xs uppercase text-gray-500 font-bold">
+              <div class="p-2 text-center border-b border-[var(--shell-border)] sticky top-0 bg-[var(--shell-surface)] z-10">
+                <p class="text-xs uppercase text-[var(--shell-muted)] font-bold">
                   {{
                     day.date.toLocaleString('es-ES', {
                       weekday: 'short',
@@ -842,16 +896,14 @@ const handleQuickComplete = (visit: Visit) => {
                 </p>
                 <p
                   class="text-lg font-bold"
-                  :class="isToday(day.date) ? 'text-[#d60000]' : 'text-white'"
+                  :class="isToday(day.date) ? 'text-[#d60000]' : 'text-[var(--shell-text)]'"
                 >
                   {{ day.date.getDate() }}
                 </p>
               </div>
               <div class="p-2 space-y-2 overflow-y-auto flex-grow custom-scrollbar">
                 <div
-                  v-for="event in (eventsByDay.get(day.date.getDate()) || []).sort(
-                    (a, b) => new Date(a.start).getTime() - new Date(b.start).getTime(),
-                  )"
+                  v-for="event in eventsByDay.get(day.date.toDateString())"
                   :key="event.id"
                   @click="openEditModal(event)"
                   class="p-2 rounded text-xs cursor-pointer text-white relative hover:brightness-110 transition-all shadow-sm"
@@ -859,12 +911,7 @@ const handleQuickComplete = (visit: Visit) => {
                 >
                   <p class="font-bold truncate">{{ event.title }}</p>
                   <p class="opacity-80 truncate text-[10px]">
-                    {{
-                      new Date(event.start).toLocaleTimeString('es-CO', {
-                        hour: 'numeric',
-                        minute: '2-digit',
-                      })
-                    }}
+                    {{ formatVisitRange(event) }}
                   </p>
                 </div>
               </div>
@@ -872,12 +919,27 @@ const handleQuickComplete = (visit: Visit) => {
           </div>
         </div>
 
+        <section v-else-if="calendarView === 'day'" class="space-y-2 p-4" aria-label="Visitas del día">
+          <p v-if="!selectedDateEvents.length" class="py-8 text-center text-sm text-[var(--shell-muted)]">No hay visitas para este día.</p>
+          <button v-for="event in selectedDateEvents" :key="event.id" type="button"
+            class="day-event flex w-full items-start gap-3 rounded-lg border border-[var(--shell-border)] p-3 text-left"
+            @click="openEditModal(event)">
+            <time class="shrink-0 text-sm font-bold">{{ formatVisitRange(event) }}</time>
+            <span class="min-w-0 flex-1">
+              <strong class="block text-sm">{{ event.title }}</strong>
+              <span class="block text-xs text-[var(--shell-muted)]">{{ [event.extendedProps?.tipo_visita, event.extendedProps?.ubicacion, event.extendedProps?.fumigadores_asignados?.join(', ')].filter(Boolean).join(' · ') }}</span>
+            </span>
+            <span v-if="conflictIds.has(event.id)" class="conflict-label text-xs font-bold">Solapamiento</span>
+            <span v-else class="text-xs text-[var(--shell-muted)]">{{ event.extendedProps?.estado_visita || 'Google Calendar' }}</span>
+          </button>
+        </section>
+
         <!-- Vista AGENDA -->
         <div
           v-else-if="calendarView === 'agenda'"
           class="flex-grow overflow-y-auto custom-scrollbar p-4"
         >
-          <div v-if="!agendaEvents.length" class="text-center text-gray-500 py-10">
+          <div v-if="!agendaEvents.length" class="text-center text-[var(--shell-muted)] py-10">
             <i class="far fa-calendar-times text-4xl mb-3 opacity-50"></i>
             <p>No hay eventos para este mes.</p>
           </div>
@@ -890,10 +952,10 @@ const handleQuickComplete = (visit: Visit) => {
                 return acc
               }, {})"
               :key="dateStr"
-              class="bg-white/5 rounded-lg overflow-hidden border border-white/10"
+              class="bg-[var(--shell-input)] rounded-lg overflow-hidden border border-[var(--shell-border)]"
             >
               <div
-                class="bg-[#151515] px-4 py-2 font-bold text-[#d60000] text-sm flex items-center gap-2"
+                class="bg-[var(--shell-surface)] px-4 py-2 font-bold text-[#d60000] text-sm flex items-center gap-2"
               >
                 <i class="far fa-calendar-alt"></i>
                 {{
@@ -904,14 +966,14 @@ const handleQuickComplete = (visit: Visit) => {
                   })
                 }}
               </div>
-              <div class="divide-y divide-white/10">
+              <div class="divide-y divide-[var(--shell-border)]">
                 <div
                   v-for="event in group"
                   :key="event.id"
                   @click="openEditModal(event)"
-                  class="p-3 hover:bg-white/5 cursor-pointer flex items-center gap-3 transition-colors"
+                  class="p-3 hover:bg-[var(--shell-input)] cursor-pointer flex items-center gap-3 transition-colors"
                 >
-                  <div class="text-xs text-gray-400 w-16 text-right shrink-0">
+                  <div class="text-xs text-[var(--shell-muted)] w-16 text-right shrink-0">
                     <p>
                       {{
                         new Date(event.start).toLocaleTimeString('es-CO', {
@@ -926,8 +988,8 @@ const handleQuickComplete = (visit: Visit) => {
                     :style="{ backgroundColor: getEventStyle(event).backgroundColor }"
                   ></div>
                   <div class="min-w-0">
-                    <p class="font-bold text-sm text-white truncate">{{ event.title }}</p>
-                    <p class="text-xs text-gray-400 truncate">
+                    <p class="font-bold text-sm text-[var(--shell-text)] truncate">{{ event.title }}</p>
+                    <p class="text-xs text-[var(--shell-muted)] truncate">
                       {{ event.extendedProps?.tipo_visita || 'Evento Externo' }}
                     </p>
                   </div>
@@ -939,13 +1001,13 @@ const handleQuickComplete = (visit: Visit) => {
       </div>
 
       <!-- Columna Derecha: Panel de Detalles (Oculto en móvil, se muestra en Modal) -->
-      <div class="hidden lg:flex lg:col-span-1 flex-col gap-6 overflow-hidden">
+      <div class="hidden min-w-0 flex-col gap-4 lg:flex">
         <!-- Panel Detalles Día -->
         <div
-          class="bg-[#151515] rounded-xl shadow-lg border border-white/10 flex flex-col flex-grow min-h-0 overflow-hidden"
+          class="bg-[var(--shell-surface)] rounded-xl shadow-lg border border-[var(--shell-border)] flex flex-col flex-grow min-h-0 overflow-hidden"
         >
-          <div class="p-4 border-b border-white/10 bg-[#0a0a0a]/30">
-            <h3 class="font-bold text-lg text-white">
+          <div class="p-4 border-b border-[var(--shell-border)] bg-[var(--shell-input)]">
+            <h3 class="font-bold text-lg text-[var(--shell-text)]">
               {{
                 selectedDate?.toLocaleDateString('es-ES', {
                   weekday: 'long',
@@ -964,7 +1026,7 @@ const handleQuickComplete = (visit: Visit) => {
                 :class="
                   dayEventsStatusFilter === status
                     ? 'bg-[#d60000] border-[#d60000] text-white'
-                    : 'border-gray-600 text-gray-400 hover:border-gray-400'
+                    : 'border-gray-600 text-[var(--shell-muted)] hover:border-gray-400'
                 "
               >
                 {{ status }}
@@ -978,7 +1040,7 @@ const handleQuickComplete = (visit: Visit) => {
           <div class="flex-grow overflow-y-auto custom-scrollbar p-3 space-y-2">
             <div
               v-if="!filteredSelectedDateEvents.length"
-              class="text-center py-10 text-gray-500 text-sm"
+              class="text-center py-10 text-[var(--shell-muted)] text-sm"
             >
               No hay visitas para mostrar.
             </div>
@@ -986,7 +1048,7 @@ const handleQuickComplete = (visit: Visit) => {
               v-for="event in filteredSelectedDateEvents"
               :key="event.id"
               @click="openEditModal(event)"
-              class="bg-white/5 p-3 rounded-lg border border-white/10 hover:border-white/20 transition-all cursor-pointer flex gap-3 group"
+              class="bg-[var(--shell-input)] p-3 rounded-lg border border-[var(--shell-border)] hover:border-[var(--shell-border)] transition-all cursor-pointer flex gap-3 group"
             >
               <div class="pt-1">
                 <input
@@ -995,16 +1057,16 @@ const handleQuickComplete = (visit: Visit) => {
                   :value="event.id"
                   v-model="selectedVisitIds"
                   @click.stop
-                  class="rounded border-white/10 bg-[#202020] text-[#d60000] focus:ring-[#d60000] cursor-pointer"
+                  class="rounded border-[var(--shell-border)] bg-[var(--shell-input)] text-[#d60000] focus:ring-[#d60000] cursor-pointer"
                 />
               </div>
               <div class="flex-grow min-w-0">
                 <p
-                  class="font-bold text-sm text-white group-hover:text-[#d60000] transition-colors truncate"
+                  class="font-bold text-sm text-[var(--shell-text)] group-hover:text-[#d60000] transition-colors truncate"
                 >
                   {{ event.title }}
                 </p>
-                <p class="text-xs text-gray-400">
+                <p class="text-xs text-[var(--shell-muted)]">
                   {{ event.extendedProps?.tipo_visita }} - {{ event.extendedProps?.ubicacion }}
                 </p>
 
@@ -1024,11 +1086,11 @@ const handleQuickComplete = (visit: Visit) => {
                   <span
                     class="text-[10px] px-2 py-0.5 rounded-full font-bold"
                     :class="{
-                      'bg-blue-500/20 text-blue-300':
+                      'bg-blue-500/20 planning-status-blue':
                         event.extendedProps.estado_visita === 'Programada',
-                      'bg-green-500/20 text-green-300':
+                      'bg-green-500/20 planning-status-green':
                         event.extendedProps.estado_visita === 'Realizada',
-                      'bg-red-500/20 text-red-300':
+                      'bg-red-500/20 planning-status-red':
                         event.extendedProps.estado_visita === 'Cancelada',
                     }"
                   >
@@ -1041,7 +1103,7 @@ const handleQuickComplete = (visit: Visit) => {
                   event.source === 'internal' && event.extendedProps?.estado_visita === 'Programada'
                 "
                 @click.stop="handleQuickComplete(event.extendedProps)"
-                class="text-gray-500 hover:text-green-400 self-center p-2"
+                class="text-[var(--shell-muted)] hover:text-green-400 self-center p-2"
                 title="Completar"
               >
                 <i v-if="isCompleting === event.id" class="fas fa-spinner fa-spin"></i>
@@ -1053,7 +1115,7 @@ const handleQuickComplete = (visit: Visit) => {
 
         <!-- Panel Urgentes -->
         <div
-          class="bg-[#151515] rounded-xl shadow-lg border border-white/10 p-4 h-64 flex flex-col"
+          class="bg-[var(--shell-surface)] rounded-xl shadow-lg border border-[var(--shell-border)] p-4 h-64 flex flex-col"
         >
           <h3
             class="font-bold text-sm text-yellow-400 mb-3 uppercase tracking-wider flex items-center gap-2"
@@ -1061,16 +1123,16 @@ const handleQuickComplete = (visit: Visit) => {
             <i class="fas fa-exclamation-triangle"></i> Pendientes Urgentes
           </h3>
           <div class="flex-grow overflow-y-auto custom-scrollbar space-y-2">
-            <div v-if="!pendingVisits.length" class="text-center text-xs text-gray-500 italic py-4">
+            <div v-if="!pendingVisits.length" class="text-center text-xs text-[var(--shell-muted)] italic py-4">
               ¡Todo al día!
             </div>
             <div
               v-for="visit in pendingVisits"
               :key="visit.id"
               @click="openEditModal(visit)"
-              class="bg-white/5 p-2 rounded border-l-2 border-yellow-500 cursor-pointer hover:bg-white/10 transition-colors"
+              class="bg-[var(--shell-input)] p-2 rounded border-l-2 border-yellow-500 cursor-pointer hover:bg-white/10 transition-colors"
             >
-              <p class="font-bold text-xs text-white">{{ visit.nombre_cliente }}</p>
+              <p class="font-bold text-xs text-[var(--shell-text)]">{{ visit.nombre_cliente }}</p>
               <p class="text-[10px] text-yellow-200/70">{{ visit.tipo_visita }}</p>
             </div>
           </div>
@@ -1078,27 +1140,27 @@ const handleQuickComplete = (visit: Visit) => {
       </div>
 
       <!-- VISITAS URGENTES (Versión Móvil - Debajo del calendario) -->
-      <div class="lg:hidden bg-[#151515] rounded-xl p-4 border border-white/10">
+      <div class="lg:hidden bg-[var(--shell-surface)] rounded-xl p-4 border border-[var(--shell-border)]">
         <h3 class="font-bold text-sm text-yellow-400 mb-3 flex items-center gap-2">
           <i class="fas fa-exclamation-triangle"></i> Pendientes Urgentes
         </h3>
         <div class="flex gap-2 overflow-x-auto pb-2">
-          <div v-if="!pendingVisits.length" class="text-xs text-gray-500">No hay pendientes.</div>
+          <div v-if="!pendingVisits.length" class="text-xs text-[var(--shell-muted)]">No hay pendientes.</div>
           <div
             v-for="visit in pendingVisits"
             :key="visit.id"
             @click="openEditModal(visit)"
-            class="bg-white/5 p-2 rounded min-w-[140px] border-l-2 border-yellow-500 shrink-0"
+            class="bg-[var(--shell-input)] p-2 rounded min-w-[140px] border-l-2 border-yellow-500 shrink-0"
           >
-            <p class="font-bold text-xs text-white truncate">{{ visit.nombre_cliente }}</p>
-            <p class="text-[10px] text-gray-400">{{ visit.tipo_visita }}</p>
+            <p class="font-bold text-xs text-[var(--shell-text)] truncate">{{ visit.nombre_cliente }}</p>
+            <p class="text-[10px] text-[var(--shell-muted)]">{{ visit.tipo_visita }}</p>
           </div>
         </div>
       </div>
     </main>
 
     <!-- MODAL DETALLES DÍA (Solo Móvil) -->
-    <div v-if="showDayDetailsModal" class="fixed inset-0 z-[60] lg:hidden">
+    <div v-if="showDayDetailsModal" class="fixed inset-0 z-[60] lg:hidden" role="dialog" aria-modal="true" aria-label="Visitas del día" @keydown.esc.stop="showDayDetailsModal = false">
       <!-- Backdrop -->
       <div
         class="absolute inset-0 bg-black/80 backdrop-blur-sm"
@@ -1107,13 +1169,13 @@ const handleQuickComplete = (visit: Visit) => {
 
       <!-- Sheet -->
       <div
-        class="absolute bottom-0 left-0 right-0 bg-[#151515] rounded-t-2xl shadow-2xl max-h-[80vh] flex flex-col border-t border-white/10 animate-slide-up"
+        class="absolute bottom-0 left-0 right-0 bg-[var(--shell-surface)] rounded-t-2xl shadow-2xl max-h-[80vh] flex flex-col border-t border-[var(--shell-border)] animate-slide-up"
       >
         <div
-          class="p-4 border-b border-white/10 flex justify-between items-center sticky top-0 bg-[#151515] z-10 rounded-t-2xl"
+          class="p-4 border-b border-[var(--shell-border)] flex justify-between items-center sticky top-0 bg-[var(--shell-surface)] z-10 rounded-t-2xl"
         >
           <div>
-            <h3 class="font-bold text-lg text-white">
+            <h3 class="font-bold text-lg text-[var(--shell-text)]">
               {{
                 selectedDate?.toLocaleDateString('es-ES', {
                   weekday: 'short',
@@ -1122,18 +1184,18 @@ const handleQuickComplete = (visit: Visit) => {
                 })
               }}
             </h3>
-            <p class="text-xs text-gray-400">{{ filteredSelectedDateEvents.length }} eventos</p>
+            <p class="text-xs text-[var(--shell-muted)]">{{ filteredSelectedDateEvents.length }} eventos</p>
           </div>
           <button
             @click="showDayDetailsModal = false"
-            class="bg-white/5 p-2 rounded-full text-white"
+            class="bg-[var(--shell-input)] p-2 rounded-full text-[var(--shell-text)]"
           >
             <i class="fas fa-times"></i>
           </button>
         </div>
 
         <div class="flex-grow overflow-y-auto p-4 space-y-3 pb-8">
-          <div v-if="!filteredSelectedDateEvents.length" class="text-center py-8 text-gray-500">
+          <div v-if="!filteredSelectedDateEvents.length" class="text-center py-8 text-[var(--shell-muted)]">
             No hay visitas programadas.
 
             <button
@@ -1151,7 +1213,7 @@ const handleQuickComplete = (visit: Visit) => {
             v-for="event in filteredSelectedDateEvents"
             :key="event.id"
             @click="openEditModal(event)"
-            class="bg-white/5 p-3 rounded-lg border-l-4 shadow-sm active:scale-95 transition-transform"
+            class="bg-[var(--shell-input)] p-3 rounded-lg border-l-4 shadow-sm active:scale-95 transition-transform"
             :style="{
               borderColor:
                 event.source === 'google' ? '#f59e0b' : getEventStyle(event).backgroundColor,
@@ -1159,8 +1221,8 @@ const handleQuickComplete = (visit: Visit) => {
           >
             <div class="flex justify-between items-start">
               <div>
-                <h4 class="font-bold text-white text-sm">{{ event.title }}</h4>
-                <p class="text-xs text-gray-400 mt-1">{{ event.extendedProps?.tipo_visita }}</p>
+                <h4 class="font-bold text-[var(--shell-text)] text-sm">{{ event.title }}</h4>
+                <p class="text-xs text-[var(--shell-muted)] mt-1">{{ event.extendedProps?.tipo_visita }}</p>
               </div>
               <span
                 v-if="event.source === 'internal'"
@@ -1168,7 +1230,7 @@ const handleQuickComplete = (visit: Visit) => {
                 :class="
                   event.extendedProps.estado_visita === 'Realizada'
                     ? 'bg-green-900 text-green-400'
-                    : 'bg-gray-900 text-gray-400'
+                    : 'bg-gray-900 text-[var(--shell-muted)]'
                 "
               >
                 {{ event.extendedProps.estado_visita }}
@@ -1176,7 +1238,7 @@ const handleQuickComplete = (visit: Visit) => {
             </div>
 
             <div class="mt-3 flex items-center justify-between">
-              <div class="text-xs text-gray-400">
+              <div class="text-xs text-[var(--shell-muted)]">
                 <i class="far fa-clock mr-1"></i>
                 {{
                   new Date(event.start).toLocaleTimeString('es-CO', {
@@ -1201,6 +1263,20 @@ const handleQuickComplete = (visit: Visit) => {
       </div>
     </div>
 
+    <dialog ref="externalDialog" class="planning-panel external-dialog" aria-labelledby="external-title">
+      <header class="external-heading flex items-start justify-between gap-3 p-4">
+        <div><p class="text-xs text-[var(--shell-muted)]">Google Calendar</p><h2 id="external-title" class="text-lg font-bold">{{ externalEvent?.title }}</h2></div>
+        <button type="button" autofocus aria-label="Cerrar evento" class="rounded-lg border border-[var(--shell-border)] px-3 py-1" @click="externalDialog?.close()">✕</button>
+      </header>
+      <dl v-if="externalEvent" class="grid gap-3 p-4 text-sm sm:grid-cols-2">
+        <div><dt class="text-[var(--shell-muted)]">Inicio</dt><dd class="font-semibold">{{ externalEvent.start.toLocaleString('es-CO', { dateStyle: 'medium', timeStyle: 'short' }) }}</dd></div>
+        <div><dt class="text-[var(--shell-muted)]">Fin</dt><dd class="font-semibold">{{ externalEvent.end.toLocaleString('es-CO', { dateStyle: 'medium', timeStyle: 'short' }) }}</dd></div>
+      </dl>
+      <footer v-if="externalEvent?.link" class="flex justify-end px-4 pb-4">
+        <a :href="externalEvent.link" target="_blank" rel="noopener noreferrer" class="planning-primary">Abrir en Google Calendar</a>
+      </footer>
+    </dialog>
+
     <!-- Modales Globales -->
     <VisitFormModal
       :show="showCreateModal || showEditModal"
@@ -1215,10 +1291,10 @@ const handleQuickComplete = (visit: Visit) => {
     <!-- Tooltip (Solo Desktop) -->
     <div
       v-if="hoveredDay"
-      class="fixed z-[70] bg-[#151515] border border-white/10 rounded-lg shadow-2xl p-3 w-56 pointer-events-none text-left hidden lg:block"
+      class="fixed z-[70] bg-[var(--shell-surface)] border border-[var(--shell-border)] rounded-lg shadow-2xl p-3 w-56 pointer-events-none text-left hidden lg:block"
       :style="tooltipPosition"
     >
-      <h4 class="font-bold text-xs border-b border-white/10 pb-1 mb-2 text-[#d60000]">
+      <h4 class="font-bold text-xs border-b border-[var(--shell-border)] pb-1 mb-2 text-[#d60000]">
         {{ hoveredDay.date.toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric' }) }}
       </h4>
       <ul class="space-y-1">
@@ -1234,9 +1310,9 @@ const handleQuickComplete = (visit: Visit) => {
                 event.source === 'google' ? '#f59e0b' : getEventStyle(event).backgroundColor,
             }"
           ></div>
-          <span class="text-gray-300">{{ event.title }}</span>
+          <span class="text-[var(--shell-muted)]">{{ event.title }}</span>
         </li>
-        <li v-if="hoveredDay.events.length > 5" class="text-[10px] text-gray-500 italic pl-3">
+        <li v-if="hoveredDay.events.length > 5" class="text-[10px] text-[var(--shell-muted)] italic pl-3">
           y {{ hoveredDay.events.length - 5 }} más...
         </li>
       </ul>
@@ -1245,6 +1321,30 @@ const handleQuickComplete = (visit: Visit) => {
 </template>
 
 <style scoped>
+.external-dialog { width: min(32rem, calc(100vw - 2rem)); margin: auto; padding: 0; color: var(--shell-text); overflow: hidden; }
+.external-dialog::backdrop { background: #0009; }
+.external-heading { border-bottom: 1px solid var(--shell-border); background: linear-gradient(115deg, var(--planning-tint), var(--shell-surface) 72%); }
+
+.planning-page { color: var(--shell-text); --planning-accent: #b8000b; --planning-tint: #fff0f1; --planning-warning: #794300; }
+[data-theme='dark'] .planning-page { color-scheme: dark; --planning-accent: #ff858b; --planning-tint: #412328; --planning-warning: #ffcc7a; }
+.planning-panel { border: 1px solid var(--shell-border); border-radius: 0.9rem; background: var(--shell-surface); }
+.planning-icon, .day-count { color: var(--planning-accent); background: var(--planning-tint); }
+.planning-primary { display: inline-flex; min-height: 2.5rem; align-items: center; justify-content: center; padding: 0.45rem 0.8rem; border-radius: 0.55rem; background: #c7000c; color: #fff; font-size: 0.85rem; font-weight: 700; }
+.planning-primary:hover { background: #a9000a; }
+.calendar-panel { min-height: 32rem; }
+.month-event { color: #111; }
+[data-theme='dark'] .month-event { color: #fff; }
+.conflict-bar { color: var(--planning-warning); border-bottom: 1px solid var(--shell-border); background: var(--shell-input); }
+.conflict-label { color: var(--planning-warning); }
+.day-event:hover { background: var(--shell-input); }
+.planning-status-blue { color: #205084; }
+.planning-status-green { color: #086534; }
+.planning-status-red { color: #ac1221; }
+[data-theme='dark'] .planning-status-blue { color: #b0d0ff; }
+[data-theme='dark'] .planning-status-green { color: #a4e9b9; }
+[data-theme='dark'] .planning-status-red { color: #ffb0b4; }
+@media (prefers-reduced-motion: reduce) { .animate-slide-up { animation: none; } }
+
 @keyframes slide-up {
   from {
     transform: translateY(100%);
@@ -1260,12 +1360,12 @@ const handleQuickComplete = (visit: Visit) => {
 }
 
 .input-field-dark {
-  background-color: #202020;
+  background-color: var(--shell-input);
   /* gray-800 -> #202020 */
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  /* gray-700 -> border-white/10 */
+  border: 1px solid var(--shell-border);
+  /* gray-700 -> border-[var(--shell-border)] */
   border-radius: 0.75rem;
-  color: #f3f4f6;
+  color: var(--shell-text);
   padding: 0.625rem 0.875rem;
   transition: all 0.2s ease-in-out;
   font-size: 0.875rem;
@@ -1276,7 +1376,7 @@ const handleQuickComplete = (visit: Visit) => {
   border-color: #d60000;
   /* indigo-500 -> brand-red */
   box-shadow: 0 0 0 4px rgba(214, 0, 0, 0.1);
-  background-color: #111827;
+  background-color: var(--shell-input);
   /* gray-900 */
 }
 
@@ -1289,7 +1389,7 @@ const handleQuickComplete = (visit: Visit) => {
 }
 
 .custom-scrollbar::-webkit-scrollbar-thumb {
-  background-color: #4b5563;
+  background-color: var(--shell-scroll-thumb);
   border-radius: 10px;
 }
 

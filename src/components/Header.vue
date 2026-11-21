@@ -153,19 +153,18 @@ const onBlur = () => {
         {{ notificationStore.generalNotificationsCount }}
       </span>
     </RouterLink>
-    <div role="group" aria-label="Tema de SisFumi" class="flex shrink-0 items-center gap-0.5 border-l border-[var(--shell-border)] pl-2 sm:pl-3">
-      <button type="button" aria-label="Tema oscuro" title="Tema oscuro" :aria-pressed="darkTheme"
-        class="grid size-8 place-items-center rounded-xl border border-transparent transition-colors sm:size-10"
-        :class="darkTheme ? 'border-white/20 bg-[#111111] text-white' : 'bg-[var(--shell-input)] hover:bg-neutral-200'"
-        @click="$emit('set-theme', true)">
-        <i class="fas fa-moon" aria-hidden="true"></i>
-      </button>
-      <button type="button" aria-label="Tema claro" title="Tema claro" :aria-pressed="!darkTheme"
-        class="grid size-8 place-items-center rounded-xl border border-transparent transition-colors sm:size-10"
-        :class="darkTheme ? 'hover:border-white/20' : 'border-neutral-200 bg-white text-[#111111]'"
-        @click="$emit('set-theme', false)">
-        <i class="fas fa-sun" aria-hidden="true"></i>
-      </button>
+    <div class="shrink-0 border-l border-[var(--shell-border)] pl-2 sm:pl-3">
+      <div role="group" aria-label="Tema de SisFumi" class="theme-picker" :class="{ 'is-dark': darkTheme }">
+        <span class="theme-indicator" aria-hidden="true"></span>
+        <button type="button" class="theme-option theme-night"
+          aria-label="Tema oscuro" title="Tema oscuro" :aria-pressed="darkTheme" @click="$emit('set-theme', true)">
+          <i class="fas fa-moon" aria-hidden="true"></i>
+        </button>
+        <button type="button" class="theme-option theme-day"
+          aria-label="Tema claro" title="Tema claro" :aria-pressed="!darkTheme" @click="$emit('set-theme', false)">
+          <i class="fas fa-sun" aria-hidden="true"></i>
+        </button>
+      </div>
     </div>
     <time v-if="showClock" :datetime="now.toISOString()" class="hidden shrink-0 border-l border-[var(--shell-border)] pl-4 text-xs leading-5 sm:block">
       <span class="block font-semibold">{{ dateFormat.format(now) }}</span>
@@ -175,6 +174,50 @@ const onBlur = () => {
 </template>
 
 <style scoped>
+@media (prefers-reduced-motion: no-preference) {
+  .top-navigation { transition: background-color 240ms, border-color 240ms, color 240ms; }
+}
+
+.theme-picker {
+  position: relative;
+  display: flex;
+  border-radius: 0.7rem;
+  background: #fafafa;
+  box-shadow: 0 1px 3px #0002;
+}
+
+.theme-option {
+  position: relative;
+  display: grid;
+  width: 2.4rem;
+  height: 2rem;
+  place-items: center;
+  border-radius: inherit;
+  font-size: 0.9rem;
+  transition: background-color 150ms, color 150ms;
+}
+
+.theme-indicator {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 50%;
+  border-radius: inherit;
+  background: #fff;
+  box-shadow: 0 1px 4px #0003;
+  transform: translateX(100%);
+  transition: transform 240ms cubic-bezier(.22,.8,.25,1), background-color 240ms;
+}
+.theme-picker.is-dark .theme-indicator { transform: translateX(0); background: #181818; }
+.theme-option { color: #67676d; }
+.theme-option:hover { color: #b8000b; }
+.theme-day[aria-pressed='true'] { color: #111; }
+.theme-night[aria-pressed='true'] { color: #fff; }
+@media (prefers-reduced-motion: reduce) {
+  .theme-indicator, .theme-option { transition: none; }
+}
+.theme-option:focus-visible { outline: 2px solid #e50914; outline-offset: 2px; }
+
+
 @media (min-width: 1024px) {
   .top-navigation::before {
     position: absolute;

@@ -290,6 +290,17 @@ const toggleGroup = (name: string) => {
 </template>
 
 <style scoped>
+@media (prefers-reduced-motion: no-preference) {
+  .app-content {
+    transition: background-color 240ms, color 240ms;
+  }
+
+  .app-content :deep(.panel),
+  .app-content :deep(.clients-panel) {
+    transition: background-color 240ms, border-color 240ms, color 240ms;
+  }
+}
+
 .brand-sidebar {
   background:
     linear-gradient(155deg, #111 0%, #1b1b1b 58%, #111 100%);
