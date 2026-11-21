@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { httpsCallable } from 'firebase/functions'
 import { functions } from '@/firebase/config'
+import { useAuthStore } from '@/stores/auth'
 import { useSettingsStore } from '@/stores/settings'
 import { downloadReport, type ReportCell as Cell } from '@/utils/reportExports'
 
@@ -31,6 +32,7 @@ const tabs = [
 ] as const
 type Tab = (typeof tabs)[number]['id']
 const settings = useSettingsStore()
+const auth = useAuthStore()
 const year = ref(Number(new Intl.DateTimeFormat('en', { year: 'numeric', timeZone: 'America/Bogota' }).format(new Date())))
 const zone = ref('Todos')
 const years = Array.from({ length: 5 }, (_, index) => year.value - index)
@@ -140,14 +142,14 @@ function reportTables() {
 }
 
 async function exportReport(format: 'pdf' | 'xlsx') {
-  if (!generatedFor.value || exporting.value) return
+  if (!generatedFor.value || exporting.value || !auth.canAccess('reportes', 'export')) return
   const { year, zone } = generatedFor.value
   const tables = reportTables()
   const fileName = 'SisFumi-Reportes-' + year
   exporting.value = true
   exportError.value = ''
   try {
-    await downloadReport({ year, zone: zoneLabel(zone), filename: fileName, tables, generatedAt: new Date() }, format)
+    await downloadReport({ year, zone: zoneLabel(zone), filename: fileName, tables, generatedAt: new Date(), company: settings.workspacePreferences.company }, format)
   } catch (err) {
     exportError.value = err instanceof Error ? err.message : 'No se pudo exportar el reporte.'
   } finally {
@@ -163,7 +165,7 @@ async function exportReport(format: 'pdf' | 'xlsx') {
         <span class="report-icon grid size-12 place-items-center rounded-xl text-xl"><i class="fas fa-chart-column" aria-hidden="true"></i></span>
         <div><h1 class="text-2xl font-extrabold tracking-tight sm:text-3xl">Reportes</h1><p class="muted mt-1 text-sm">Consulta la operación por año y zona.</p></div>
       </div>
-      <div v-if="report" class="flex flex-wrap gap-2">
+      <div v-if="report && auth.canAccess('reportes', 'export')" class="flex flex-wrap gap-2">
         <button type="button" class="report-button" :disabled="loading || exporting" @click="exportReport('pdf')"><i class="fas fa-file-pdf" aria-hidden="true"></i> Descargar PDF</button>
         <button type="button" class="report-button" :disabled="loading || exporting" @click="exportReport('xlsx')"><i class="fas fa-file-excel" aria-hidden="true"></i> Descargar Excel</button>
       </div>

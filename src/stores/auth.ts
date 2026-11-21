@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { defineStore } from 'pinia'
 import {
   signInWithEmailAndPassword,
@@ -9,7 +9,8 @@ import {
   type User,
 } from 'firebase/auth'
 import { httpsCallable } from 'firebase/functions'
-import { auth, functions } from '@/firebase/config'
+import { doc, onSnapshot } from 'firebase/firestore'
+import { auth, db, functions } from '@/firebase/config'
 import router from '@/router'
 
 // Declaración para el SDK de Google Identity Services
@@ -22,6 +23,21 @@ export const useAuthStore = defineStore('auth', () => {
   const authReady = ref(false)
   const userRole = ref<string | null>(null)
   const userZone = ref<string | null>(null)
+
+  const restrictions = ref<Record<string, Record<string, boolean>>>({})
+  watch(() => user.value?.uid, (uid, _previous, onCleanup) => {
+    restrictions.value = {}
+    if (!uid) return
+    const unsubscribe = onSnapshot(doc(db, 'user_access', uid), (snapshot) => {
+      restrictions.value = snapshot.data() || {}
+    }, () => {})
+    onCleanup(unsubscribe)
+  })
+
+  function canAccess(module: string, action = 'view') {
+    const limits = restrictions.value[module]
+    return limits?.view !== true && limits?.[action] !== true
+  }
 
   // --- Getters ---
   const isLoggedIn = computed(() => user.value !== null)
@@ -257,6 +273,7 @@ export const useAuthStore = defineStore('auth', () => {
     isLoggedIn,
     userRole,
     userZone,
+    canAccess,
     login,
     logout,
     init,

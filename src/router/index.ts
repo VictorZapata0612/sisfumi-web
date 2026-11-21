@@ -169,7 +169,7 @@ router.beforeEach(async (to, from, next) => {
   else if (to.name === 'login' && authStore.isLoggedIn) {
     next({ name: 'dashboard' })
   }
-  else if (to.meta.hiddenModule) {
+  else if (to.meta.hiddenModule || (typeof to.name === 'string' && !authStore.canAccess(to.name))) {
     next({ name: 'dashboard' })
   }
   // 3. Verificación de roles permitidos para la ruta

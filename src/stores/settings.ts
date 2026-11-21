@@ -21,7 +21,20 @@ export interface CalendarIntegration {
   googleEmail: string
   googleUserName: string
   zona: string | null
+  connected?: boolean
+  needsReconnect?: boolean
+  lastSyncAt?: string | null
 }
+export interface WorkspacePreferences {
+  company: { name: string; nit: string; email: string; phone: string; logo: string }
+  operations: { durationMinutes: number; reminderHours: number; opensAt: string; closesAt: string }
+}
+
+const defaultPreferences: WorkspacePreferences = {
+  company: { name: 'Control Total IPH', nit: '', email: '', phone: '', logo: '' },
+  operations: { durationMinutes: 60, reminderHours: 24, opensAt: '08:00', closesAt: '17:00' },
+}
+
 export interface BusinessZone {
   name: string
 }
@@ -73,6 +86,32 @@ export const useSettingsStore = defineStore('settings', () => {
   const users = ref<SystemUser[]>([])
   const loadingUsers = ref(false)
   const ownIntegrationConnected = ref(false)
+  const ownCalendar = ref<{ connected: boolean; needsReconnect: boolean; lastSyncAt: string | null }>()
+  const workspacePreferences = ref<WorkspacePreferences>(structuredClone(defaultPreferences))
+
+  async function fetchWorkspacePreferences() {
+    const snapshot = await getDoc(doc(db, 'settings', 'workspacePreferences'))
+    const data = snapshot.data() as Partial<WorkspacePreferences> | undefined
+    workspacePreferences.value = {
+      company: { ...defaultPreferences.company, ...data?.company },
+      operations: { ...defaultPreferences.operations, ...data?.operations },
+    }
+  }
+
+  async function saveWorkspacePreferences(value: WorkspacePreferences) {
+    await httpsCallable(functions, 'saveWorkspacePreferences')(value)
+    await fetchWorkspacePreferences()
+  }
+
+  async function getUserAccess(uid: string) {
+    const snapshot = await getDoc(doc(db, 'user_access', uid))
+    return (snapshot.data() || {}) as Record<string, Record<string, boolean>>
+  }
+
+  async function saveUserAccess(uid: string, restrictions: Record<string, Record<string, boolean>>) {
+    await httpsCallable(functions, 'saveUserAccess')({ uid, restrictions })
+  }
+
 
   // --- Actions ---
 
@@ -216,8 +255,9 @@ export const useSettingsStore = defineStore('settings', () => {
 
   async function fetchOwnIntegrationStatus(uid: string) {
     try {
-      const integrationSnapshot = await getDoc(doc(db, 'calendar_integrations', uid))
-      ownIntegrationConnected.value = integrationSnapshot.exists()
+      const result = await httpsCallable<{ uid: string }, NonNullable<typeof ownCalendar.value>>(functions, 'getOwnCalendarStatus')({ uid })
+      ownCalendar.value = result.data
+      ownIntegrationConnected.value = result.data.connected
     } catch (err: any) {
       console.error('Error checking own calendar integration:', err)
       ownIntegrationConnected.value = false
@@ -260,7 +300,7 @@ export const useSettingsStore = defineStore('settings', () => {
     fetchAuditLogs,
     undoRoleChange,
     fetchUsers,
-    fetchOwnIntegrationStatus,
+    fetchOwnIntegrationStatus, ownCalendar, workspacePreferences, fetchWorkspacePreferences, saveWorkspacePreferences, getUserAccess, saveUserAccess,
     updateUserConfiguration,
     updateUserStatus,
   }

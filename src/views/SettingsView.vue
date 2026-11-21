@@ -8,6 +8,7 @@ import {
   type CalendarIntegration,
   type AuditLog,
   type SystemUser,
+  type WorkspacePreferences,
 } from '@/stores/settings'
 import { useAuthStore } from '@/stores/auth'
 import { useDialog } from '@/composables/useDialog'
@@ -32,6 +33,8 @@ const { showToast } = useToast()
 const authStore = useAuthStore()
 const theme = useStorage('sisfumi-theme', 'light')
 const categories = [
+  { id: 'company', label: 'Empresa', icon: 'fa-id-card' },
+  { id: 'operations', label: 'Operación', icon: 'fa-calendar-check' },
   { id: 'business', label: 'Datos de negocio', icon: 'fa-building' },
   { id: 'users', label: 'Usuarios y acceso', icon: 'fa-users-cog', admin: true },
   { id: 'integrations', label: 'Integraciones', icon: 'fa-link' },
@@ -39,6 +42,103 @@ const categories = [
   { id: 'audit', label: 'Auditoría', icon: 'fa-clipboard-list', admin: true },
 ] as const
 const section = ref<(typeof categories)[number]['id']>('business')
+const preferences = ref<WorkspacePreferences>()
+const preferencesBusy = ref(false)
+const preferencesError = ref('')
+const accessUser = ref('')
+const accessDraft = ref<Record<string, Record<string, boolean>>>({})
+const accessLoaded = ref(false)
+const accessBusy = ref(false)
+const accessError = ref('')
+const canManageAccess = computed(() => authStore.userRole === 'Administrador')
+const accessActions = [
+  { id: 'view', label: 'Ver' }, { id: 'create', label: 'Crear' }, { id: 'edit', label: 'Editar' },
+  { id: 'delete', label: 'Eliminar' }, { id: 'export', label: 'Exportar' },
+]
+const accessModules = [
+  { id: 'clientes', label: 'Clientes', actions: ['view', 'create', 'edit', 'delete', 'export'] },
+  { id: 'servicios', label: 'Servicios', actions: ['view', 'create', 'edit', 'delete'] },
+  { id: 'planeacion', label: 'Planeación', actions: ['view', 'create', 'edit', 'delete'] },
+  { id: 'fumigadores', label: 'Técnicos', actions: ['view', 'create', 'edit', 'delete'] },
+  { id: 'reportes', label: 'Reportes', actions: ['view', 'export'] },
+]
+const calendarDate = (value?: string | null) => value
+  ? new Date(value).toLocaleString('es-CO', { timeZone: 'America/Bogota', dateStyle: 'medium', timeStyle: 'short' })
+  : 'Sin registro'
+
+async function loadPreferences() {
+  try {
+    await settingsStore.fetchWorkspacePreferences()
+    preferences.value = JSON.parse(JSON.stringify(settingsStore.workspacePreferences))
+  } catch {
+    preferencesError.value = 'No se pudieron cargar las preferencias.'
+  }
+}
+
+async function savePreferences() {
+  if (!preferences.value || preferencesBusy.value) return
+  preferencesBusy.value = true
+  preferencesError.value = ''
+  try {
+    await settingsStore.saveWorkspacePreferences(preferences.value)
+    preferences.value = JSON.parse(JSON.stringify(settingsStore.workspacePreferences))
+    showToast({ title: 'Preferencias guardadas', message: 'Se actualizaron los datos del sistema.', type: 'success' })
+  } catch (error) {
+    preferencesError.value = error instanceof Error ? error.message : 'No se pudieron guardar las preferencias.'
+  } finally {
+    preferencesBusy.value = false
+  }
+}
+
+async function selectLogo(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file || !preferences.value) return
+  preferencesError.value = ''
+  if (file.type !== 'image/png' || file.size > 110000) {
+    preferencesError.value = 'Selecciona un PNG de hasta 110 kB.'
+    input.value = ''
+    return
+  }
+  const reader = new FileReader()
+  reader.onload = () => {
+    if (preferences.value && typeof reader.result === 'string') preferences.value.company.logo = reader.result
+  }
+  reader.onerror = () => { preferencesError.value = 'No se pudo leer el archivo.' }
+  reader.readAsDataURL(file)
+}
+
+async function loadAccess() {
+  const uid = accessUser.value
+  accessDraft.value = {}
+  accessLoaded.value = false
+  accessError.value = ''
+  if (!uid) return
+  accessBusy.value = true
+  try {
+    const existing = await settingsStore.getUserAccess(uid)
+    accessDraft.value = Object.fromEntries(accessModules.map(({ id }) => [id, { ...existing[id] }]))
+    accessLoaded.value = true
+  } catch {
+    accessError.value = 'No se pudieron cargar los permisos del usuario.'
+  } finally {
+    accessBusy.value = false
+  }
+}
+
+async function saveAccess() {
+  if (!accessLoaded.value || !accessUser.value || accessBusy.value) return
+  accessBusy.value = true
+  accessError.value = ''
+  try {
+    await settingsStore.saveUserAccess(accessUser.value, accessDraft.value)
+    showToast({ title: 'Acceso actualizado', message: 'Se guardaron las restricciones del usuario.', type: 'success' })
+  } catch (error) {
+    accessError.value = error instanceof Error ? error.message : 'No se pudieron guardar los permisos.'
+  } finally {
+    accessBusy.value = false
+  }
+}
 
 
 ChartJS.register(Title, Tooltip, Legend, BarElement, CategoryScale, LinearScale)
@@ -63,6 +163,7 @@ const canEditBusinessData = computed(() =>
 )
 
 onMounted(async () => {
+  void loadPreferences()
   // Asegurar que los datos de negocio se carguen primero.
   await settingsStore.fetchBusinessData()
 
@@ -470,6 +571,42 @@ const exportLogsToExcel = () => {
     </nav>
 
     <div class="space-y-4">
+      <section v-show="section === 'company' || section === 'operations'" class="settings-card p-5">
+        <p v-if="preferencesError" role="alert" class="mb-3 text-sm text-[var(--settings-accent)]">{{ preferencesError }}</p>
+        <p v-if="!preferences && !preferencesError" class="settings-muted text-sm" role="status">Cargando preferencias…</p>
+        <form v-if="preferences" @submit.prevent="savePreferences">
+          <fieldset :disabled="preferencesBusy || !isAdminOrJefe" class="grid gap-3">
+            <template v-if="section === 'company'">
+              <h2 class="text-lg font-bold">Perfil de empresa</h2>
+              <div class="grid gap-3 sm:grid-cols-2">
+                <label class="grid gap-1 text-sm">Razón social<input v-model.trim="preferences.company.name" class="input-field-dark p-2" maxlength="120" required /></label>
+                <label class="grid gap-1 text-sm">NIT<input v-model.trim="preferences.company.nit" class="input-field-dark p-2" maxlength="40" /></label>
+                <label class="grid gap-1 text-sm">Correo corporativo<input v-model.trim="preferences.company.email" type="email" class="input-field-dark p-2" maxlength="120" /></label>
+                <label class="grid gap-1 text-sm">Teléfono<input v-model.trim="preferences.company.phone" type="tel" class="input-field-dark p-2" maxlength="40" /></label>
+              </div>
+              <div class="flex flex-wrap items-center gap-3">
+                <img :src="preferences.company.logo || '/logo.png'" alt="Logo de la empresa" class="h-16 w-24 rounded-lg bg-[#111] object-contain" />
+                <label class="grid gap-1 text-sm">Logo PNG · máximo 110 kB<input type="file" accept="image/png" class="max-w-full text-xs" @change="selectLogo" /></label>
+                <button v-if="preferences.company.logo" type="button" class="btn btn-secondary" @click="preferences.company.logo = ''">Restaurar logo original</button>
+              </div>
+            </template>
+            <template v-else>
+              <h2 class="text-lg font-bold">Preferencias operativas</h2>
+              <div class="grid gap-3 sm:grid-cols-2">
+                <label class="grid gap-1 text-sm">Duración predeterminada · minutos<input v-model.number="preferences.operations.durationMinutes" type="number" min="1" max="1440" class="input-field-dark p-2" required /></label>
+                <label class="grid gap-1 text-sm">Anticipación del recordatorio · horas<input v-model.number="preferences.operations.reminderHours" type="number" min="1" max="168" class="input-field-dark p-2" required /></label>
+                <label class="grid gap-1 text-sm">Inicio de atención<input v-model="preferences.operations.opensAt" type="time" class="input-field-dark p-2" required /></label>
+                <label class="grid gap-1 text-sm">Fin de atención<input v-model="preferences.operations.closesAt" type="time" class="input-field-dark p-2" required /></label>
+              </div>
+              <p class="settings-muted text-sm">Las visitas nuevas usan el inicio de atención y la duración predeterminada. El horario se puede ajustar en cada visita.</p>
+            </template>
+            <button v-if="isAdminOrJefe" type="submit" class="btn btn-primary justify-self-start">
+              {{ preferencesBusy ? 'Guardando…' : 'Guardar preferencias' }}
+            </button>
+          </fieldset>
+        </form>
+      </section>
+
       <!-- Datos de Negocio -->
       <section v-show="section === 'business'">
         <div class="flex justify-between items-center mb-4">
@@ -662,6 +799,35 @@ const exportLogsToExcel = () => {
           <div class="h-px bg-[var(--shell-input)] flex-grow"></div>
         </div>
 
+        <form v-if="canManageAccess" class="settings-card mb-4 space-y-3 p-4" @submit.prevent="saveAccess">
+          <h2 class="font-bold">Permisos por usuario</h2>
+          <p class="settings-muted text-sm">Marca las acciones que deseas restringir. El rol y la zona siguen determinando el acceso base.</p>
+          <label class="grid max-w-md gap-1 text-sm">Usuario
+            <select v-model="accessUser" :disabled="accessBusy" class="input-field-dark p-2" @change="loadAccess">
+              <option value="">Selecciona un usuario</option>
+              <option v-for="user in settingsStore.users.filter(item => item.role !== 'Administrador' && item.uid !== authStore.user?.uid)"
+                :key="user.uid" :value="user.uid">{{ user.displayName || user.email }} · {{ user.zona || 'Sin zona' }}</option>
+            </select>
+          </label>
+          <p v-if="accessError" class="text-sm text-[var(--settings-accent)]" role="alert">{{ accessError }}</p>
+          <div v-if="accessLoaded" class="overflow-x-auto">
+            <table class="min-w-full text-left text-sm">
+              <thead><tr><th scope="col" class="p-2">Módulo</th><th v-for="action in accessActions" :key="action.id" scope="col" class="p-2">{{ action.label }}</th></tr></thead>
+              <tbody>
+                <tr v-for="item in accessModules" :key="item.id" class="border-t border-[var(--shell-border)]">
+                  <th scope="row" class="p-2">{{ item.label }}</th>
+                  <td v-for="action in accessActions" :key="action.id" class="p-2">
+                    <input v-if="item.actions.includes(action.id) && accessDraft[item.id]" v-model="accessDraft[item.id]![action.id]" type="checkbox"
+                      :aria-label="'Restringir ' + action.label.toLowerCase() + ' en ' + item.label" :disabled="accessBusy" class="accent-[#b8000b]" />
+                    <span v-else class="settings-muted">—</span>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+            <button type="submit" class="btn btn-primary mt-3" :disabled="accessBusy">Guardar restricciones</button>
+          </div>
+        </form>
+
         <div class="bg-[var(--shell-surface)] rounded-xl border border-[var(--shell-border)] shadow-lg overflow-hidden">
           <div class="overflow-x-auto">
             <table class="min-w-full divide-y divide-[var(--shell-border)]">
@@ -781,8 +947,9 @@ const exportLogsToExcel = () => {
             <div class="w-2.5 h-2.5 rounded-full flex-shrink-0"
               :class="myIntegrationConnected ? 'bg-green-500' : 'bg-red-500'"></div>
             <div>
+              <p class="settings-muted text-xs">Última sincronización: {{ calendarDate(settingsStore.ownCalendar?.lastSyncAt) }}</p>
               <p class="text-sm font-bold text-[var(--shell-text)]">
-                {{ myIntegrationConnected ? 'Cuenta conectada correctamente' : 'Cuenta no conectada' }}
+                {{ settingsStore.ownCalendar?.needsReconnect ? 'Requiere reconexión' : myIntegrationConnected ? 'Cuenta conectada' : 'Cuenta no conectada' }}
               </p>
               <p class="text-xs text-[var(--shell-muted)]">
                 {{ myIntegrationConnected
@@ -823,7 +990,7 @@ const exportLogsToExcel = () => {
                 </tr>
               </thead>
               <tbody class="divide-y divide-[var(--shell-border)] bg-[var(--shell-surface)]">
-                <tr v-if="!settingsStore.integrations.length"><td colspan="3" class="settings-muted px-6 py-4 text-sm">Sin cuentas vinculadas.</td></tr>
+                <tr v-if="!settingsStore.integrations.length"><td colspan="4" class="settings-muted px-6 py-4 text-sm">Sin cuentas vinculadas.</td></tr>
                 <tr v-for="integration in settingsStore.integrations" :key="integration.uid" class="hover:bg-[var(--shell-input)]">
                   <td class="px-6 py-4 whitespace-nowrap">
                     <div class="flex items-center gap-3">
@@ -835,6 +1002,7 @@ const exportLogsToExcel = () => {
                     </div>
                   </td>
                   <td class="px-6 py-4 whitespace-nowrap text-sm text-[var(--shell-muted)]">{{ integration.zona || '-' }}</td>
+                  <td class="px-6 py-4 text-xs"><strong>{{ integration.needsReconnect ? 'Requiere reconexión' : 'Conectada' }}</strong><p class="settings-muted">{{ calendarDate(integration.lastSyncAt) }}</p></td>
                   <td class="px-6 py-4 whitespace-nowrap text-center">
                     <button @click="handleDisconnect(integration)"
                       class="text-red-400 hover:text-red-300 text-xs font-bold uppercase tracking-wide border border-red-900/50 bg-red-900/20 px-3 py-1 rounded hover:bg-red-900/40 transition-colors">

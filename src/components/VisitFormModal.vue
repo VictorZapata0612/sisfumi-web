@@ -89,7 +89,7 @@ function initializeTimeRange() {
     return
   }
   const stored = Number(localVisit.value.duracion_minutos)
-  const duration = Number.isFinite(stored) && stored > 0 ? stored : 60
+  const duration = Number.isFinite(stored) && stored > 0 ? stored : settingsStore.workspacePreferences.operations.durationMinutes
   const end = formatColombiaDateTime(new Date(start + duration * 60000))
   visitEnd.value = end.date + 'T' + end.time
 }
@@ -100,7 +100,7 @@ function shiftVisitEnd() {
   const oldEnd = colombiaTimestamp(visitEnd.value)
   const duration = lastStart.value === null ? 0 : oldEnd - lastStart.value
   lastStart.value = start
-  const end = formatColombiaDateTime(new Date(start + (duration > 0 ? duration : 3600000)))
+  const end = formatColombiaDateTime(new Date(start + (duration > 0 ? duration : settingsStore.workspacePreferences.operations.durationMinutes * 60000)))
   visitEnd.value = end.date + 'T' + end.time
 }
 
@@ -268,6 +268,7 @@ const filteredClients = computed(() => {
 
 onMounted(() => {
   planningStore.fetchVisitTemplates()
+  void settingsStore.fetchWorkspacePreferences().catch(() => {})
 })
 
 onClickOutside(clientSearchContainer, () => {
@@ -356,7 +357,7 @@ watch(
           fecha_visita_date: props.selectedDate
             ? formatDateInput(props.selectedDate)
             : formatDateInput(new Date()),
-          fecha_visita_time: '08:00',
+          fecha_visita_time: settingsStore.workspacePreferences.operations.opensAt,
           estado_visita: 'Programada',
           fumigadores_asignados: [],
           isUrgent: false
@@ -712,6 +713,9 @@ const addChatNote = () => {
               <input id="visitEnd" v-model="visitEnd" type="datetime-local" class="input-field-dark mt-2 w-full" required />
               <p v-if="durationLabel" class="mt-1 text-xs text-[var(--shell-muted)]">Duración: {{ durationLabel }} · Hora de Colombia</p>
               <p v-else-if="visitEnd" class="mt-1 text-xs visit-active">El fin debe ser posterior al inicio.</p>
+              <p v-if="durationLabel && ((localVisit.fecha_visita_time || '') < settingsStore.workspacePreferences.operations.opensAt ||
+                visitEnd.slice(11) > settingsStore.workspacePreferences.operations.closesAt || visitEnd.slice(0, 10) !== localVisit.fecha_visita_date)"
+                class="mt-1 text-xs visit-active">El rango queda fuera del horario de atención configurado.</p>
             </div>
             <div>
               <label class="text-xs font-bold text-[var(--shell-muted)] uppercase tracking-wider mb-2 block">Estado de

@@ -3,10 +3,10 @@
 import { ref, onMounted } from 'vue'
 import { useAuthStore } from '@/stores/auth'
 import { updatePassword } from 'firebase/auth'
-import { doc, getDoc } from 'firebase/firestore'
+import { httpsCallable } from 'firebase/functions'
 import { useToast } from '@/composables/useToast'
 import { useDialog } from '@/composables/useDialog'
-import { db } from '@/firebase/config'
+import { functions } from '@/firebase/config'
 
 defineOptions({ name: 'UserProfileView' })
 
@@ -31,10 +31,9 @@ const checkConnection = async () => {
     const uid = authStore.user?.uid
     if (!uid) return
 
-    const integrationSnapshot = await getDoc(doc(db, 'calendar_integrations', uid))
-    const integrationData = integrationSnapshot.data()
-    isConnected.value = integrationSnapshot.exists()
-    googleEmail.value = integrationData?.googleEmail || null
+    const result = await httpsCallable<unknown, { connected: boolean; googleEmail?: string }>(functions, 'getOwnCalendarStatus')()
+    isConnected.value = result.data.connected
+    googleEmail.value = result.data.googleEmail || null
   } catch (error: unknown) {
     showToast({
       title: 'Error de Sincronización',

@@ -516,7 +516,7 @@ const exportClients = async () => {
   loading.value = true
   try {
     const getClients = httpsCallable(functions, 'getAllClients')
-    const result = await getClients()
+    const result = await getClients({ forExport: true })
     const clients = (result.data as any).clients || []
 
     if (clients.length === 0) {

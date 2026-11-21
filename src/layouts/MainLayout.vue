@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { ref, watch, onMounted, onUnmounted, defineAsyncComponent } from 'vue'
 import { useStorage } from '@vueuse/core'
-import { RouterView, RouterLink, useRoute } from 'vue-router'
+import { RouterView, RouterLink, useRoute, useRouter } from 'vue-router'
 
 import NotificationsModal from '@/components/NotificationsModal.vue'
 import AppHeader from '@/components/Header.vue'
 import AgentPanel from '@/components/AgentPanel.vue'
+import { useSettingsStore } from '@/stores/settings'
 import { useAuthStore } from '@/stores/auth'
 import { useNotificationStore } from '@/stores/notifications'
 import { ROLE_MATRIX } from '@/data/roleMatrix'
@@ -15,12 +16,17 @@ const ToastContainer = defineAsyncComponent(() => import('@/components/ToastCont
 const ConfirmDialog = defineAsyncComponent(() => import('@/components/ConfirmDialog.vue'))
 
 const authStore = useAuthStore()
+const settingsStore = useSettingsStore()
 const notificationStore = useNotificationStore()
 const route = useRoute()
+const router = useRouter()
 
 // Estado para la visibilidad en modo móvil
 const sidebarOpen = ref(false)
 const theme = useStorage('sisfumi-theme', 'light')
+watch(() => authStore.canAccess(String(route.name)), (allowed) => {
+  if (!allowed) void router.replace({ name: 'dashboard' })
+})
 watch(() => route.fullPath, () => { sidebarOpen.value = false })
 // Nuevo estado para el colapso parcial (solo iconos) en desktop
 const isCollapsed = ref(false)
@@ -45,6 +51,7 @@ const handleKeydown = (e: KeyboardEvent) => {
 }
 
 onMounted(() => {
+  void settingsStore.fetchWorkspacePreferences()
   notificationStore.listenForPriceRequests()
   notificationStore.listenForGeneralNotifications()
   window.addEventListener('online', updateOnlineStatus)
@@ -132,7 +139,7 @@ const toggleCollapse = () => {
         :class="{ 'lg:px-1 lg:pb-2 lg:pt-7': isCollapsed }">
         <div class="mx-auto mb-1 grid h-[4.5rem] w-24 place-items-center overflow-hidden"
           :class="{ 'lg:size-11': isCollapsed }">
-          <img src="/logo.png" alt="" class="size-full min-h-0 object-contain scale-[1.85]" />
+          <img :src="settingsStore.workspacePreferences.company.logo || '/logo.png'" alt="" class="size-full min-h-0 object-contain scale-[1.85]" />
         </div>
         <div :class="{ 'lg:sr-only': isCollapsed }">
           <p class="text-[2rem] font-extrabold leading-none tracking-tight">SisFumi</p>
@@ -151,7 +158,7 @@ const toggleCollapse = () => {
       <nav aria-label="Navegación principal" class="sidebar-nav flex min-h-0 flex-1 flex-col overflow-y-auto px-2.5 pb-3 pt-2">
         <ul class="shrink-0 space-y-0.5">
           <template v-for="link in navLinks" :key="link.name">
-            <li v-if="hasAccess(link.roles)">
+            <li v-if="hasAccess(link.roles) && authStore.canAccess(link.to.split('/').at(-1) || '')">
               <!-- Enlace simple -->
               <RouterLink :to="link.to" active-class="" exact-active-class="" :aria-label="link.name" @click="sidebarOpen = false"
                 class="nav-button flex items-center gap-3 rounded-lg px-3 text-sm text-neutral-200 transition-colors hover:bg-white/10"

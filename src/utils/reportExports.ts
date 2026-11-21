@@ -8,6 +8,7 @@ export interface ReportExport {
   tables: ReportTable[]
   generatedAt: Date
   logo?: string
+  company?: { name: string; nit: string; email: string; phone: string; logo: string }
 }
 
 const brand = { black: '111111', red: 'B8000B', dark: '252525', gray: '5F6068', line: 'E5E5E5', pale: 'F5F5F5', white: 'FFFFFF' }
@@ -88,7 +89,7 @@ export async function buildReportPdf(report: ReportExport) {
     doc.text('SisFumi', brandTextX, 15)
     doc.setFont('helvetica', 'normal')
     doc.setFontSize(9)
-    doc.text('Control de Plagas', brandTextX, 22)
+    doc.text(report.company?.name || 'Control de Plagas', brandTextX, 22, { maxWidth: 105 })
     doc.setFontSize(11)
     doc.text('Reporte anual', right, 15, { align: 'right' })
     doc.setFontSize(9)
@@ -99,7 +100,7 @@ export async function buildReportPdf(report: ReportExport) {
     doc.setDrawColor('#' + brand.line)
     doc.line(left, height - 14, right, height - 14)
     doc.setFontSize(8)
-    doc.text('SisFumi  |  Reportes', left, height - 9)
+    doc.text('SisFumi  |  ' + [report.company?.nit ? 'NIT ' + report.company.nit : '', report.company?.email, report.company?.phone].filter(Boolean).join('  |  ').slice(0, 95), left, height - 9, { maxWidth: 135 })
     doc.text('Página ' + page + ' de ' + pageCount, right, height - 9, { align: 'right' })
   }
   return doc
@@ -153,6 +154,9 @@ export async function buildReportWorkbook(report: ReportExport) {
     sheet.getCell('A3').font = font(brand.gray, 10)
     sheet.getRow(3).height = 19
 
+    sheet.getCell('A4').value = [report.company?.name, report.company?.nit && 'NIT ' + report.company.nit, report.company?.email, report.company?.phone].filter(Boolean).join('  |  ')
+    sheet.getCell('A4').font = font(brand.gray, 10)
+    sheet.mergeCells(4, 1, 4, width)
     const header = sheet.getRow(5)
     header.values = table.columns
     header.height = 28
@@ -207,7 +211,7 @@ async function loadCompanyLogo(): Promise<string> {
 }
 
 export async function downloadReport(report: ReportExport, format: 'pdf' | 'xlsx') {
-  const brandedReport = { ...report, logo: await loadCompanyLogo() }
+  const brandedReport = { ...report, logo: report.company?.logo || await loadCompanyLogo() }
   if (format === 'pdf') {
     const pdf = await buildReportPdf(brandedReport)
     pdf.save(report.filename + '.pdf')

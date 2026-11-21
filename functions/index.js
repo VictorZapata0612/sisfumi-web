@@ -486,7 +486,103 @@ function getStorageBucket() {
  * Obtiene una lista paginada de clientes con filtros.
  * Esta función es segura y se basa en los permisos del usuario que la llama.
  */
-exports.getClientsPage = onCall({ cors: true }, async (request) => {
+const ACCESS_MODULES = {
+  clientes: ['view', 'create', 'edit', 'delete', 'export'],
+  servicios: ['view', 'create', 'edit', 'delete'],
+  planeacion: ['view', 'create', 'edit', 'delete'],
+  fumigadores: ['view', 'create', 'edit', 'delete'],
+  reportes: ['view', 'export'],
+}
+
+async function getRestrictions(request) {
+  assertAuth(request)
+  return (await db.collection('user_access').doc(request.auth.uid).get()).data() || {}
+}
+
+function ensureModuleAccess(restrictions, module, action) {
+  if (restrictions[module]?.view === true || restrictions[module]?.[action] === true) {
+    throw new HttpsError('permission-denied', 'Esta acción está restringida para tu usuario.')
+  }
+}
+
+function protectedCall(module, action, options, handler) {
+  return onCall(options, async (request) => {
+    const restrictions = await getRestrictions(request)
+    ensureModuleAccess(restrictions, module, action)
+    return handler(request, restrictions)
+  })
+}
+
+exports.saveUserAccess = onCall({ cors: true }, async (request) => {
+  assertRole(request, ['Administrador'])
+  const { uid, restrictions } = request.data || {}
+  if (typeof uid !== 'string' || !uid || uid.includes('/') || uid === request.auth.uid ||
+    !restrictions || typeof restrictions !== 'object' || Array.isArray(restrictions)) {
+    throw new HttpsError('invalid-argument', 'Selecciona otro usuario y envía permisos válidos.')
+  }
+  const target = await admin.auth().getUser(uid)
+  if (target.customClaims?.role === 'Administrador') {
+    throw new HttpsError('permission-denied', 'El acceso de otro administrador se gestiona mediante su rol.')
+  }
+  const clean = {}
+  for (const [module, actions] of Object.entries(ACCESS_MODULES)) {
+    for (const action of actions) {
+      if (restrictions[module]?.[action] === true) {
+        clean[module] ||= {}
+        clean[module][action] = true
+      }
+    }
+  }
+  const ref = db.collection('user_access').doc(uid)
+  await db.runTransaction(async (transaction) => {
+    transaction.set(ref, clean)
+    transaction.set(db.collection('audit_logs').doc(), {
+      adminEmail: request.auth.token.email || '',
+      action: 'UPDATE_USER_ACCESS',
+      details: 'Actualización de restricciones para ' + (target.email || uid) + ': ' + JSON.stringify(clean),
+      timestamp: admin.firestore.FieldValue.serverTimestamp(),
+    })
+  })
+  return { success: true }
+})
+
+function calendarStatus(data) {
+  return {
+    connected: Boolean(data && !data.needsReconnect),
+    googleEmail: data?.googleEmail || '',
+    needsReconnect: data?.needsReconnect === true,
+    lastSyncAt: data?.lastSyncAt?.toDate?.().toISOString() || null,
+  }
+}
+
+exports.getOwnCalendarStatus = onCall({ cors: true }, async (request) => {
+  assertAuth(request)
+  const snapshot = await db.collection('calendar_integrations').doc(request.auth.uid).get()
+  return calendarStatus(snapshot.data())
+})
+
+exports.saveWorkspacePreferences = onCall({ cors: true }, async (request) => {
+  assertRole(request, ['Administrador', 'Jefe'])
+  const { company, operations } = request.data || {}
+  const text = (value, max) => typeof value === 'string' ? value.trim().slice(0, max) : ''
+  const logo = company?.logo || ''
+  const time = /^([01]\d|2[0-3]):[0-5]\d$/
+  if (!company?.name?.trim?.() || typeof logo !== 'string' || logo.length > 150000 ||
+      (logo && !/^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/.test(logo)) ||
+      !Number.isInteger(operations?.durationMinutes) || operations.durationMinutes < 1 || operations.durationMinutes > 1440 ||
+      !Number.isInteger(operations?.reminderHours) || operations.reminderHours < 1 || operations.reminderHours > 168 ||
+      !time.test(operations?.opensAt || '') || !time.test(operations?.closesAt || '') || operations.opensAt >= operations.closesAt) {
+    throw new HttpsError('invalid-argument', 'Revisa los datos de empresa, el logo y los horarios.')
+  }
+  await db.collection('settings').doc('workspacePreferences').set({
+    company: { name: text(company.name, 120), nit: text(company.nit, 40), email: text(company.email, 120), phone: text(company.phone, 40), logo },
+    operations: { durationMinutes: operations.durationMinutes, reminderHours: operations.reminderHours, opensAt: operations.opensAt, closesAt: operations.closesAt },
+  })
+  await createAuditLog('UPDATE_WORKSPACE_PREFERENCES', 'Cambios en empresa o preferencias operativas.', request)
+  return { success: true }
+})
+
+exports.getClientsPage = protectedCall('clientes', 'view', { cors: true }, async (request) => {
   const { role: userRole, zona: userZone, isGlobal } = assertVisitManager(request)
 
   const {
@@ -593,9 +689,11 @@ exports.sendVisitReminders = onSchedule(
   async (event) => {
     const db = admin.firestore()
     const now = new Date()
+    const preferences = await db.collection('settings').doc('workspacePreferences').get()
+    const hours = preferences.data()?.operations?.reminderHours ?? 24
     // Buscar visitas para dentro de 24 horas (aprox)
-    const startWindow = new Date(now.getTime() + 23 * 60 * 60 * 1000)
-    const endWindow = new Date(now.getTime() + 25 * 60 * 60 * 1000)
+    const startWindow = new Date(now.getTime() + (hours - 1) * 60 * 60 * 1000)
+    const endWindow = new Date(now.getTime() + hours * 60 * 60 * 1000)
 
     logger.info(
       `[REMINDER] Buscando visitas entre ${startWindow.toISOString()} y ${endWindow.toISOString()}`,
@@ -637,12 +735,13 @@ exports.sendVisitReminders = onSchedule(
           // ✅ FIX: Marcar la visita como recordatorio enviado para evitar duplicados
           const alreadySent =
             visit.reminderSentAt &&
-            new Date(visit.reminderSentAt.toDate()).toDateString() === new Date().toDateString()
+            visit.reminderForVisitAt?.toMillis?.() === visit.fecha_visita?.toMillis?.()
 
           if (!alreadySent) {
             await sendVisitNotificationViaGmailAPI(visit, doc.id, organizerUid)
             await db.collection('visitas').doc(doc.id).update({
               reminderSentAt: admin.firestore.FieldValue.serverTimestamp(),
+              reminderForVisitAt: visit.fecha_visita,
             })
             logger.info(`[REMINDER] Recordatorio enviado para visita ${doc.id}`)
           } else {
@@ -662,7 +761,8 @@ exports.sendVisitReminders = onSchedule(
  * Obtiene todos los clientes de la base de datos (sin paginación).
  * Útil para exportaciones y validaciones de duplicados.
  */
-exports.getAllClients = onCall({ cors: true }, async (request) => {
+exports.getAllClients = protectedCall('clientes', 'view', { cors: true }, async (request, restrictions) => {
+  if (request.data?.forExport) ensureModuleAccess(restrictions, 'clientes', 'export')
   const { zona: userZone, isGlobal } = assertVisitManager(request)
 
   try {
@@ -695,7 +795,7 @@ exports.getAllClients = onCall({ cors: true }, async (request) => {
  * OBTENER CLIENTE POR ID (SOLUCIÓN AL ERROR 500)
  * Esta función estaba faltando o tenía un nombre incorrecto.
  */
-exports.getClientById = onCall({ cors: true }, async (request) => {
+exports.getClientById = protectedCall('clientes', 'view', { cors: true }, async (request) => {
   const { clientId } = request.data
 
   try {
@@ -722,7 +822,7 @@ exports.getClientById = onCall({ cors: true }, async (request) => {
 /**
  * Añade un nuevo documento de cliente.
  */
-exports.addClient = onCall({ cors: true }, async (request) => {
+exports.addClient = protectedCall('clientes', 'create', { cors: true }, async (request) => {
   assertClientManager(request)
   const { clientData } = request.data
 
@@ -762,7 +862,7 @@ exports.addClient = onCall({ cors: true }, async (request) => {
 /**
  * Actualiza un documento de cliente.
  */
-exports.updateClient = onCall({ cors: true }, async (request) => {
+exports.updateClient = protectedCall('clientes', 'edit', { cors: true }, async (request) => {
   assertClientManager(request)
   const { clientId, clientData } = request.data
 
@@ -800,7 +900,7 @@ exports.updateClient = onCall({ cors: true }, async (request) => {
 /**
  * Obtiene una lista paginada de técnicos (fumigadores).
  */
-exports.getFumigadoresPage = onCall({ cors: true }, async (request) => {
+exports.getFumigadoresPage = protectedCall('fumigadores', 'view', { cors: true }, async (request) => {
   const { zona: userZone, isGlobal } = assertVisitManager(request)
   const { searchTerm, startAfterDocId, zone } = request.data
   const PAGE_SIZE = 20
@@ -850,7 +950,7 @@ exports.getFumigadoresPage = onCall({ cors: true }, async (request) => {
 /**
  * Añade un nuevo técnico (fumigador).
  */
-exports.addFumigador = onCall({ cors: true }, async (request) => {
+exports.addFumigador = protectedCall('fumigadores', 'create', { cors: true }, async (request) => {
   assertRole(request, [
     'Administrador',
     'Jefe',
@@ -900,7 +1000,7 @@ exports.addFumigador = onCall({ cors: true }, async (request) => {
 /**
  * Actualiza un técnico (fumigador).
  */
-exports.updateFumigador = onCall({ cors: true }, async (request) => {
+exports.updateFumigador = protectedCall('fumigadores', 'edit', { cors: true }, async (request) => {
   assertRole(request, [
     'Administrador',
     'Jefe',
@@ -995,7 +1095,7 @@ exports.updateFumigador = onCall({ cors: true }, async (request) => {
 /**
  * Elimina un técnico (fumigador).
  */
-exports.deleteFumigador = onCall({ cors: true }, async (request) => {
+exports.deleteFumigador = protectedCall('fumigadores', 'delete', { cors: true }, async (request) => {
   assertRole(request, ['Administrador', 'Jefe'])
   const { technicianId } = request.data
   const { zona: userZone, role: userRole } = request.auth.token
@@ -1461,11 +1561,13 @@ async function createOrUpdateCalendarEvent(
 
       await visitRef.update({
         googleEventId: created.data.id,
+        calendarSyncedAt: admin.firestore.FieldValue.serverTimestamp(),
         activeOrganizerUid: uid,
         calendarEventMissing: false,
         calendarEventMissingAt: admin.firestore.FieldValue.delete(),
       })
 
+      await integrationDoc.ref.update({ lastSyncAt: admin.firestore.FieldValue.serverTimestamp(), needsReconnect: false })
       return created.data.id
     }
 
@@ -1478,13 +1580,14 @@ async function createOrUpdateCalendarEvent(
       requestBody: { ...eventResource, id: targetEventId },
     })
 
-    const updates = { activeOrganizerUid: uid }
+    const updates = { activeOrganizerUid: uid, calendarSyncedAt: admin.firestore.FieldValue.serverTimestamp() }
     if (!visitData.googleEventId) updates.googleEventId = targetEventId
     if (visitData.calendarEventMissing) {
       updates.calendarEventMissing = false
       updates.calendarEventMissingAt = admin.firestore.FieldValue.delete()
     }
     await visitRef.update(updates)
+    await integrationDoc.ref.update({ lastSyncAt: admin.firestore.FieldValue.serverTimestamp(), needsReconnect: false })
 
     return targetEventId
   } catch (error) {
@@ -1496,7 +1599,7 @@ async function createOrUpdateCalendarEvent(
       error.message?.includes('invalid authentication credentials')
     ) {
       logger.warn(`[AUTH_FIX] Token de Google inválido para UID ${uid}. Eliminando integración.`)
-      await admin.firestore().collection('calendar_integrations').doc(uid).delete()
+      await admin.firestore().collection('calendar_integrations').doc(uid).update({ needsReconnect: true })
     }
     throw error
   }
@@ -1571,7 +1674,7 @@ async function deleteCalendarEvent(visitData, uid) {
  * Elimina un cliente y todos sus datos asociados (visitas, servicios).
  * Esta es una operación destructiva y debe ser llamada con precaución.
  */
-exports.deleteClientAndRelatedData = onCall({ cors: true }, async (request) => {
+exports.deleteClientAndRelatedData = protectedCall('clientes', 'delete', { cors: true }, async (request) => {
   assertRole(request, ['Administrador', 'Jefe'])
   const { clientId } = request.data
 
@@ -1674,7 +1777,9 @@ exports.listCalendarIntegrations = onCall({ cors: true }, async (request) => {
       const user = usersByUid.get(doc.id)
       return {
         uid: doc.id,
-        ...integrationData,
+        googleEmail: integrationData.googleEmail || '',
+        googleUserName: integrationData.googleUserName || '',
+        ...calendarStatus(integrationData),
         zona: user?.customClaims?.zona || null, // Añadir la zona del usuario
       }
     })
@@ -1691,7 +1796,7 @@ exports.listCalendarIntegrations = onCall({ cors: true }, async (request) => {
  * Esta es la función que faltaba y que causaba el error de CORS e 'internal'.
  * =================================================================================
  */
-exports.getVisitHistory = onCall({ cors: true }, async (request) => {
+exports.getVisitHistory = protectedCall('planeacion', 'view', { cors: true }, async (request) => {
   const { visitId } = request.data
   if (!visitId) {
     throw new HttpsError('invalid-argument', "Se requiere un 'visitId' para obtener el historial.")
@@ -1809,7 +1914,7 @@ exports.updateUserConfiguration = onCall({ cors: true }, async (request) => {
 /**
  * Obtiene todas las plantillas de visita disponibles.
  */
-exports.getVisitTemplates = onCall({ cors: true }, async (request) => {
+exports.getVisitTemplates = protectedCall('planeacion', 'view', { cors: true }, async (request) => {
   assertVisitManager(request)
   try {
     const snapshot = await db.collection('visit_templates').orderBy('templateName').get()
@@ -1827,7 +1932,7 @@ exports.getVisitTemplates = onCall({ cors: true }, async (request) => {
 /**
  * Guarda (crea o actualiza) una plantilla de visita.
  */
-exports.saveVisitTemplate = onCall({ cors: true }, async (request) => {
+exports.saveVisitTemplate = protectedCall('planeacion', 'edit', { cors: true }, async (request) => {
   assertRole(request, ['Administrador', 'Jefe'])
   const { templateData } = request.data
 
@@ -1873,7 +1978,7 @@ exports.saveVisitTemplate = onCall({ cors: true }, async (request) => {
 /**
  * Elimina una plantilla de visita.
  */
-exports.deleteVisitTemplate = onCall({ cors: true }, async (request) => {
+exports.deleteVisitTemplate = protectedCall('planeacion', 'delete', { cors: true }, async (request) => {
   assertRole(request, ['Administrador', 'Jefe'])
   const { templateId } = request.data
 
@@ -1900,7 +2005,7 @@ exports.deleteVisitTemplate = onCall({ cors: true }, async (request) => {
   }
 })
 
-exports.deleteVisitAndCalendarEvent = onCall(
+exports.deleteVisitAndCalendarEvent = protectedCall('planeacion', 'delete', 
   {
     // ✅ FIX: Usar cors: true para estandarizar con el resto del backend
     // y evitar bloqueos preflight en Firebase v2.
@@ -2105,7 +2210,7 @@ exports.deleteProfilePicture = onCall({ cors: true }, async (request) => {
 /**
  * Obtiene la cantidad de servicios pendientes de asignación de precio.
  */
-exports.getPendingPriceRequestsCount = onCall({ cors: true }, async (request) => {
+exports.getPendingPriceRequestsCount = protectedCall('servicios', 'view', { cors: true }, async (request) => {
   if (!request.auth) {
     throw new HttpsError('unauthenticated', 'La solicitud debe estar autenticada.')
   }
@@ -2150,7 +2255,7 @@ exports.getPendingPriceRequestsCount = onCall({ cors: true }, async (request) =>
  * Obtiene la lista de servicios pendientes de asignación de precio.
  * Al ser una función "onCall", Firebase maneja CORS automáticamente.
  */
-exports.getPendingPriceRequests = onCall({ cors: true }, async (request) => {
+exports.getPendingPriceRequests = protectedCall('servicios', 'view', { cors: true }, async (request) => {
   if (!request.auth || !APPROVER_ROLES.includes(request.auth.token.role)) {
     // Si el usuario no tiene permiso, lanzamos un error específico.
     throw new HttpsError('permission-denied', 'No tienes permiso para realizar esta acción.')
@@ -2185,7 +2290,7 @@ exports.getPendingPriceRequests = onCall({ cors: true }, async (request) => {
   }
 })
 
-exports.createVisit = onCall({ cors: true }, async (request) => {
+exports.createVisit = protectedCall('planeacion', 'create', { cors: true }, async (request) => {
   const { zona: userZone, isGlobal } = assertVisitManager(request)
   const { visitData } = request.data
   if (!visitData || typeof visitData !== 'object' || Array.isArray(visitData)) {
@@ -2241,7 +2346,7 @@ exports.createVisit = onCall({ cors: true }, async (request) => {
 /**
  * Actualiza una visita existente en Firestore.
  */
-exports.updateVisit = onCall({ cors: true }, async (request) => {
+exports.updateVisit = protectedCall('planeacion', 'edit', { cors: true }, async (request) => {
   const { zona: userZone, isGlobal } = assertVisitManager(request)
   const { visitId, visitData } = request.data
   if (!visitId) throw new HttpsError('invalid-argument', 'Se requiere el ID de la visita.')
@@ -2733,7 +2838,7 @@ exports.deleteSupportFile = onCall({ cors: true }, async (request) => {
 /**
  * Elimina una visita de Firestore.
  */
-exports.deleteVisit = onCall({ cors: true }, async (request) => {
+exports.deleteVisit = protectedCall('planeacion', 'delete', { cors: true }, async (request) => {
   assertVisitManager(request)
   try {
     const { ref } = await getAuthorizedVisit(request, request.data.visitId)
@@ -2746,7 +2851,7 @@ exports.deleteVisit = onCall({ cors: true }, async (request) => {
   }
 })
 
-exports.quickCompleteVisit = onCall({ cors: true }, async (request) => {
+exports.quickCompleteVisit = protectedCall('planeacion', 'edit', { cors: true }, async (request) => {
   assertVisitManager(request)
   const { visitId } = request.data
   if (!visitId) throw new HttpsError('invalid-argument', 'Se requiere el ID de la visita.')
@@ -2774,7 +2879,7 @@ exports.quickCompleteVisit = onCall({ cors: true }, async (request) => {
 // "Quota exceeded for total allowable CPU per project per region" en el
 // deploy). Si más adelante se aumenta la cuota, se puede volver a agregar
 // minInstances: 1 aquí para eliminar el cold-start ocasional.
-exports.checkForConflicts = onCall({ cors: true }, async (request) => {
+exports.checkForConflicts = protectedCall('planeacion', 'view', { cors: true }, async (request) => {
   const { zona: userZone, isGlobal } = assertVisitManager(request)
 
   const { technicians, startTimeISO, visitIdToIgnore, durationMinutes = 60 } = request.data
@@ -3281,6 +3386,7 @@ exports.exchangeAuthCodeForTokens = onCall({ secrets: [googleClientSecret] }, as
       googleEmail: email,
       googleUserName: name || 'Usuario Google',
       picture: picture || '',
+      needsReconnect: false,
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     }
 
@@ -3296,7 +3402,7 @@ exports.exchangeAuthCodeForTokens = onCall({ secrets: [googleClientSecret] }, as
     throw new HttpsError('internal', error.message || 'Error desconocido durante la vinculación.')
   }
 })
-exports.getGoogleCalendarEvents = onCall(
+exports.getGoogleCalendarEvents = protectedCall('planeacion', 'view', 
   { cors: true, secrets: [googleClientSecret] },
   async (request) => {
   assertAuth(request)
@@ -3340,7 +3446,7 @@ exports.getGoogleCalendarEvents = onCall(
   },
 )
 
-exports.getConsolidatedPlanningData = onCall(
+exports.getConsolidatedPlanningData = protectedCall('planeacion', 'view', 
   { cors: callableCorsOrigins, secrets: [googleClientSecret] },
   async (request) => {
   const { auth, data } = request
@@ -3459,12 +3565,15 @@ exports.getConsolidatedPlanningData = onCall(
               htmlLink: e.htmlLink, // <-- AÑADIDO: Incluir el enlace al evento
             })),
           )
-          .catch((err) => {
+          .catch(async (err) => {
             logger.error(
               `Error obteniendo eventos de Google para ${calendarTargetUid}:`,
               err.message,
             )
-            if (err.code === 401 || err.code === 400) return { error: 'needs-auth-refresh' }
+            if (err.code === 401 || err.response?.data?.error === 'invalid_grant') {
+              await integrationDoc.ref.update({ needsReconnect: true })
+              return { error: 'needs-auth-refresh' }
+            }
             return []
           })
       }
@@ -3880,7 +3989,7 @@ exports.getCoordinatorForZone = onCall({ cors: true }, async (request) => {
   }
 })
 
-exports.batchAssignVisits = onCall({ cors: true }, async (request) => {
+exports.batchAssignVisits = protectedCall('planeacion', 'edit', { cors: true }, async (request) => {
   assertRole(request, CLIENT_MANAGER_ROLES)
   const { visitIds, technicians } = request.data
 
@@ -4521,7 +4630,7 @@ exports.onServicePriceAssigned = onDocumentUpdated('servicios/{serviceSheetId}',
   return Promise.all(deletionPromises)
 })
 
-exports.getTechnicianProfileData = onCall({ cors: true }, async (request) => {
+exports.getTechnicianProfileData = protectedCall('fumigadores', 'view', { cors: true }, async (request) => {
   const { auth, data } = request
   if (!auth) {
     throw new HttpsError('unauthenticated', 'El usuario no está autenticado.')
@@ -5638,7 +5747,7 @@ exports.scheduledFirestoreBackup = onSchedule(
   },
 )
 
-exports.getAnnualBillingReport = onCall(
+exports.getAnnualBillingReport = protectedCall('reportes', 'view', 
   {
     cors: [
       'http://localhost:5173',
@@ -5847,7 +5956,7 @@ exports.getAnnualBillingReport = onCall(
  * notas/auditoría). Como la segunda declaración pisa silenciosamente a la
  * primera, la versión simple nunca se ejecutaba — se deja solo esta.
  */
-exports.completeVisit = onCall({ cors: true }, async (request) => {
+exports.completeVisit = protectedCall('planeacion', 'edit', { cors: true }, async (request) => {
   const { auth, data } = request
   if (!auth) {
     throw new HttpsError('unauthenticated', 'El usuario no está autenticado.')
@@ -5993,7 +6102,7 @@ exports.logClientUpdate = onDocumentUpdated('clientes/{clientId}', async (event)
   return null
 })
 
-exports.getClientVisitHistoryPage = onCall({ cors: true }, async (request) => {
+exports.getClientVisitHistoryPage = protectedCall('clientes', 'view', { cors: true }, async (request) => {
   assertRole(request, CLIENT_MANAGER_ROLES)
   const { data } = request
 
@@ -6042,7 +6151,7 @@ exports.getClientVisitHistoryPage = onCall({ cors: true }, async (request) => {
   }
 })
 
-exports.getClientServicesPage = onCall({ cors: true }, async (request) => {
+exports.getClientServicesPage = protectedCall('clientes', 'view', { cors: true }, async (request) => {
   assertRole(request, CLIENT_MANAGER_ROLES)
   const { data } = request
 
@@ -6084,7 +6193,7 @@ exports.getClientServicesPage = onCall({ cors: true }, async (request) => {
   }
 })
 
-exports.getTechnicianVisitHistoryPage = onCall({ cors: true }, async (request) => {
+exports.getTechnicianVisitHistoryPage = protectedCall('fumigadores', 'view', { cors: true }, async (request) => {
   const { zona: userZone, isGlobal } = assertVisitManager(request)
   const { data } = request
 
@@ -6146,7 +6255,7 @@ exports.getTechnicianVisitHistoryPage = onCall({ cors: true }, async (request) =
   }
 })
 
-exports.batchImportClients = onCall({ cors: true }, async (request) => {
+exports.batchImportClients = protectedCall('clientes', 'create', { cors: true }, async (request) => {
   assertClientManager(request)
   const { clients } = request.data
 
@@ -6401,7 +6510,7 @@ exports.updateSupportFileOrder = onCall({ cors: true }, async (request) => {
   }
 })
 
-exports.getClientProfileData = onCall({ cors: true }, async (request) => {
+exports.getClientProfileData = protectedCall('clientes', 'view', { cors: true }, async (request) => {
   const { clientId } = request.data
 
   try {
@@ -6454,7 +6563,7 @@ exports.getClientProfileData = onCall({ cors: true }, async (request) => {
 /**
  * Obtiene la ficha de servicio para un cliente específico.
  */
-exports.getServiceSheetByClientId = onCall(
+exports.getServiceSheetByClientId = protectedCall('servicios', 'view', 
   {
     cors: [
       'http://localhost:5173',
@@ -6515,7 +6624,7 @@ exports.getServiceSheetByClientId = onCall(
 /**
  * Guarda (crea o actualiza) una ficha de servicio.
  */
-exports.saveServiceSheet = onCall(
+exports.saveServiceSheet = protectedCall('servicios', 'view', 
   {
     cors: [
       'http://localhost:5173',
@@ -6526,7 +6635,7 @@ exports.saveServiceSheet = onCall(
     ],
     // ✅ minInstances retirado temporalmente: cuota de CPU regional agotada.
   },
-  async (request) => {
+  async (request, restrictions) => {
     if (!request.auth) {
       throw new HttpsError('unauthenticated', 'La solicitud debe estar autenticada.')
     }
@@ -6607,6 +6716,17 @@ exports.saveServiceSheet = onCall(
         sucursales_asignadas: assignedBranches,
       }
     })
+
+    const previousServices = new Map(existingServices.map((item, index) => [item.id || sheetData.clientId + '-service-' + (index + 1), item]))
+    for (const service of normalizedServices) {
+      const previous = previousServices.get(service.id)
+      if (!previous) ensureModuleAccess(restrictions, 'servicios', 'create')
+      else if (!require('node:util').isDeepStrictEqual({ ...previous, id: service.id }, service)) {
+        ensureModuleAccess(restrictions, 'servicios', 'edit')
+      }
+      previousServices.delete(service.id)
+    }
+    if (previousServices.size) ensureModuleAccess(restrictions, 'servicios', 'delete')
 
     const canonicalSheetData = {
       ...sheetData,

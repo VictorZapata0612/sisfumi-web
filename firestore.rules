@@ -67,6 +67,18 @@ service cloud.firestore {
       return !('gestionPermiso' in request.resource.data);
     }
 
+    function moduleAllows(module, action) {
+      let path = /databases/$(database)/documents/user_access/$(request.auth.uid);
+      return signedIn() && (!exists(path) ||
+        (!get(path).data.get(module, {}).get('view', false) &&
+          !get(path).data.get(module, {}).get(action, false)));
+    }
+
+    match /user_access/{userId} {
+      allow get: if signedIn() && (request.auth.uid == userId || request.auth.token.role == 'Administrador');
+      allow list, write: if false;
+    }
+
     match /notifications/{notificationId} {
       allow read: if signedIn() &&
         request.auth.token.role in resource.data.targetRoles;
@@ -74,50 +86,51 @@ service cloud.firestore {
     }
 
     match /clientes/{documentId} {
-      allow read: if hasGlobalAccess() || isOwnZoneResource();
-      allow create: if hasGlobalAccess() ||
+      allow read: if moduleAllows('clientes', 'view') && (hasGlobalAccess() || isOwnZoneResource());
+      allow create: if moduleAllows('clientes', 'create') && (hasGlobalAccess() ||
         (isCoordinadorForZone() &&
-          request.resource.data.zona == request.auth.token.zona);
-      allow update: if hasGlobalAccess() ||
-        (isOwnZoneResource() && isOwnZoneWrite() && doesNotChangeZone());
-      allow delete: if hasGlobalAccess() || isOwnZoneResource();
+          request.resource.data.zona == request.auth.token.zona));
+      allow update: if moduleAllows('clientes', 'edit') && (hasGlobalAccess() ||
+        (isOwnZoneResource() && isOwnZoneWrite() && doesNotChangeZone()));
+      allow delete: if moduleAllows('clientes', 'delete') && (hasGlobalAccess() || isOwnZoneResource());
     }
 
     match /servicios/{serviceId} {
-      allow read: if hasGlobalAccess() || isOwnZoneResource();
-      allow create, update, delete: if hasGlobalAccess();
+      allow read: if moduleAllows('servicios', 'view') && (hasGlobalAccess() || isOwnZoneResource());
+      allow create: if hasGlobalAccess() && moduleAllows('servicios', 'create');
+      allow update: if hasGlobalAccess() && moduleAllows('servicios', 'edit') && moduleAllows('servicios', 'create') && moduleAllows('servicios', 'delete');
+      allow delete: if hasGlobalAccess() && moduleAllows('servicios', 'delete');
     }
 
     match /fumigadores/{documentId} {
-      allow read: if hasGlobalAccess() || isOwnZoneResource();
-      allow create: if hasGlobalAccess() ||
+      allow read: if moduleAllows('fumigadores', 'view') && (hasGlobalAccess() || isOwnZoneResource());
+      allow create: if moduleAllows('fumigadores', 'create') && (hasGlobalAccess() ||
         (isCoordinadorForZone() &&
-          request.resource.data.zona == request.auth.token.zona);
-      allow update: if hasGlobalAccess() ||
-        (isOwnZoneResource() && isOwnZoneWrite() && doesNotChangeZone());
-      allow delete: if hasGlobalAccess() || isOwnZoneResource();
+          request.resource.data.zona == request.auth.token.zona));
+      allow update: if moduleAllows('fumigadores', 'edit') && (hasGlobalAccess() ||
+        (isOwnZoneResource() && isOwnZoneWrite() && doesNotChangeZone()));
+      allow delete: if moduleAllows('fumigadores', 'delete') && (hasGlobalAccess() || isOwnZoneResource());
     }
 
     match /visitas/{documentId} {
-      allow read: if hasGlobalAccess() || isOwnZoneResource();
-      allow update: if isPermissionAdmin() ||
+      allow read: if moduleAllows('planeacion', 'view') && (hasGlobalAccess() || isOwnZoneResource());
+      allow update: if moduleAllows('planeacion', 'edit') && (isPermissionAdmin() ||
         (hasGlobalAccess() && doesNotChangePermissionData()) ||
         (isOwnZoneResource() && isOwnZoneWrite() && doesNotChangeZone() &&
-          doesNotChangePermissionData());
-      allow delete: if hasGlobalAccess() || isOwnZoneResource();
-      allow create: if isPermissionAdmin() ||
+          doesNotChangePermissionData()));
+      allow delete: if moduleAllows('planeacion', 'delete') && (hasGlobalAccess() || isOwnZoneResource());
+      allow create: if moduleAllows('planeacion', 'create') && (isPermissionAdmin() ||
         (hasGlobalAccess() && doesNotCreatePermissionData()) ||
-        (isOwnZoneWrite() && doesNotCreatePermissionData());
+        (isOwnZoneWrite() && doesNotCreatePermissionData()));
     }
 
     match /settings/{documentId} {
       allow read: if signedIn();
-      allow write: if isAdminOrJefe();
+      allow write: if isAdminOrJefe() && documentId != 'workspacePreferences';
     }
 
     match /calendar_integrations/{userId} {
-      allow read: if signedIn() && request.auth.uid == userId;
-      allow write: if false;
+      allow read, write: if false;
     }
 
     match /users/{userId}/{documents=**} {
