@@ -113,7 +113,7 @@ const router = createRouter({
         {
           path: 'notificaciones',
           name: 'notificaciones',
-          component: () => import('../views/NotificationsView.vue'),
+          redirect: (to) => ({ name: 'dashboard', query: { ...to.query, notificaciones: '1' }, hash: to.hash }),
         },
         {
           path: 'facturacion',

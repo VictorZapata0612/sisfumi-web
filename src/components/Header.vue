@@ -1,17 +1,38 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import { useSearchStore } from '@/stores/search'
-import { useRouter } from 'vue-router'
+import { RouterLink, useRouter } from 'vue-router'
+import { useNotificationStore } from '@/stores/notifications'
 
 defineOptions({ name: 'AppHeader' })
 
+defineProps<{ sidebarOpen: boolean; darkTheme: boolean; showClock?: boolean }>()
+defineEmits<{ 'toggle-sidebar': []; 'set-theme': [dark: boolean] }>()
+
+const now = ref(new Date())
+const dateFormat = new Intl.DateTimeFormat('es-CO', { dateStyle: 'medium', timeZone: 'America/Bogota' })
+const timeFormat = new Intl.DateTimeFormat('es-CO', { timeStyle: 'short', timeZone: 'America/Bogota' })
+let clock: number | undefined
+let blurTimeout: number | undefined
+
+onMounted(() => {
+  clock = window.setInterval(() => { now.value = new Date() }, 1000)
+})
+onUnmounted(() => {
+  window.clearInterval(clock)
+  window.clearTimeout(searchTimeout)
+  window.clearTimeout(blurTimeout)
+})
+
 const searchStore = useSearchStore()
+const notificationStore = useNotificationStore()
 const router = useRouter()
 const searchTerm = ref('')
 const showResults = ref(false)
 let searchTimeout: number | undefined
 
 const onSearchInput = () => {
+  window.clearTimeout(blurTimeout)
   clearTimeout(searchTimeout)
   if (searchTerm.value.length > 1) {
     showResults.value = true
@@ -33,7 +54,7 @@ const navigateTo = (type: 'clientes' | 'fumigadores', id: string) => {
 
 const onBlur = () => {
   // Pequeño retraso para permitir el clic en los resultados
-  setTimeout(() => {
+  blurTimeout = window.setTimeout(() => {
     showResults.value = false
   }, 200)
 }
@@ -41,24 +62,24 @@ const onBlur = () => {
 
 <template>
   <header
-    class="bg-[#151515] border-b border-white/5 shadow-sm h-16 flex justify-between items-center px-4 sticky top-0 z-30">
+    class="top-navigation relative z-30 flex h-[4.5rem] shrink-0 items-center gap-2 border-b border-[var(--shell-border)] bg-[var(--shell-surface)] px-3 lg:gap-5 lg:pl-16 lg:pr-5">
     <!-- Mobile Menu Button -->
-    <button @click="$emit('toggle-sidebar')"
-      class="text-gray-400 hover:text-white lg:hidden p-2 rounded-md hover:bg-white/10 transition-colors">
+    <button type="button" @click="$emit('toggle-sidebar')" aria-label="Abrir navegación" aria-controls="sidebar" :aria-expanded="sidebarOpen"
+      class="text-[var(--shell-text)] lg:hidden p-2 rounded-md hover:bg-[var(--shell-input)] transition-colors">
       <i class="fas fa-bars text-xl"></i>
     </button>
 
     <!-- Search Bar Container -->
-    <div class="flex-1 flex justify-end">
-      <div class="relative w-full max-w-md">
+    <div class="min-w-0 flex-1">
+      <div class="relative w-full max-w-4xl">
         <!-- Input Wrapper -->
         <div class="relative group">
           <span
-            class="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none text-gray-500 group-focus-within:text-[#d60000] transition-colors">
+            class="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none text-[var(--shell-muted)] group-focus-within:text-[#d60000] transition-colors">
             <i class="fas fa-search"></i>
           </span>
-          <input v-model="searchTerm" @input="onSearchInput" @blur="onBlur" type="search"
-            class="w-full bg-[#0a0a0a] text-gray-200 border border-white/10 rounded-lg py-2 pl-10 pr-4 focus:outline-none focus:ring-2 focus:ring-[#d60000]/50 focus:border-[#d60000] transition-all placeholder-gray-500 text-sm"
+          <input id="sisfumi-global-search" aria-label="Buscar clientes y técnicos" @keydown.escape="showResults = false" v-model="searchTerm" @input="onSearchInput" @blur="onBlur" type="search"
+            class="w-full bg-[var(--shell-input)] text-[var(--shell-text)] border border-[var(--shell-border)] rounded-full py-2 pl-10 pr-4 focus:outline-none focus:ring-2 focus:ring-[#d60000]/50 focus:border-[#d60000] transition-all placeholder-gray-500 text-sm"
             placeholder="Buscar clientes, técnicos..." autocomplete="off" />
           <!-- Loading Indicator -->
           <span v-if="searchStore.loading"
@@ -69,8 +90,8 @@ const onBlur = () => {
 
         <!-- Dropdown Results -->
         <div v-if="showResults"
-          class="absolute top-full right-0 mt-2 w-full bg-[#151515] border border-white/10 rounded-lg shadow-xl z-50 overflow-hidden max-h-96 overflow-y-auto custom-scrollbar ring-1 ring-black ring-opacity-5">
-          <div v-if="searchStore.loading" class="p-4 text-center text-gray-400 text-sm">
+          class="absolute top-full right-0 mt-2 w-full bg-[var(--shell-surface)] border border-[var(--shell-border)] rounded-lg shadow-xl z-50 overflow-hidden max-h-96 overflow-y-auto custom-scrollbar ring-1 ring-black ring-opacity-5">
+          <div v-if="searchStore.loading" class="p-4 text-center text-[var(--shell-muted)] text-sm">
             <p>Buscando...</p>
           </div>
 
@@ -78,17 +99,17 @@ const onBlur = () => {
             <!-- Clientes Section -->
             <div v-if="searchStore.clients.length > 0">
               <div
-                class="px-3 py-2 bg-[#0a0a0a] border-b border-white/10 flex items-center justify-between sticky top-0">
-                <h3 class="text-xs font-bold text-gray-400 uppercase tracking-wider">Clientes</h3>
+                class="px-3 py-2 bg-[var(--shell-input)] border-b border-[var(--shell-border)] flex items-center justify-between sticky top-0">
+                <h3 class="text-xs font-bold text-[var(--shell-muted)] uppercase tracking-wider">Clientes</h3>
                 <span class="bg-white/10 text-gray-300 text-[10px] px-1.5 py-0.5 rounded-full">{{
                   searchStore.clients.length }}</span>
               </div>
               <ul class="py-1">
                 <li v-for="c in searchStore.clients" :key="c.id">
                   <a @click.prevent="navigateTo('clientes', c.id)" href="#"
-                    class="block px-4 py-2 text-sm text-gray-200 hover:bg-[#d60000]/20 hover:text-white transition-colors border-l-2 border-transparent hover:border-[#d60000]">
+                    class="block px-4 py-2 text-sm text-[var(--shell-text)] hover:bg-[#d60000]/20 hover:text-[var(--shell-text)] transition-colors border-l-2 border-transparent hover:border-[#d60000]">
                     <div class="font-medium">{{ c.nombreComercial }}</div>
-                    <div class="text-xs text-gray-500 truncate mt-0.5">{{ c.direccion || 'Sin dirección' }}</div>
+                    <div class="text-xs text-[var(--shell-muted)] truncate mt-0.5">{{ c.direccion || 'Sin dirección' }}</div>
                   </a>
                 </li>
               </ul>
@@ -97,15 +118,15 @@ const onBlur = () => {
             <!-- Técnicos Section -->
             <div v-if="searchStore.technicians.length > 0">
               <div
-                class="px-3 py-2 bg-[#0a0a0a] border-b border-white/10 border-t flex items-center justify-between sticky top-0">
-                <h3 class="text-xs font-bold text-gray-400 uppercase tracking-wider">Técnicos</h3>
+                class="px-3 py-2 bg-[var(--shell-input)] border-b border-[var(--shell-border)] border-t flex items-center justify-between sticky top-0">
+                <h3 class="text-xs font-bold text-[var(--shell-muted)] uppercase tracking-wider">Técnicos</h3>
                 <span class="bg-white/10 text-gray-300 text-[10px] px-1.5 py-0.5 rounded-full">{{
                   searchStore.technicians.length }}</span>
               </div>
               <ul class="py-1">
                 <li v-for="f in searchStore.technicians" :key="f.id">
                   <a @click.prevent="navigateTo('fumigadores', f.id)" href="#"
-                    class="block px-4 py-2 text-sm text-gray-200 hover:bg-[#d60000]/20 hover:text-white transition-colors border-l-2 border-transparent hover:border-[#d60000]">
+                    class="block px-4 py-2 text-sm text-[var(--shell-text)] hover:bg-[#d60000]/20 hover:text-[var(--shell-text)] transition-colors border-l-2 border-transparent hover:border-[#d60000]">
                     <div class="flex items-center gap-2">
                       <i class="fas fa-user-shield text-[#d60000]"></i>
                       <span class="font-medium">{{ f.nombreCompleto }}</span>
@@ -119,10 +140,49 @@ const onBlur = () => {
           <!-- No Results -->
           <div v-else class="p-8 text-center">
             <i class="fas fa-search text-gray-600 text-2xl mb-2"></i>
-            <p class="text-sm text-gray-400">No se encontraron resultados para "{{ searchTerm }}"</p>
+            <p class="text-sm text-[var(--shell-muted)]">No se encontraron resultados para "{{ searchTerm }}"</p>
           </div>
         </div>
       </div>
     </div>
+    <RouterLink :to="{ query: { ...$route.query, notificaciones: '1' }, hash: $route.hash }" aria-haspopup="dialog" aria-label="Notificaciones" title="Notificaciones"
+      class="relative flex size-10 shrink-0 items-center justify-center rounded-lg hover:bg-[var(--shell-input)]">
+      <i class="fas fa-bell" aria-hidden="true"></i>
+      <span v-if="notificationStore.generalNotificationsCount"
+        class="absolute right-0 top-0 min-w-4 rounded-full bg-[#E50914] px-1 text-center text-[10px] text-white">
+        {{ notificationStore.generalNotificationsCount }}
+      </span>
+    </RouterLink>
+    <div role="group" aria-label="Tema de SisFumi" class="flex shrink-0 items-center gap-0.5 border-l border-[var(--shell-border)] pl-2 sm:pl-3">
+      <button type="button" aria-label="Tema oscuro" title="Tema oscuro" :aria-pressed="darkTheme"
+        class="grid size-8 place-items-center rounded-xl border border-transparent transition-colors sm:size-10"
+        :class="darkTheme ? 'border-white/20 bg-[#111111] text-white' : 'bg-[var(--shell-input)] hover:bg-neutral-200'"
+        @click="$emit('set-theme', true)">
+        <i class="fas fa-moon" aria-hidden="true"></i>
+      </button>
+      <button type="button" aria-label="Tema claro" title="Tema claro" :aria-pressed="!darkTheme"
+        class="grid size-8 place-items-center rounded-xl border border-transparent transition-colors sm:size-10"
+        :class="darkTheme ? 'hover:border-white/20' : 'border-neutral-200 bg-white text-[#111111]'"
+        @click="$emit('set-theme', false)">
+        <i class="fas fa-sun" aria-hidden="true"></i>
+      </button>
+    </div>
+    <time v-if="showClock" :datetime="now.toISOString()" class="hidden shrink-0 border-l border-[var(--shell-border)] pl-4 text-xs leading-5 sm:block">
+      <span class="block font-semibold">{{ dateFormat.format(now) }}</span>
+      <span class="text-[var(--shell-muted)]">{{ timeFormat.format(now) }}</span>
+    </time>
   </header>
 </template>
+
+<style scoped>
+@media (min-width: 1024px) {
+  .top-navigation::before {
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: 3.5rem;
+    background: linear-gradient(125deg, #750009 0 19%, #e50914 19% 37%, #111 37% 43%, #b8000b 43% 54%, transparent 54% 57%, #e50914 57% 65%, transparent 65%);
+    pointer-events: none;
+    content: '';
+  }
+}
+</style>

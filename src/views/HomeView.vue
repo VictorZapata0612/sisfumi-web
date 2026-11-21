@@ -1,25 +1,95 @@
 <script setup lang="ts">
-import { onMounted, ref, watch, nextTick } from 'vue'
-import { useRouter } from 'vue-router'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { RouterLink, useRouter } from 'vue-router'
+import { useNotificationStore } from '@/stores/notifications'
+import { useAuthStore } from '@/stores/auth'
 import { useDashboardStore } from '@/stores/dashboard'
 import Chart from 'chart.js/auto'
-import type { ChartOptions } from 'chart.js'
-import ChartDataLabels from 'chartjs-plugin-datalabels'
 
 const dashboardStore = useDashboardStore()
 const router = useRouter()
+const auth = useAuthStore()
+const notifications = useNotificationStore()
+const dashboard = ref<HTMLElement | null>(null)
+const dateOptions = { timeZone: 'America/Bogota' } as const
+const dateLabel = new Intl.DateTimeFormat('es-CO', { ...dateOptions, weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' }).format(new Date())
+const hour = Number(new Intl.DateTimeFormat('es-CO', { ...dateOptions, hour: 'numeric', hourCycle: 'h23' }).format(new Date()))
+const greeting = hour < 12 ? 'Buenos días' : hour < 18 ? 'Buenas tardes' : 'Buenas noches'
+const firstName = computed(() => auth.user?.displayName?.trim().replace(/^IT\s+/i, '').split(/\s+/)[0] || '')
+const visitTime = new Intl.DateTimeFormat('es-CO', { ...dateOptions, timeStyle: 'short' })
+const now = ref(new Date())
+const recentNotifications = computed(() => notifications.notifications
+  .map((item) => ({ ...item, date: item.timestamp?.toDate?.() }))
+  .sort((a, b) => (b.date?.getTime() ?? 0) - (a.date?.getTime() ?? 0))
+  .slice(0, 3))
+
+const serviceColors = ['#e50914', '#232323', '#8b8b90', '#b8000b', '#626268', '#b5b5ba']
+const serviceMix = computed(() => {
+  const entries = Object.entries((dashboardStore.charts?.serviceTypeDistribution ?? {}) as Record<string, number>)
+    .sort(([, a], [, b]) => b - a)
+  const top = entries.slice(0, 3)
+  const remaining = entries.slice(3).reduce((sum, [, value]) => sum + value, 0)
+  if (remaining > 0) top.push(['Otros', remaining])
+  return top
+})
+const serviceTotal = computed(() => serviceMix.value.reduce((sum, [, value]) => sum + value, 0))
+
+
+function formatVisitTime(date: string) {
+  const value = new Date(date)
+  return Number.isNaN(value.getTime()) ? 'Sin hora' : visitTime.format(value)
+}
+
+const dailyActivity = computed(() => {
+  const visits = dashboardStore.todaysAgenda.filter((visit) => visit.estado_visita !== 'Cancelada')
+  const completed = visits.filter((visit) => visit.estado_visita === 'Realizada').length
+  return {
+    total: visits.length,
+    completed,
+    pending: visits.length - completed,
+    percent: visits.length ? Math.round(completed / visits.length * 1000) / 10 : 0,
+    hasStatus: visits.every((visit) => Boolean(visit.estado_visita)),
+  }
+})
+
+function canOpen(name: string) {
+  const roles = router.resolve({ name }).meta.roles
+  return !Array.isArray(roles) || roles.includes(auth.userRole)
+}
+
+const shortcuts = [
+  { label: 'Clientes', name: 'clientes', icon: 'fa-users' },
+  { label: 'Servicios', name: 'servicios', icon: 'fa-bug' },
+  { label: 'Ver agenda', name: 'planeacion', icon: 'fa-calendar-alt' },
+  { label: 'Ver reportes', name: 'reportes', icon: 'fa-chart-column' },
+]
+const visibleShortcuts = computed(() => shortcuts.filter(({ name }) => canOpen(name)))
+
+const metrics = computed(() => {
+  const kpis = dashboardStore.kpis
+  if (!kpis) return []
+  return [
+    { label: 'Clientes', value: kpis.totalClients, detail: kpis.totalBranches + ' sucursales', name: 'clientes', icon: 'fa-users' },
+    { label: 'Visitas del mes', value: kpis.visitsThisMonth, detail: kpis.completionRateThisMonth + '% de cumplimiento', name: 'planeacion', icon: 'fa-calendar-check' },
+    { label: 'Servicios activos', value: kpis.activeServices, name: 'servicios', icon: 'fa-check' },
+    { label: 'Facturación del mes', value: formatCurrency(kpis.revenueThisMonth), name: 'facturacion', icon: 'fa-dollar-sign' },
+  ]
+})
+
+type TechnicianStats = Record<string, { id: string; realizadas: number; programadas: number; canceladas: number }>
+const technicianStats = computed(() => dashboardStore.charts?.technicianStats as TechnicianStats | undefined)
+const team = computed(() => Object.entries(technicianStats.value ?? {})
+  .sort(([, a], [, b]) => b.programadas - a.programadas)
+  .slice(0, 3))
+
 
 // Referencias a los elementos <canvas> de los gráficos
 const visitsPerMonthChartCanvas = ref<HTMLCanvasElement | null>(null)
 const serviceTypeChartCanvas = ref<HTMLCanvasElement | null>(null)
-const servicesByFrequencyChartCanvas = ref<HTMLCanvasElement | null>(null)
-const technicianProductivityChartCanvas = ref<HTMLCanvasElement | null>(null)
 
 // Referencias a las instancias de Chart.js para poder destruirlas
 let visitsPerMonthChartInstance: Chart | null = null
 let serviceTypeChartInstance: Chart | null = null
-let servicesByFrequencyChartInstance: Chart | null = null
-let technicianProductivityChartInstance: Chart | null = null
 
 const formatCurrency = (value: number) => {
   return new Intl.NumberFormat('es-CO', {
@@ -29,27 +99,20 @@ const formatCurrency = (value: number) => {
   }).format(value)
 }
 
-const navigateToPlanning = (visitId: string) => {
-  router.push({ name: 'planeacion', query: { visitIdToOpen: visitId } })
-}
-
-const navigateToTechnician = (technicianId: string) => {
-  router.push({ name: 'fumigadores', query: { itemIdToOpen: technicianId } })
+function destroyCharts() {
+  visitsPerMonthChartInstance?.destroy()
+  serviceTypeChartInstance?.destroy()
 }
 
 const renderCharts = () => {
-  if (!dashboardStore.charts) return
+  destroyCharts()
+  if (!dashboardStore.charts || !dashboard.value || dashboardStore.loading) return
 
-  // Configuración global para el tema oscuro
-  Chart.defaults.color = '#9ca3af' // gray-400
-  Chart.defaults.borderColor = 'rgba(75, 85, 99, 0.2)' // gray-600 low opacity
-  Chart.defaults.font.family = "'Inter', sans-serif"
-
-  // Destruir gráficos anteriores
-  if (visitsPerMonthChartInstance) visitsPerMonthChartInstance.destroy()
-  if (serviceTypeChartInstance) serviceTypeChartInstance.destroy()
-  if (servicesByFrequencyChartInstance) servicesByFrequencyChartInstance.destroy()
-  if (technicianProductivityChartInstance) technicianProductivityChartInstance.destroy()
+  const theme = getComputedStyle(dashboard.value)
+  const text = theme.getPropertyValue('--shell-muted').trim()
+  const grid = theme.getPropertyValue('--shell-border').trim()
+  const ticks = { color: text }
+  const chartGrid = { color: grid }
 
   // 1. Gráfico de Visitas por Mes
   if (visitsPerMonthChartCanvas.value && dashboardStore.charts.visitsPerMonth) {
@@ -66,38 +129,34 @@ const renderCharts = () => {
           {
             label: 'Visitas',
             data: values,
-            borderColor: '#3b82f6',
-            backgroundColor: 'rgba(59, 130, 246, 0.1)',
+            borderColor: '#e50914',
+            backgroundColor: 'rgba(229, 9, 20, 0.10)',
             fill: true,
-            tension: 0.4,
+            tension: 0.25,
           },
         ],
       },
       options: {
         responsive: true,
         maintainAspectRatio: false,
-        plugins: {
-          legend: { display: false },
-        },
+        scales: { x: { ticks, grid: chartGrid }, y: { ticks, grid: chartGrid, beginAtZero: true } },
+        plugins: { legend: { display: false } },
       },
     })
   }
 
   // 2. Gráfico de Tipos de Servicio
   if (serviceTypeChartCanvas.value && dashboardStore.charts.serviceTypeDistribution) {
-    const data = dashboardStore.charts.serviceTypeDistribution
-    const sortedData = Object.entries(data).sort(([, a], [, b]) => (b as number) - (a as number))
-    const labels = sortedData.map((item) => item[0])
-    const values = sortedData.map((item) => item[1] as number)
+    const labels = serviceMix.value.map(([label]) => label)
+    const values = serviceMix.value.map(([, value]) => value)
     serviceTypeChartInstance = new Chart(serviceTypeChartCanvas.value, {
       type: 'doughnut',
-      plugins: [ChartDataLabels],
       data: {
         labels,
         datasets: [
           {
             data: values,
-            backgroundColor: ['#ef4444', '#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899'],
+            backgroundColor: serviceColors,
             borderWidth: 0,
           },
         ],
@@ -105,133 +164,8 @@ const renderCharts = () => {
       options: {
         responsive: true,
         maintainAspectRatio: false,
-        cutout: '70%',
-        plugins: {
-          legend: { display: false },
-          datalabels: {
-            color: '#fff',
-            font: { weight: 'bold' },
-            formatter: (value: number, context: { chart: Chart }) => {
-              const dataset = context.chart.data.datasets[0]
-              if (!dataset) return ''
-              const data = dataset.data as number[]
-              const total = data.reduce((a, b) => a + b, 0)
-              const percentage = (value / total) * 100
-              return percentage > 5 ? `${percentage.toFixed(0)}%` : ''
-            },
-          },
-        },
-      } as ChartOptions<'doughnut'>,
-    })
-  }
-
-  // 3. Gráfico de Servicios por Frecuencia
-  if (servicesByFrequencyChartCanvas.value && dashboardStore.charts.servicesByFrequency) {
-    const data = dashboardStore.charts.servicesByFrequency
-    const sortedData = Object.entries(data).sort(([, a], [, b]) => (b as number) - (a as number))
-    const labels = sortedData.map((item) => item[0])
-    const values = sortedData.map((item) => item[1])
-    servicesByFrequencyChartInstance = new Chart(servicesByFrequencyChartCanvas.value, {
-      type: 'bar',
-      data: {
-        labels,
-        datasets: [
-          {
-            label: 'Servicios',
-            data: values,
-            backgroundColor: '#10b981',
-            borderRadius: 4,
-          },
-        ],
-      },
-      options: {
-        indexAxis: 'y',
-        responsive: true,
-        maintainAspectRatio: false,
-        plugins: { legend: { display: false }, datalabels: { display: false } },
-        scales: {
-          y: { grid: { display: false } },
-          x: { display: false },
-        },
-        onClick: (event, elements) => {
-          if (elements.length > 0) {
-            const element = elements[0]!
-            const index = element.index
-            const cityName = labels[index]
-            if (cityName) {
-              router.push({ name: 'clientes', query: { cityFilter: cityName } })
-            }
-          }
-        },
-        onHover: (event, chartElement) => {
-          const target = event.native?.target as HTMLElement
-          if (target) target.style.cursor = chartElement[0] ? 'pointer' : 'default'
-        },
-      },
-    })
-  }
-
-  // 4. Gráfico de Productividad de Técnicos
-  if (technicianProductivityChartCanvas.value && dashboardStore.charts.technicianStats) {
-    const data = dashboardStore.charts.technicianStats as Record<
-      string,
-      { realizadas: number; id: string; programadas: number; canceladas: number }
-    >
-    const labels = Object.keys(data)
-    const realizadasData = labels.map((label) => data[label]!.realizadas)
-    const technicianIds = labels.map((label) => data[label]!.id)
-    const programadasData = labels.map((label) => data[label]!.programadas)
-    const canceladasData = labels.map((label) => data[label]!.canceladas)
-
-    technicianProductivityChartInstance = new Chart(technicianProductivityChartCanvas.value, {
-      type: 'bar',
-      data: {
-        labels,
-        datasets: [
-          {
-            label: 'Realizadas',
-            data: realizadasData,
-            backgroundColor: '#4ade80',
-            borderRadius: 4,
-          },
-          {
-            label: 'Programadas',
-            data: programadasData,
-            backgroundColor: '#60a5fa',
-            borderRadius: 4,
-          },
-          {
-            label: 'Canceladas',
-            data: canceladasData,
-            backgroundColor: '#f87171',
-            borderRadius: 4,
-          },
-        ],
-      },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        scales: {
-          x: { stacked: true, grid: { display: false } },
-          y: { stacked: true, beginAtZero: true },
-        },
-        plugins: {
-          legend: { position: 'top', align: 'end', labels: { boxWidth: 10 } },
-          datalabels: { display: false },
-        },
-        onClick: (event, elements) => {
-          if (elements.length > 0) {
-            const index = elements[0]!.index
-            const techId = technicianIds[index]
-            if (techId) {
-              navigateToTechnician(techId)
-            }
-          }
-        },
-        onHover: (event, chartElement) => {
-          const target = event.native?.target as HTMLElement
-          if (target) target.style.cursor = chartElement[0] ? 'pointer' : 'default'
-        },
+        cutout: '69%',
+        plugins: { legend: { display: false } },
       },
     })
   }
@@ -239,288 +173,289 @@ const renderCharts = () => {
 
 onMounted(() => {
   dashboardStore.fetchDashboardData()
+  clock = window.setInterval(() => { now.value = new Date() }, 15000)
+  const shell = dashboard.value?.closest('[data-theme]')
+  if (shell) {
+    themeObserver = new MutationObserver(renderCharts)
+    themeObserver.observe(shell, { attributeFilter: ['data-theme'] })
+  }
+})
+
+let clock: number | undefined
+let themeObserver: MutationObserver | undefined
+onUnmounted(() => {
+  window.clearInterval(clock)
+  themeObserver?.disconnect()
+  destroyCharts()
 })
 
 watch(
-  () => dashboardStore.charts,
-  (newCharts) => {
-    if (newCharts && !dashboardStore.loading) {
-      nextTick(() => {
-        renderCharts()
-      })
-    }
-  },
-  { deep: true, immediate: true },
+  [() => dashboardStore.charts, () => dashboardStore.loading],
+  renderCharts,
+  { flush: 'post' },
 )
 </script>
 
 <template>
-  <div class="h-full bg-[#0a0a0a] text-gray-100 flex flex-col p-4 md:p-6 overflow-y-auto custom-scrollbar">
-    <!-- Header -->
-    <header class="flex-shrink-0 mb-6 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-      <div>
-        <h2 class="text-2xl md:text-3xl font-bold text-white flex items-center gap-2">
-          <i class="fas fa-tachometer-alt text-indigo-500"></i>
-          Resumen del Sistema
-        </h2>
-        <p class="text-sm text-gray-400 mt-1">
-          Visión general de métricas, actividad diaria y pendientes
-        </p>
+  <div ref="dashboard" class="dashboard space-y-4">
+    <header class="welcome-banner flex flex-wrap items-center justify-between gap-4 rounded-2xl px-5 py-6 sm:px-7">
+      <div class="welcome-copy">
+        <h1 class="text-2xl font-extrabold tracking-tight sm:text-4xl">
+          {{ greeting }}<span v-if="firstName" class="text-[#ff454e]">, {{ firstName }}</span>
+        </h1>
+        <p class="mt-1 text-sm text-neutral-200">Aquí tienes un resumen de la operación de hoy.</p>
       </div>
-      <button @click="dashboardStore.fetchDashboardData" class="btn btn-secondary flex items-center gap-2 shadow-lg"
-        :disabled="dashboardStore.loading">
-        <i class="fas fa-sync-alt" :class="{ 'fa-spin': dashboardStore.loading }"></i>
-        <span>Actualizar</span>
-      </button>
+      <div class="welcome-date">
+        <i class="fas fa-calendar-alt text-3xl" aria-hidden="true"></i>
+        <time :datetime="now.toISOString()">
+          <span class="block font-bold first-letter:uppercase">{{ dateLabel }}</span>
+          <span class="block text-sm">{{ visitTime.format(now) }}</span>
+        </time>
+      </div>
     </header>
 
-    <!-- Skeleton Loader -->
-    <div v-if="dashboardStore.loading" class="animate-pulse space-y-6">
-      <div class="grid grid-cols-2 md:grid-cols-6 gap-4">
-        <div v-for="i in 6" :key="i" class="bg-[#151515] rounded-xl h-24"></div>
-      </div>
-      <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div class="lg:col-span-2 bg-[#151515] rounded-xl h-80"></div>
-        <div class="bg-[#151515] rounded-xl h-80"></div>
-      </div>
+    <div v-if="dashboardStore.loading" role="status" class="panel p-6">
+      Cargando el resumen de la operación…
+    </div>
+    <div v-else-if="dashboardStore.error" role="alert" class="panel p-6">
+      <h2 class="font-bold">Error al cargar Inicio</h2>
+      <p class="muted mt-2 text-sm">{{ dashboardStore.error }}</p>
+      <button type="button" class="accent-link mt-2" @click="dashboardStore.fetchDashboardData">Reintentar</button>
     </div>
 
-    <!-- Error State -->
-    <div v-else-if="dashboardStore.error" class="flex flex-col items-center justify-center h-full text-[#d60000]">
-      <i class="fas fa-exclamation-triangle text-5xl mb-4"></i>
-      <h3 class="text-2xl font-bold">Error de Carga</h3>
-      <p class="text-gray-400 mt-2">{{ dashboardStore.error }}</p>
-      <button @click="dashboardStore.fetchDashboardData" class="btn btn-primary mt-4">
-        Intentar de nuevo
-      </button>
-    </div>
-
-    <!-- Dashboard Content -->
-    <div v-else-if="dashboardStore.kpis" class="space-y-6 animate-fade-in">
-      <!-- KPIs Grid -->
-      <section class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-4">
-        <!-- Clientes -->
-        <RouterLink to="/clientes"
-          class="bg-[#151515] p-4 rounded-xl border border-white/10 shadow-lg hover:border-indigo-500/50 hover:shadow-indigo-500/10 transition-all group">
-          <div class="flex justify-between items-start">
-            <div>
-              <p class="text-xs font-bold text-gray-400 uppercase tracking-wider">Clientes</p>
-              <p class="text-2xl font-bold text-white mt-1 group-hover:text-indigo-400 transition-colors">
-                {{ dashboardStore.kpis.totalClients }}
-              </p>
-            </div>
-            <div class="bg-[#0a0a0a]/50 p-2 rounded-lg text-indigo-400">
-              <i class="fas fa-users"></i>
-            </div>
+    <template v-else-if="dashboardStore.kpis">
+      <section aria-label="Indicadores" class="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <component v-for="metric in metrics" :key="metric.label"
+          :is="canOpen(metric.name) ? RouterLink : 'div'"
+          :to="canOpen(metric.name) ? { name: metric.name } : undefined"
+          class="panel metric flex min-w-0 items-center gap-4 p-4">
+          <span class="kpi-icon grid size-12 shrink-0 place-items-center text-2xl">
+            <i class="fas" :class="metric.icon" aria-hidden="true"></i>
+          </span>
+          <div class="min-w-0">
+            <p class="text-sm font-semibold">{{ metric.label }}</p>
+            <p class="break-words text-3xl font-extrabold tabular-nums">{{ metric.value }}</p>
+            <p v-if="metric.detail" class="muted text-xs">{{ metric.detail }}</p>
           </div>
-        </RouterLink>
-
-        <!-- Sucursales -->
-        <RouterLink to="/clientes"
-          class="bg-[#151515] p-4 rounded-xl border border-white/10 shadow-lg hover:border-orange-500/50 hover:shadow-orange-500/10 transition-all group">
-          <div class="flex justify-between items-start">
-            <div>
-              <p class="text-xs font-bold text-gray-400 uppercase tracking-wider">Sucursales</p>
-              <p class="text-2xl font-bold text-white mt-1 group-hover:text-orange-400 transition-colors">
-                {{ dashboardStore.kpis.totalBranches }}
-              </p>
-            </div>
-            <div class="bg-[#0a0a0a]/50 p-2 rounded-lg text-orange-400">
-              <i class="fas fa-store"></i>
-            </div>
-          </div>
-        </RouterLink>
-
-        <!-- Servicios -->
-        <RouterLink to="/servicios"
-          class="bg-[#151515] p-4 rounded-xl border border-white/10 shadow-lg hover:border-emerald-500/50 hover:shadow-emerald-500/10 transition-all group">
-          <div class="flex justify-between items-start">
-            <div>
-              <p class="text-xs font-bold text-gray-400 uppercase tracking-wider">
-                Servicios Activos
-              </p>
-              <p class="text-2xl font-bold text-white mt-1 group-hover:text-emerald-400 transition-colors">
-                {{ dashboardStore.kpis.activeServices }}
-              </p>
-            </div>
-            <div class="bg-[#0a0a0a]/50 p-2 rounded-lg text-emerald-400">
-              <i class="fas fa-bug"></i>
-            </div>
-          </div>
-        </RouterLink>
-
-        <!-- Visitas -->
-        <RouterLink to="/planeacion"
-          class="bg-[#151515] p-4 rounded-xl border border-white/10 shadow-lg hover:border-blue-500/50 hover:shadow-blue-500/10 transition-all group">
-          <div class="flex justify-between items-start">
-            <div>
-              <p class="text-xs font-bold text-gray-400 uppercase tracking-wider">Visitas (Mes)</p>
-              <p class="text-2xl font-bold text-white mt-1 group-hover:text-blue-400 transition-colors">
-                {{ dashboardStore.kpis.visitsThisMonth }}
-              </p>
-            </div>
-            <div class="bg-[#0a0a0a]/50 p-2 rounded-lg text-blue-400">
-              <i class="fas fa-calendar-check"></i>
-            </div>
-          </div>
-        </RouterLink>
-
-        <!-- Cumplimiento -->
-        <RouterLink to="/reportes"
-          class="bg-[#151515] p-4 rounded-xl border border-white/10 shadow-lg hover:border-cyan-500/50 hover:shadow-cyan-500/10 transition-all group">
-          <div class="flex justify-between items-start">
-            <div>
-              <p class="text-xs font-bold text-gray-400 uppercase tracking-wider">Cumplimiento</p>
-              <p class="text-2xl font-bold text-white mt-1 group-hover:text-cyan-400 transition-colors">
-                {{ dashboardStore.kpis.completionRateThisMonth }}%
-              </p>
-            </div>
-            <div class="bg-[#0a0a0a]/50 p-2 rounded-lg text-cyan-400">
-              <i class="fas fa-chart-line"></i>
-            </div>
-          </div>
-        </RouterLink>
-
-        <!-- Facturación -->
-        <RouterLink to="/facturacion"
-          class="bg-[#151515] p-4 rounded-xl border border-white/10 shadow-lg hover:border-green-500/50 hover:shadow-green-500/10 transition-all group">
-          <div class="flex justify-between items-start">
-            <div>
-              <p class="text-xs font-bold text-gray-400 uppercase tracking-wider">Facturado</p>
-              <p class="text-xl font-bold text-white mt-1 group-hover:text-green-400 transition-colors truncate"
-                :title="formatCurrency(dashboardStore.kpis.revenueThisMonth)">
-                {{ formatCurrency(dashboardStore.kpis.revenueThisMonth) }}
-              </p>
-            </div>
-            <div class="bg-[#0a0a0a]/50 p-2 rounded-lg text-green-400">
-              <i class="fas fa-dollar-sign"></i>
-            </div>
-          </div>
-        </RouterLink>
+        </component>
       </section>
 
-      <!-- Main Layout -->
-      <section class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <!-- Left Column (Charts & Main Data) -->
-        <div class="lg:col-span-2 space-y-6">
-          <!-- Visitas por Mes (Tendencia) -->
-          <div class="bg-[#151515] rounded-xl border border-white/10 shadow-lg p-5">
-            <h3 class="font-bold text-gray-200 mb-4 flex items-center gap-2">
-              <i class="fas fa-chart-area text-blue-500"></i> Tendencia de Visitas
-            </h3>
-            <div class="h-64 relative">
-              <canvas ref="visitsPerMonthChartCanvas"></canvas>
-            </div>
-          </div>
-
-          <!-- Productividad Técnicos -->
-          <div class="bg-[#151515] rounded-xl border border-white/10 shadow-lg p-5">
-            <h3 class="font-bold text-gray-200 mb-4 flex items-center gap-2">
-              <i class="fas fa-user-clock text-green-500"></i> Productividad Técnica (Mes)
-            </h3>
-            <div class="h-80 relative">
-              <canvas ref="technicianProductivityChartCanvas"></canvas>
-            </div>
-          </div>
-
-          <!-- Distribución y Frecuencia -->
-          <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <div class="bg-[#151515] rounded-xl border border-white/10 shadow-lg p-5">
-              <h3 class="font-bold text-gray-200 mb-4 text-sm uppercase">Tipos de Servicio</h3>
-              <div class="h-48 relative">
-                <canvas ref="serviceTypeChartCanvas"></canvas>
+      <div class="dashboard-primary grid gap-4 lg:grid-cols-[0.95fr_1.05fr]">
+        <section class="panel p-4">
+          <h2 class="section-title"><i class="fas fa-chart-bar" aria-hidden="true"></i> Actividad de hoy</h2>
+          <div class="activity-layout">
+            <div class="activity-gauge">
+              <div class="activity-ring"
+                :style="{ '--activity-total': (dailyActivity.hasStatus ? dailyActivity.percent : 0) + '%' }">
+                <strong>{{ dailyActivity.hasStatus ? dailyActivity.percent + '%' : '—' }}</strong>
               </div>
+              <span class="text-xs font-semibold">Cumplimiento del día</span>
             </div>
-            <div class="bg-[#151515] rounded-xl border border-white/10 shadow-lg p-5">
-              <h3 class="font-bold text-gray-200 mb-4 text-sm uppercase">Frecuencias</h3>
-              <div class="h-48 relative">
-                <canvas ref="servicesByFrequencyChartCanvas"></canvas>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- Right Column (Sidebar Lists) -->
-        <div class="space-y-6">
-          <!-- Agenda Hoy -->
-          <div class="bg-[#151515] rounded-xl border border-white/10 shadow-lg flex flex-col h-[500px]">
-            <div class="p-4 border-b border-white/10 bg-[#151515] rounded-t-xl sticky top-0 z-10">
-              <h3 class="font-bold text-white flex items-center gap-2">
-                <i class="fas fa-calendar-day text-orange-500"></i> Agenda Hoy
-              </h3>
-            </div>
-            <div class="flex-grow overflow-y-auto custom-scrollbar p-3 space-y-2">
-              <div v-if="!dashboardStore.todaysAgenda.length" class="text-center py-8 text-gray-500">
-                <i class="fas fa-mug-hot text-3xl mb-2 opacity-50"></i>
-                <p>Sin visitas para hoy.</p>
-              </div>
-              <div v-else v-for="visit in dashboardStore.todaysAgenda" :key="visit.id"
-                @click="navigateToPlanning(visit.id)"
-                class="bg-white/5 border border-white/10 p-3 rounded-lg hover:bg-white/10 cursor-pointer transition-all border-l-4 border-l-orange-500">
-                <p class="font-bold text-gray-200 text-sm line-clamp-1">
-                  {{ visit.nombre_cliente }}
-                </p>
-                <div class="flex justify-between items-center mt-1">
-                  <span class="text-xs text-gray-400 bg-[#0a0a0a]/50 px-2 py-0.5 rounded">{{
-                    visit.tipo_visita
-                    }}</span>
-                  <i class="fas fa-chevron-right text-gray-600 text-xs"></i>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <!-- Pendientes de Asignar -->
-          <div class="bg-[#151515] rounded-xl border border-white/10 shadow-lg flex flex-col max-h-[400px]">
-            <div class="p-4 border-b border-white/10 bg-[#151515] rounded-t-xl sticky top-0 z-10">
-              <h3 class="font-bold text-white flex items-center gap-2">
-                <i class="fas fa-clipboard-list text-yellow-500"></i> Por Asignar
-                <span v-if="dashboardStore.pendingVisits.length"
-                  class="bg-yellow-500/20 text-yellow-400 text-xs px-2 py-0.5 rounded-full ml-auto">{{
-                    dashboardStore.pendingVisits.length }}</span>
-              </h3>
-            </div>
-            <div class="flex-grow overflow-y-auto custom-scrollbar p-3 space-y-2">
-              <div v-if="!dashboardStore.pendingVisits.length" class="text-center py-8 text-gray-500">
-                <i class="fas fa-check-circle text-3xl mb-2 opacity-50 text-green-500"></i>
-                <p>Todo asignado.</p>
-              </div>
-              <div v-else v-for="visit in dashboardStore.pendingVisits" :key="visit.id"
-                class="bg-white/5 border border-white/10 p-3 rounded-lg flex flex-col gap-2">
+            <div class="activity-summary">
+              <dl class="activity-stats">
                 <div>
-                  <p class="font-bold text-gray-200 text-sm line-clamp-1">
-                    {{ visit.nombre_cliente }}
-                  </p>
-                  <p class="text-xs text-yellow-500/80 font-medium">{{ visit.tipo_visita }}</p>
+                  <i class="fas fa-calendar-check" aria-hidden="true"></i>
+                  <dd>{{ dailyActivity.total }}</dd>
+                  <dt>Visitas de hoy</dt>
                 </div>
-                <button @click="navigateToPlanning(visit.id)"
-                  class="btn btn-secondary text-xs w-full justify-center bg-[#151515] hover:bg-[#202020] border border-white/10">
-                  Asignar Ahora
-                </button>
-              </div>
+                <div>
+                  <i class="fas fa-check text-green-600" aria-hidden="true"></i>
+                  <dd>{{ dailyActivity.hasStatus ? dailyActivity.completed : '—' }}</dd>
+                  <dt>Completadas</dt>
+                </div>
+                <div>
+                  <i class="fas fa-clock" aria-hidden="true"></i>
+                  <dd>{{ dailyActivity.hasStatus ? dailyActivity.pending : '—' }}</dd>
+                  <dt>Pendientes</dt>
+                </div>
+              </dl>
+              <progress v-if="dailyActivity.hasStatus" class="activity-progress" max="100" :value="dailyActivity.percent" aria-label="Cumplimiento del día"></progress>
+              <p v-else class="muted text-xs">Estados de visita aún no disponibles.</p>
             </div>
           </div>
+        </section>
 
-        </div>
-      </section>
-    </div>
+
+        <section class="panel">
+          <div class="panel-heading flex flex-wrap items-center justify-between gap-2 px-4 py-3">
+            <h2 class="font-bold"><i class="fas fa-calendar-day mr-2" aria-hidden="true"></i> Agenda de hoy</h2>
+            <RouterLink v-if="canOpen('planeacion')" :to="{ name: 'planeacion' }" class="text-xs font-semibold hover:underline">
+              Ver calendario <i class="fas fa-arrow-right ml-1" aria-hidden="true"></i>
+            </RouterLink>
+          </div>
+          <p v-if="!dashboardStore.todaysAgenda.length" class="muted p-4 text-sm">Sin visitas para hoy.</p>
+          <ul v-else class="agenda-list max-h-48 overflow-y-auto px-4">
+            <li v-for="visit in dashboardStore.todaysAgenda" :key="visit.id" class="list-row">
+              <component :is="canOpen('planeacion') ? RouterLink : 'div'"
+                :to="canOpen('planeacion') ? { name: 'planeacion', query: { visitIdToOpen: visit.id, date: visit.fecha_visita } } : undefined"
+                class="flex items-center gap-3 py-2.5 text-sm">
+                <span class="agenda-time shrink-0 font-semibold tabular-nums">{{ formatVisitTime(visit.fecha_visita) }}</span>
+                <span class="min-w-0 flex-1">
+                  <span class="block font-bold">{{ visit.nombre_cliente }}</span>
+                  <span class="muted block text-xs">{{ visit.tipo_visita }}</span>
+                </span>
+                <span v-if="visit.estado_visita" class="status-chip" :data-status="visit.estado_visita">{{ visit.estado_visita }}</span>
+              </component>
+            </li>
+          </ul>
+        </section>
+      </div>
+
+      <div class="grid gap-4 lg:grid-cols-[1.35fr_1fr_1.05fr]">
+        <section class="panel min-w-0 p-4">
+          <h2 class="section-title"><i class="fas fa-chart-line" aria-hidden="true"></i> Tendencia de visitas</h2>
+          <div class="mt-3 h-44"><canvas ref="visitsPerMonthChartCanvas" role="img" aria-label="Visitas realizadas por mes"></canvas></div>
+        </section>
+        <section class="panel min-w-0 p-4">
+          <h2 class="section-title"><i class="fas fa-chart-pie" aria-hidden="true"></i> Tipos de servicio</h2>
+          <div v-if="serviceTotal" class="service-mix mt-3">
+            <div class="service-donut">
+              <canvas ref="serviceTypeChartCanvas" role="img" aria-label="Distribución de tipos de servicio"></canvas>
+              <div class="service-total"><strong>{{ serviceTotal }}</strong><span>Total</span></div>
+            </div>
+            <ul class="space-y-2 text-xs">
+              <li v-for="([label, value], index) in serviceMix" :key="label" class="flex items-center gap-1.5">
+                <span class="size-2 shrink-0 rounded-full" :style="{ backgroundColor: serviceColors[index] }"></span>
+                <span class="min-w-0 flex-1 break-words">{{ label }}</span>
+                <strong>{{ Math.round(value / serviceTotal * 100) }}%</strong>
+              </li>
+            </ul>
+          </div>
+          <p v-else class="muted mt-4 text-sm">Sin tipos de servicio para mostrar.</p>
+        </section>
+        <section class="panel min-w-0 p-4">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <h2 class="section-title"><i class="fas fa-users" aria-hidden="true"></i> Tu equipo</h2>
+            <RouterLink v-if="canOpen('fumigadores')" :to="{ name: 'fumigadores' }" class="accent-link">Ver equipo →</RouterLink>
+          </div>
+          <p v-if="!team.length" class="muted mt-4 text-sm">Sin estadísticas del equipo para este mes.</p>
+          <ul v-else class="mt-2">
+            <li v-for="[name, stats] in team" :key="name" class="list-row">
+              <component :is="canOpen('fumigadores') ? RouterLink : 'div'"
+                :to="canOpen('fumigadores') ? { name: 'fumigadores', query: { itemIdToOpen: stats.id } } : undefined"
+                class="flex items-center gap-3 py-2 text-sm">
+                <span class="metric-icon grid size-8 shrink-0 place-items-center rounded-full font-semibold" aria-hidden="true">{{ name.charAt(0) }}</span>
+                <span class="min-w-0 flex-1 font-semibold">{{ name }}</span>
+                <span class="status-chip">{{ stats.programadas }} programadas</span>
+              </component>
+            </li>
+          </ul>
+        </section>
+      </div>
+
+      <div class="grid gap-4 lg:grid-cols-[1.85fr_1fr]">
+        <section v-if="visibleShortcuts.length" class="panel flex flex-col justify-between p-4">
+          <h2 class="section-title">Accesos rápidos</h2>
+          <div class="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+            <RouterLink v-for="shortcut in visibleShortcuts" :key="shortcut.name" :to="{ name: shortcut.name }"
+              class="shortcut flex min-h-16 flex-col items-center justify-center gap-2 rounded-xl p-2 text-center text-xs font-semibold text-white"
+              :class="{ 'shortcut-primary': shortcut.name === 'planeacion' }">
+              <i class="fas text-lg" :class="shortcut.icon" aria-hidden="true"></i>{{ shortcut.label }}
+            </RouterLink>
+          </div>
+        </section>
+        <section class="panel recent-panel">
+          <div class="flex items-center justify-between gap-2 px-4 pt-3">
+            <h2 class="font-bold">Últimas actividades</h2>
+            <RouterLink :to="{ query: { ...$route.query, notificaciones: '1' }, hash: $route.hash }" aria-haspopup="dialog" class="text-xs font-bold text-[#ff747b] hover:underline">Ver todas →</RouterLink>
+          </div>
+          <p v-if="!recentNotifications.length" class="px-4 py-3 text-xs text-neutral-300">Sin notificaciones pendientes.</p>
+          <ul v-else class="px-4 pb-2 pt-1">
+            <li v-for="item in recentNotifications" :key="item.id" class="recent-row flex items-center gap-2 py-2 text-xs">
+              <i class="fas fa-bell" aria-hidden="true"></i>
+              <span class="min-w-0 flex-1 truncate" :title="item.message">{{ item.message }}</span>
+              <time v-if="item.date" :datetime="item.date.toISOString()" class="shrink-0 text-neutral-300">{{ visitTime.format(item.date) }}</time>
+            </li>
+          </ul>
+        </section>
+      </div>
+    </template>
   </div>
 </template>
 
 <style scoped>
-.animate-fade-in {
-  animation: fadeIn 0.5s ease-out;
+.dashboard {
+  --dashboard-accent: #b8000b;
+  --dashboard-tint: #fff0f1;
+  color: var(--shell-text);
 }
 
-@keyframes fadeIn {
-  from {
-    opacity: 0;
-    transform: translateY(10px);
-  }
-
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+[data-theme='dark'] .dashboard {
+  --dashboard-accent: #ff747b;
+  --dashboard-tint: #3b1e21;
 }
+
+.welcome-banner {
+  min-height: 8rem;
+  background:
+    linear-gradient(127deg, transparent 76%, #a8000a 76% 78%, #e50914 78% 80%, #171717 80%),
+    linear-gradient(90deg, #111 27%, #111c 42%, transparent 67%),
+    #111 url('/images/servicio-manejo-plagas.jpg') right 57% / 61% auto no-repeat;
+  color: #fff;
+}
+
+.welcome-copy { border-left: 5px solid #e50914; padding-left: 0.9rem; }
+.welcome-date { display: flex; align-items: center; gap: 0.85rem; text-shadow: 0 1px 4px #111; }
+.welcome-date time { min-width: 8.5rem; }
+
+.panel {
+  overflow: hidden;
+  border: 1px solid var(--shell-border);
+  border-radius: 0.9rem;
+  background: var(--shell-surface);
+  box-shadow: 0 1px 2px #0000000a;
+}
+
+.metric { position: relative; isolation: isolate; min-height: 6rem; background: linear-gradient(145deg, var(--shell-surface) 70%, var(--dashboard-tint)); }
+.metric::after { content: ''; position: absolute; z-index: -1; inset: auto 0 0 auto; width: 35%; height: 56%; background: var(--dashboard-tint); clip-path: polygon(0 100%, 18% 82%, 38% 78%, 64% 37%, 81% 38%, 100% 0, 100% 100%); }
+.metric:nth-child(even) { --dashboard-tint: var(--shell-input); }
+.kpi-icon { color: var(--dashboard-accent); }
+.metric:nth-child(2) .kpi-icon { color: var(--shell-text); }
+.metric:nth-child(n + 3) .kpi-icon { background: #d40711; color: #fff; border-radius: 50%; }
+.metric[href]:hover { border-color: #e50914; }
+.metric-icon { background: var(--dashboard-tint); color: var(--dashboard-accent); }
+.muted { color: var(--shell-muted); }
+.section-title { display: flex; align-items: center; gap: 0.55rem; font-weight: 750; }
+.section-title i, .accent-link { color: var(--dashboard-accent); }
+.accent-link { font-size: 0.75rem; font-weight: 700; }
+.accent-link:hover { text-decoration: underline; }
+.panel-heading { background: #181818; color: #fff; }
+.list-row + .list-row { border-top: 1px solid var(--shell-border); }
+.list-row a:hover { color: var(--dashboard-accent); }
+.activity-layout { display: grid; grid-template-columns: minmax(6rem, 1fr) minmax(0, 2fr); min-height: 10.5rem; align-items: center; gap: 0.75rem; margin-top: 0.5rem; }
+.activity-gauge { display: grid; justify-items: center; gap: 0.5rem; text-align: center; }
+.activity-ring { display: grid; place-items: center; width: clamp(5.5rem, 9vw, 8.3rem); aspect-ratio: 1; border-radius: 50%; background: conic-gradient(#e50914 var(--activity-total), #bfc1c7 0); }
+.activity-ring strong { display: grid; place-items: center; width: 79%; aspect-ratio: 1; border-radius: 50%; background: var(--shell-surface); font-size: 1.35rem; }
+.activity-summary { display: grid; min-width: 0; gap: 0.8rem; padding-left: 0.75rem; border-left: 1px solid var(--shell-border); }
+.activity-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); text-align: center; }
+.activity-stats div + div { border-left: 1px solid var(--shell-border); }
+.activity-stats i { font-size: 1.2rem; }
+.activity-stats i:not(.text-green-600) { color: var(--dashboard-accent); }
+.activity-stats dd { font-size: 1.5rem; font-weight: 800; }
+.activity-stats dt { font-size: 0.7rem; overflow-wrap: anywhere; }
+.activity-progress { width: 100%; height: 0.6rem; accent-color: #e50914; }
+.agenda-time { min-width: 5.7rem; border-right: 1px solid var(--shell-border); padding-right: 0.5rem; }
+.agenda-time::before { content: ''; display: inline-block; width: 0.55rem; height: 0.55rem; margin-right: 0.35rem; border-radius: 50%; background: #e50914; }
+.agenda-list li:nth-child(3n + 2) .agenda-time::before { background: #426591; }
+.agenda-list li:nth-child(3n) .agenda-time::before { background: #bd5d04; }
+.status-chip[data-status='Realizada'] { color: #086634; background: #dcf4e4; }
+.status-chip[data-status='Programada'] { color: #174783; background: #e0ebff; }
+.service-mix { display: grid; grid-template-columns: minmax(5rem, 1fr) minmax(0, 1fr); gap: 0.65rem; align-items: center; min-height: 11rem; }
+.service-donut { position: relative; width: 100%; aspect-ratio: 1; }
+.service-total { position: absolute; inset: 0; display: grid; place-content: center; text-align: center; line-height: 1.05; pointer-events: none; }
+.service-total strong { font-size: 1.5rem; }
+.service-total span { font-size: 0.7rem; }
+.recent-panel { background: #181818; color: white; }
+.recent-row i { color: #76b6f1; }
+.recent-row + .recent-row { border-top: 1px solid #ffffff18; }
+@media (max-width: 640px) {
+  .welcome-banner { background: linear-gradient(90deg, #111, #111a), #111 url('/images/servicio-manejo-plagas.jpg') center / cover; }
+  .welcome-date { font-size: 0.8rem; }
+  .agenda-time { min-width: 0; }
+}
+.status-chip { border-radius: 99px; padding: 0.2rem 0.45rem; background: var(--shell-input); color: var(--shell-muted); font-size: 0.7rem; font-weight: 600; }
+.shortcut { background: #222; }
+.shortcut:hover { background: #3b3b3b; }
+.shortcut-primary { background: #b8000b; }
+.shortcut-primary:hover { background: #9e000a; }
 </style>

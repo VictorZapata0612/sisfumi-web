@@ -4345,6 +4345,7 @@ exports.getConsolidatedDashboardStats = onCall(
           nombre_cliente: visit.nombre_cliente,
           tipo_visita: visit.tipo_visita,
           fecha_visita: visit.fecha_visita.toISOString(),
+          estado_visita: visit.estado_visita ?? null,
           fumigadores_asignados: visit.fumigadores_asignados || [],
         }))
 
