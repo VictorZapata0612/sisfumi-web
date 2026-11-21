@@ -43,6 +43,9 @@ export const useTechniciansStore = defineStore('technicians', () => {
   // Perfil
   const selectedProfile = ref<TechnicianProfile | null>(null)
   const loadingProfile = ref(false)
+  const profileError = ref<string | null>(null)
+  let profileRequest = 0
+  let directoryRequest = 0
 
   // --- Actions ---
 
@@ -54,6 +57,7 @@ export const useTechniciansStore = defineStore('technicians', () => {
     searchTerm?: string
     direction?: 'next' | 'prev' | 'reset'
   }) {
+    const request = ++directoryRequest
     loading.value = true
     error.value = null
 
@@ -75,6 +79,7 @@ export const useTechniciansStore = defineStore('technicians', () => {
         direction: 'next',
       })) as { data: { technicians: Technician[] } }
 
+      if (request !== directoryRequest) return
       const newTechnicians = result.data.technicians || []
       technicians.value = newTechnicians
 
@@ -86,9 +91,9 @@ export const useTechniciansStore = defineStore('technicians', () => {
       }
       isLastPage.value = newTechnicians.length < 20 // Debe coincidir con getFumigadoresPage en Functions.
     } catch (err: any) {
-      error.value = `Error al cargar técnicos: ${err.message}`
+      if (request === directoryRequest) error.value = err?.message || 'No se pudieron cargar los técnicos.'
     } finally {
-      loading.value = false
+      if (request === directoryRequest) loading.value = false
     }
   }
 
@@ -120,17 +125,20 @@ export const useTechniciansStore = defineStore('technicians', () => {
    * Carga los datos de perfil y rendimiento de un técnico para un mes específico.
    */
   async function fetchTechnicianProfile(technicianId: string, month: number, year: number) {
+    const request = ++profileRequest
     loadingProfile.value = true
+    profileError.value = null
+    selectedProfile.value = null
     try {
       const getProfileFn = httpsCallable(functions, 'getTechnicianProfileData')
       const result = (await getProfileFn({ technicianId, month, year })) as {
         data: TechnicianProfile
       }
-      selectedProfile.value = result.data
+      if (request === profileRequest) selectedProfile.value = result.data
     } catch (err: any) {
-      error.value = `Error al cargar perfil: ${err.message}`
+      if (request === profileRequest) profileError.value = err?.message || 'No se pudo cargar la ficha del técnico.'
     } finally {
-      loadingProfile.value = false
+      if (request === profileRequest) loadingProfile.value = false
     }
   }
 
@@ -142,6 +150,7 @@ export const useTechniciansStore = defineStore('technicians', () => {
     isLastPage,
     selectedProfile,
     loadingProfile,
+    profileError,
     fetchTechnicians,
     addTechnician,
     updateTechnician,

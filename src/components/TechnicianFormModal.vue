@@ -8,11 +8,13 @@ import type { Technician } from '@/stores/technicians'
 const props = defineProps<{
   show: boolean
   technician: Technician | null
+  canDelete?: boolean
 }>()
 
 const emit = defineEmits<{
   (e: 'close'): void
   (e: 'refresh'): void
+  (e: 'delete', id: string): void
 }>()
 
 const techniciansStore = useTechniciansStore()
@@ -73,6 +75,7 @@ watch(
 )
 
 const handleSubmit = async () => {
+  if (isLoading.value) return
   try {
     formError.value = null
     if (!form.value.nombreCompleto || !form.value.nombreCompleto.trim()) {
@@ -114,66 +117,48 @@ const handleSubmit = async () => {
   }
 }
 
-const handleDelete = async () => {
-  if (!form.value.id) return
-  try {
-    formError.value = null
-    isLoading.value = true
-    await techniciansStore.deleteTechnician(form.value.id)
-    showToast({
-      title: 'Éxito',
-      message: 'Técnico eliminado correctamente.',
-      type: 'success',
-    })
-    emit('refresh')
-    emit('close')
-  } catch (err: any) {
-    const errorMsg = err?.message || 'Error al eliminar técnico'
-    formError.value = errorMsg
-    showToast({
-      title: 'Error',
-      message: errorMsg,
-      type: 'error',
-    })
-  } finally {
-    isLoading.value = false
-  }
+function handleDelete() {
+  if (props.canDelete && !isLoading.value && form.value.id) emit('delete', form.value.id)
 }
 </script>
 
 <template>
   <div v-if="show" class="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6" role="dialog"
-    aria-modal="true">
+    aria-modal="true" aria-labelledby="tech-form-title" @keydown.esc.stop="!isLoading && emit('close')">
     <!-- Backdrop con desenfoque -->
-    <div class="fixed inset-0 bg-[#0a0a0a]/80 backdrop-blur-sm transition-opacity" @click="emit('close')"></div>
+    <div class="fixed inset-0 bg-[#0a0a0a]/80 backdrop-blur-sm transition-opacity" @click="!isLoading && emit('close')"></div>
 
     <!-- Modal Panel -->
     <div
-      class="relative bg-[#151515] rounded-xl border border-white/10 shadow-2xl w-full max-w-xl transform transition-all flex flex-col max-h-[90vh] overflow-hidden">
+      class="relative bg-[var(--shell-surface)] rounded-xl border border-[var(--shell-border)] shadow-2xl w-full max-w-xl transform transition-all flex flex-col max-h-[calc(100dvh-2rem)] overflow-hidden">
 
       <!-- Header -->
-      <div class="flex items-center justify-between p-4 sm:p-6 border-b border-white/10 bg-[#0a0a0a]/30">
-        <h3 class="text-xl font-bold text-white flex items-center gap-2">
-          <i :class="isEditing ? 'fas fa-user-edit text-[#d60000]' : 'fas fa-user-plus text-green-400'"></i>
-          {{ isEditing ? 'Editar Técnico' : 'Nuevo Técnico' }}
-        </h3>
-        <button @click="emit('close')" class="text-gray-400 hover:text-white transition-colors focus:outline-none p-1">
-          <i class="fas fa-times text-xl"></i>
-        </button>
+      <div class="tech-form-header flex shrink-0 items-start justify-between gap-3 p-4 sm:p-5">
+        <div class="flex min-w-0 items-center gap-3">
+          <span class="tech-form-icon grid size-11 shrink-0 place-items-center rounded-xl" aria-hidden="true">
+            <i class="fas" :class="isEditing ? 'fa-user-edit' : 'fa-user-plus'"></i>
+          </span>
+          <div class="min-w-0">
+            <h2 id="tech-form-title" class="text-xl font-extrabold">{{ isEditing ? 'Editar técnico' : 'Nuevo técnico' }}</h2>
+            <p class="mt-1 text-sm text-[var(--shell-muted)]">{{ isEditing ? technician?.nombreCompleto : 'Registra el contacto y la zona de operación.' }}</p>
+          </div>
+        </div>
+        <button type="button" class="tech-form-button" aria-label="Cerrar formulario"
+          :disabled="isLoading" @click="emit('close')"><i class="fas fa-times" aria-hidden="true"></i></button>
       </div>
 
       <!-- Form Content -->
-      <form @submit.prevent="handleSubmit" class="p-4 sm:p-6 overflow-y-auto custom-scrollbar flex flex-col gap-6">
+      <form id="technician-editor" @submit.prevent="handleSubmit" class="tech-form-body min-h-0 space-y-4 overflow-y-auto p-4 sm:p-5">
 
         <!-- Error Message -->
-        <div v-if="formError" class="bg-red-500/10 border border-red-500/30 rounded-lg p-4 flex gap-3">
+        <div v-if="formError" role="alert" class="bg-red-500/10 border border-red-500/30 rounded-lg p-4 flex gap-3">
           <i class="fas fa-exclamation-circle text-red-400 flex-shrink-0 mt-0.5"></i>
-          <p class="text-red-200 text-sm">{{ formError }}</p>
+          <p class="text-[var(--tech-accent)] text-sm">{{ formError }}</p>
         </div>
 
         <!-- Sección 1: Información Personal -->
-        <div class="bg-white/5 rounded-lg p-4 border border-white/10 space-y-4">
-          <h4 class="text-xs font-bold text-[#d60000] uppercase tracking-widest border-b border-white/10 pb-2 mb-4">
+        <div class="bg-[var(--shell-input)] rounded-lg p-4 border border-[var(--shell-border)] space-y-4">
+          <h4 class="text-xs font-bold text-[var(--shell-text)] border-b border-[var(--shell-border)] pb-2 mb-4">
             Información Personal
           </h4>
 
@@ -198,8 +183,8 @@ const handleDelete = async () => {
         </div>
 
         <!-- Sección 2: Configuración de Operación -->
-        <div class="bg-white/5 rounded-lg p-4 border border-white/10 space-y-4">
-          <h4 class="text-xs font-bold text-[#d60000] uppercase tracking-widest border-b border-white/10 pb-2 mb-4">
+        <div class="bg-[var(--shell-input)] rounded-lg p-4 border border-[var(--shell-border)] space-y-4">
+          <h4 class="text-xs font-bold text-[var(--shell-text)] border-b border-[var(--shell-border)] pb-2 mb-4">
             Asignación y Calendario
           </h4>
 
@@ -212,7 +197,7 @@ const handleDelete = async () => {
                   <option>Valle del Cauca</option>
                   <option>Nacionales</option>
                 </select>
-                <div class="absolute inset-y-0 right-0 flex items-center px-2 pointer-events-none text-gray-400">
+                <div class="absolute inset-y-0 right-0 flex items-center px-2 pointer-events-none text-[var(--shell-muted)]">
                   <i class="fas fa-chevron-down text-xs"></i>
                 </div>
               </div>
@@ -227,18 +212,18 @@ const handleDelete = async () => {
                       {{ color.name }}
                     </option>
                   </select>
-                  <div class="absolute inset-y-0 right-0 flex items-center px-2 pointer-events-none text-gray-400">
+                  <div class="absolute inset-y-0 right-0 flex items-center px-2 pointer-events-none text-[var(--shell-muted)]">
                     <i class="fas fa-chevron-down text-xs"></i>
                   </div>
                 </div>
                 <!-- Previsualización del Color -->
                 <div
-                  class="w-10 h-10 rounded-lg border border-white/20 shadow-lg flex-shrink-0 transition-colors duration-300"
+                  class="w-10 h-10 rounded-lg border border-[var(--shell-border)] shadow-lg flex-shrink-0 transition-colors duration-300"
                   :style="{ backgroundColor: currentColorHex }" :title="currentColorHex"></div>
               </div>
             </div>
           </div>
-          <p class="text-xs text-gray-500 italic mt-2">
+          <p class="text-xs text-[var(--shell-muted)] italic mt-2">
             <i class="fas fa-info-circle mr-1"></i> El color seleccionado se utilizará para sincronizar los eventos en
             Google Calendar.
           </p>
@@ -247,19 +232,19 @@ const handleDelete = async () => {
       </form>
 
       <!-- Footer Actions -->
-      <div class="p-4 sm:p-6 border-t border-white/10 bg-[#0a0a0a]/30 flex flex-col sm:flex-row justify-between gap-4">
-        <button v-if="isEditing" @click.prevent="handleDelete" type="button" :disabled="isLoading"
-          class="btn btn-danger w-full sm:w-auto flex items-center justify-center gap-2 disabled:opacity-50">
+      <div class="flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-[var(--shell-border)] bg-[var(--shell-input)] p-4 sm:px-5">
+        <button v-if="isEditing && canDelete" @click="handleDelete" type="button" :disabled="isLoading"
+          class="tech-form-button text-[var(--tech-accent)]">
           <i v-if="!isLoading" class="fas fa-trash-alt"></i>
           <i v-else class="fas fa-spinner animate-spin"></i>
           <span>{{ isLoading ? 'Eliminando...' : 'Eliminar' }}</span>
         </button>
         <div v-else class="hidden sm:block"></div> <!-- Spacer -->
 
-        <div class="flex gap-3 justify-end w-full sm:w-auto">
-          <button @click="emit('close')" type="button" :disabled="isLoading" class="btn btn-secondary disabled:opacity-50">Cancelar</button>
-          <button @click="handleSubmit" type="button" :disabled="isLoading"
-            class="btn btn-primary bg-[#d60000] hover:bg-red-700 shadow-lg shadow-red-500/20 px-6 disabled:opacity-50 flex items-center gap-2">
+        <div class="ml-auto flex flex-wrap justify-end gap-2">
+          <button @click="!isLoading && emit('close')" type="button" :disabled="isLoading" class="tech-form-button">Cancelar</button>
+          <button type="submit" form="technician-editor" :disabled="isLoading"
+            class="tech-form-button tech-form-primary">
             <i v-if="!isLoading" class="fas fa-save"></i>
             <i v-else class="fas fa-spinner animate-spin"></i>
             {{ isLoading ? (isEditing ? 'Guardando...' : 'Creando...') : (isEditing ? 'Guardar Cambios' : 'Crear Técnico') }}
@@ -272,13 +257,22 @@ const handleDelete = async () => {
 </template>
 
 <style scoped>
+.tech-form-header { border-bottom: 1px solid var(--shell-border); background: linear-gradient(115deg, var(--tech-tint), var(--shell-surface) 72%); }
+.tech-form-icon { background: var(--tech-tint); color: var(--tech-accent); }
+.tech-form-body { scrollbar-color: var(--shell-scroll-thumb) var(--shell-scroll-track); }
+.tech-form-button { display: inline-flex; min-height: 2.5rem; align-items: center; justify-content: center; gap: 0.45rem; padding: 0.45rem 0.75rem; border: 1px solid var(--shell-border); border-radius: 0.55rem; background: var(--shell-surface); font-size: 0.8rem; font-weight: 650; }
+.tech-form-button:hover { background: var(--shell-input); }
+.tech-form-button:disabled { opacity: 0.55; }
+.tech-form-primary { background: #c7000c; color: #fff; border-color: #bc000b; }
+.tech-form-primary:hover { background: #a9000a; }
+
 .input-field-dark {
-  background-color: #202020;
+  background-color: var(--shell-input);
   /* bg-gray-700 -> #202020 */
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  /* border-gray-600 -> border-white/10 */
+  border: 1px solid var(--shell-border);
+  /* border-gray-600 -> border-[var(--shell-border)] */
   border-radius: 0.5rem;
-  color: #fff;
+  color: var(--shell-text);
   padding: 0.5rem 0.75rem;
   transition: all 0.2s;
 }
@@ -294,7 +288,7 @@ const handleDelete = async () => {
   display: block;
   font-size: 0.75rem;
   font-weight: 700;
-  color: #9ca3af;
+  color: var(--shell-muted);
   /* gray-400 */
   margin-bottom: 0.25rem;
   text-transform: uppercase;

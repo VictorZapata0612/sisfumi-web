@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, watch, onMounted, onUnmounted, defineAsyncComponent } from 'vue'
+import { useStorage } from '@vueuse/core'
 import { RouterView, RouterLink, useRoute } from 'vue-router'
 
 import NotificationsModal from '@/components/NotificationsModal.vue'
@@ -19,12 +20,10 @@ const route = useRoute()
 
 // Estado para la visibilidad en modo móvil
 const sidebarOpen = ref(false)
-const darkTheme = ref(localStorage.getItem('sisfumi-theme') === 'dark')
-watch(darkTheme, (enabled) => localStorage.setItem('sisfumi-theme', enabled ? 'dark' : 'light'))
+const theme = useStorage('sisfumi-theme', 'light')
 watch(() => route.fullPath, () => { sidebarOpen.value = false })
 // Nuevo estado para el colapso parcial (solo iconos) en desktop
 const isCollapsed = ref(false)
-const openDropdown = ref<string | null>(null)
 const showProfileModal = ref(false)
 const showAgentPanel = ref(false)
 const isOnline = ref(navigator.onLine)
@@ -59,12 +58,8 @@ onUnmounted(() => {
   window.removeEventListener('keydown', handleKeydown)
 })
 
-type NavChildLink = { name: string; to: string; icon?: string; roles?: string[] }
-type NavLink =
-  | { name: string; to: string; icon: string; roles?: string[]; children?: never }
-  | { name: string; icon: string; roles?: string[]; children: NavChildLink[] }
+type NavLink = { name: string; to: string; icon: string; roles?: string[] }
 
-// Estructura de navegación ajustada para coincidir con la imagen
 const navLinks: NavLink[] = [
   // Ítems de nivel superior
   // Nota: La ruta de inicio es '/dashboard' para coincidir con el router y el menú
@@ -74,18 +69,7 @@ const navLinks: NavLink[] = [
   { name: 'Planeación', to: '/dashboard/planeacion', icon: 'fa-calendar-alt', roles: [...ROLE_MATRIX.operational] },
   { name: 'Técnicos', to: '/dashboard/fumigadores', icon: 'fa-hard-hat', roles: [...ROLE_MATRIX.operational] },
 
-  // Dropdown Finanzas (Nuevo grupo)
-  {
-    name: 'Finanzas',
-    icon: 'fa-coins',
-    roles: [...ROLE_MATRIX.financial],
-    children: [
-      { name: 'Facturación', to: '/dashboard/facturacion', icon: 'fa-file-invoice-dollar', roles: [...ROLE_MATRIX.financial] },
-      { name: 'Pagos', to: '/dashboard/pagos', icon: 'fa-money-bill-wave', roles: [...ROLE_MATRIX.financial] },
-    ],
-  },
   { name: 'Reportes', to: '/dashboard/reportes', icon: 'fa-chart-column', roles: [...ROLE_MATRIX.financial] },
-  { name: 'Administración', to: '/dashboard/permisos', icon: 'fa-layer-group', roles: [...ROLE_MATRIX.permissions] },
   { name: 'Configuración', to: '/dashboard/configuracion', icon: 'fa-gear', roles: [...ROLE_MATRIX.operational] },
 ]
 
@@ -100,11 +84,6 @@ const isLinkActive = (path: string) => {
   return route.path === path || route.path.startsWith(path + '/')
 }
 
-// Función para determinar si el dropdown contiene un enlace activo
-const isDropdownActive = (children: { name: string; to: string; icon?: string }[]) => {
-  return children.some((child) => isLinkActive(child.to))
-}
-
 const hasAccess = (roles?: string[]) => {
   if (!roles) return true
   // Usa el rol del usuario logueado para verificar el acceso
@@ -114,18 +93,13 @@ const hasAccess = (roles?: string[]) => {
 // Función para alternar el colapso del sidebar (Desktop)
 const toggleCollapse = () => {
   isCollapsed.value = !isCollapsed.value
-  if (isCollapsed.value) openDropdown.value = null
 }
 
-const toggleGroup = (name: string) => {
-  isCollapsed.value = false
-  openDropdown.value = openDropdown.value === name ? null : name
-}
 </script>
 
 <template>
   <!-- Contenedor principal de la aplicación -->
-  <div class="app-shell flex h-dvh" :data-theme="darkTheme ? 'dark' : 'light'">
+  <div class="app-shell flex h-dvh" :data-theme="theme === 'dark' ? 'dark' : 'light'">
     <ToastContainer />
     <NotificationsModal />
     <ConfirmDialog />
@@ -177,7 +151,7 @@ const toggleGroup = (name: string) => {
       <nav aria-label="Navegación principal" class="sidebar-nav flex min-h-0 flex-1 flex-col overflow-y-auto px-2.5 pb-3 pt-2">
         <ul class="shrink-0 space-y-0.5">
           <template v-for="link in navLinks" :key="link.name">
-            <li v-if="hasAccess(link.roles) && !link.children">
+            <li v-if="hasAccess(link.roles)">
               <!-- Enlace simple -->
               <RouterLink :to="link.to" active-class="" exact-active-class="" :aria-label="link.name" @click="sidebarOpen = false"
                 class="nav-button flex items-center gap-3 rounded-lg px-3 text-sm text-neutral-200 transition-colors hover:bg-white/10"
@@ -190,37 +164,6 @@ const toggleGroup = (name: string) => {
               </RouterLink>
             </li>
 
-            <li v-else-if="hasAccess(link.roles) && link.children">
-              <!-- Botón de Dropdown -->
-              <button @click="toggleGroup(link.name)" :aria-expanded="openDropdown === link.name && !isCollapsed" :aria-label="link.name"
-                class="nav-button flex w-full items-center justify-between rounded-lg px-3 text-sm text-neutral-200 transition-colors hover:bg-white/10"
-                :class="{
-                  'nav-active text-white font-semibold':
-                    isDropdownActive(link.children),
-                  'lg:justify-center': isCollapsed,
-                }" :title="isCollapsed ? link.name : ''">
-                <span class="flex items-center gap-3" :class="{ 'lg:w-full lg:justify-center': isCollapsed }">
-                  <i class="fas w-5 shrink-0 text-center text-base" :class="[link.icon, { 'lg:w-full': isCollapsed }]"></i>
-                  <span :class="{ 'lg:hidden': isCollapsed }" class="ml-1 whitespace-nowrap">{{ link.name }}</span>
-                </span>
-                <i class="fas fa-chevron-down text-xs transition-transform"
-                  :class="{ 'rotate-180': openDropdown === link.name, 'lg:hidden': isCollapsed }"></i>
-              </button>
-
-              <!-- Contenedor del Submenú -->
-              <div v-show="openDropdown === link.name && !isCollapsed"
-                class="bg-white/5 overflow-hidden transition-all duration-300 ease-in-out">
-                <ul>
-                  <li v-for="child in link.children" :key="child.name">
-                    <RouterLink v-if="hasAccess(child.roles)" :to="child.to" active-class="" exact-active-class="" @click="sidebarOpen = false"
-                      class="flex items-center pl-10 pr-6 py-2 text-gray-400 hover:bg-[#E50914] hover:text-white transition-colors"
-                      :class="{ '!text-white font-bold bg-[#E50914]/20': isLinkActive(child.to) }">
-                      {{ child.name }}
-                    </RouterLink>
-                  </li>
-                </ul>
-              </div>
-            </li>
           </template>
         </ul>
         <div class="brand-panel mt-auto pb-6 pt-4" :class="{ 'lg:hidden': isCollapsed }">
@@ -269,10 +212,10 @@ const toggleGroup = (name: string) => {
       <!-- Header con Búsqueda Global -->
       <AppHeader
         :sidebar-open="sidebarOpen"
-        :dark-theme="darkTheme"
+        :dark-theme="theme === 'dark'"
         :show-clock="route.name !== 'dashboard'"
         @toggle-sidebar="sidebarOpen = !sidebarOpen"
-        @set-theme="darkTheme = $event"
+        @set-theme="theme = $event ? 'dark' : 'light'"
       />
 
       <!-- Área de la vista (donde se renderiza RouterView) -->

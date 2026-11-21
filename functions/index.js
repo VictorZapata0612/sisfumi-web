@@ -5661,7 +5661,7 @@ exports.getAnnualBillingReport = onCall(
     const hasGlobalAccess = FINANCIAL_ROLES.includes(userRole)
 
     const { year, zone: requestedZone } = data
-    if (typeof year !== 'number') throw new HttpsError('invalid-argument', 'Se requiere el año.')
+    if (!Number.isInteger(year) || year < 2000 || year > 2100) throw new HttpsError('invalid-argument', 'Se requiere el año.')
 
     if (!userZone && !hasGlobalAccess) {
       throw new HttpsError(
@@ -5720,10 +5720,10 @@ exports.getAnnualBillingReport = onCall(
       // 2. Procesar cada factura emitida.
       invoicesSnapshot.docs.forEach((invoiceDoc) => {
         const invoiceData = invoiceDoc.data()
-        const invoiceTotal = invoiceData.totalValue || 0
+        const invoiceTotal = Number(invoiceData.totalValue) || 0
         totalInvoiced += invoiceTotal
         const invoiceMonth = Number.isInteger(invoiceData.month) ? invoiceData.month : 0
-        monthlyTrend[invoiceMonth] += invoiceTotal
+        if (invoiceMonth >= 0 && invoiceMonth < 12) monthlyTrend[invoiceMonth] += invoiceTotal
 
         // Acumular para Top Clientes
         const clientId = invoiceData.clientId
@@ -5743,19 +5743,72 @@ exports.getAnnualBillingReport = onCall(
           (serviceDistributionByZone[zoneKey] || 0) + (invoiceData.servicesCount || 0)
       })
 
-      // 3. Obtener visitas pendientes de facturar para el KPI "Pendiente de Facturar".
-      let pendingVisitsQuery = db
-        .collection('visitas')
-        .where('estado_visita', '==', 'Realizada')
-        .where('estado_facturacion', '==', 'Pendiente')
-      if (zoneToFilter) {
-        pendingVisitsQuery = pendingVisitsQuery.where('zona', '==', zoneToFilter)
-      }
-      const pendingVisitsSnapshot = await pendingVisitsQuery.get()
+      // La fecha de la visita define el periodo operativo en hora colombiana.
+      const start = new Date(year + '-01-01T00:00:00-05:00')
+      const end = new Date((year + 1) + '-01-01T00:00:00-05:00')
+      let visitsQuery = db.collection('visitas')
+        .where('fecha_visita', '>=', start)
+        .where('fecha_visita', '<', end)
+        .orderBy('fecha_visita')
+      if (zoneToFilter) visitsQuery = visitsQuery.where('zona', '==', zoneToFilter)
+
+      const months = Array.from({ length: 12 }, () => ({ visits: 0, completed: 0, pendingBilling: 0 }))
+      const services = new Map()
+      const clients = new Map()
+      const technicians = new Map()
+      const zones = new Map()
+      const statuses = { scheduled: 0, completed: 0, cancelled: 0, other: 0 }
       let totalPendingBilling = 0
-      pendingVisitsSnapshot.forEach((doc) => {
-        totalPendingBilling += doc.data().valor_servicio || 0
-      })
+      let billedVisits = 0
+      let totalVisits = 0
+      const monthFormat = new Intl.DateTimeFormat('en-US', { timeZone: 'America/Bogota', month: 'numeric' })
+
+      const count = (map, key, label, completed) => {
+        const row = map.get(key) || { label, visits: 0, completed: 0 }
+        row.visits++
+        if (completed) row.completed++
+        map.set(key, row)
+      }
+
+      for (let cursor = null; ;) {
+        const batch = await (cursor ? visitsQuery.startAfter(cursor) : visitsQuery).limit(500).get()
+        for (const doc of batch.docs) {
+          const visit = doc.data()
+          const month = months[Number(monthFormat.format(visit.fecha_visita.toDate())) - 1]
+          const completed = visit.estado_visita === 'Realizada'
+          const status = completed ? 'completed' : visit.estado_visita === 'Cancelada' ? 'cancelled'
+            : visit.estado_visita === 'Programada' ? 'scheduled' : 'other'
+          statuses[status]++
+          totalVisits++
+          month.visits++
+          if (completed) {
+            month.completed++
+            if (visit.estado_facturacion === 'Pendiente') {
+              const value = Number(visit.valor_servicio) || 0
+              month.pendingBilling += value
+              totalPendingBilling += value
+            }
+            if (visit.estado_facturacion === 'Facturada') billedVisits++
+          }
+          const service = visit.tipo_visita || 'Sin tipo'
+          const zone = visit.zona || 'Sin zona'
+          const client = visit.nombre_cliente || 'Sin nombre'
+          count(services, service, service, completed)
+          count(zones, zone, zone, completed)
+          if (visit.id_cliente || visit.nombre_cliente) count(clients, visit.id_cliente || client, client, completed)
+          for (const name of new Set(Array.isArray(visit.fumigadores_asignados) ? visit.fumigadores_asignados.filter(Boolean) : [])) {
+            count(technicians, name, name, completed)
+          }
+        }
+        if (batch.size < 500) break
+        cursor = batch.docs[batch.docs.length - 1]
+      }
+
+      const ranked = (map) => [...map.values()].sort((a,b) => b.visits - a.visits || a.label.localeCompare(b.label, 'es'))
+      const operational = {
+        months, statuses, clientsWithVisits: clients.size, techniciansWithVisits: technicians.size,
+        services: ranked(services), clients: ranked(clients), technicians: ranked(technicians), zones: ranked(zones),
+      }
 
       // 4. Procesar datos para los rankings.
       const topClients = Object.entries(clientRevenue)
@@ -5771,10 +5824,11 @@ exports.getAnnualBillingReport = onCall(
         kpis: {
           totalInvoiced,
           totalPendingBilling: totalPendingBilling,
-          totalVisits: 0,
-          billedVisits: 0,
+          totalVisits,
+          billedVisits,
         },
         monthlyTrend,
+        operational,
         quarterlyComparison: {},
         topClients: topClients,
         technicianRates: [],

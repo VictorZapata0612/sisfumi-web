@@ -119,13 +119,13 @@ const router = createRouter({
           path: 'facturacion',
           name: 'facturacion',
           component: () => import('../views/BillingView.vue'),
-          meta: { roles: [...ROLE_MATRIX.financial] },
+          meta: { hiddenModule: true, roles: [...ROLE_MATRIX.financial] },
         },
         {
           path: 'pagos',
           name: 'pagos',
           component: () => import('../views/PaymentsView.vue'),
-          meta: { roles: [...ROLE_MATRIX.financial] },
+          meta: { hiddenModule: true, roles: [...ROLE_MATRIX.financial] },
         },
         {
           path: 'reportes',
@@ -137,7 +137,7 @@ const router = createRouter({
           path: 'permisos',
           name: 'permisos',
           component: () => import('../views/PermissionsView.vue'),
-          meta: { roles: [...ROLE_MATRIX.permissions] },
+          meta: { hiddenModule: true, roles: [...ROLE_MATRIX.permissions] },
         },
         {
           path: 'configuracion',
@@ -167,6 +167,9 @@ router.beforeEach(async (to, from, next) => {
   }
   // 2. Si el usuario ya tiene sesión e intenta ir al /login -> Lo redirige al Dashboard
   else if (to.name === 'login' && authStore.isLoggedIn) {
+    next({ name: 'dashboard' })
+  }
+  else if (to.meta.hiddenModule) {
     next({ name: 'dashboard' })
   }
   // 3. Verificación de roles permitidos para la ruta

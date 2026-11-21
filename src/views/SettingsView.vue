@@ -2,15 +2,14 @@
 <!-- eslint-disable @typescript-eslint/no-explicit-any -->
 <script setup lang="ts">
 import { onMounted, ref, nextTick, computed, watch } from 'vue'
+import { useStorage } from '@vueuse/core'
 import {
   useSettingsStore,
   type CalendarIntegration,
   type AuditLog,
   type SystemUser,
 } from '@/stores/settings'
-import { usePlanningStore, type VisitTemplate } from '@/stores/planning'
 import { useAuthStore } from '@/stores/auth'
-import { useClientsStore } from '@/stores/clients'
 import { useDialog } from '@/composables/useDialog'
 import { useToast } from '@/composables/useToast'
 import * as XLSX from 'xlsx'
@@ -28,12 +27,20 @@ import {
 defineOptions({ name: 'SettingsView' })
 
 const settingsStore = useSettingsStore()
-const planningStore = usePlanningStore()
 const { showDialog } = useDialog()
 const { showToast } = useToast()
 const authStore = useAuthStore()
+const theme = useStorage('sisfumi-theme', 'light')
+const categories = [
+  { id: 'business', label: 'Datos de negocio', icon: 'fa-building' },
+  { id: 'users', label: 'Usuarios y acceso', icon: 'fa-users-cog', admin: true },
+  { id: 'integrations', label: 'Integraciones', icon: 'fa-link' },
+  { id: 'appearance', label: 'Apariencia', icon: 'fa-adjust' },
+  { id: 'audit', label: 'Auditoría', icon: 'fa-clipboard-list', admin: true },
+] as const
+const section = ref<(typeof categories)[number]['id']>('business')
 
-const clientsStore = useClientsStore()
+
 ChartJS.register(Title, Tooltip, Legend, BarElement, CategoryScale, LinearScale)
 
 // Declaramos la variable global de Google para evitar errores de TypeScript
@@ -43,6 +50,8 @@ declare const google: any
 const isAdminOrJefe = computed(() =>
   ['Administrador', 'Jefe'].includes(authStore.userRole || ''),
 )
+
+const visibleCategories = computed(() => categories.filter((item) => !('admin' in item) || isAdminOrJefe.value))
 
 const canEditBusinessData = computed(() =>
   [
@@ -56,7 +65,6 @@ const canEditBusinessData = computed(() =>
 onMounted(async () => {
   // Asegurar que los datos de negocio se carguen primero.
   await settingsStore.fetchBusinessData()
-  planningStore.fetchVisitTemplates()
 
   if (isAdminOrJefe.value) {
     settingsStore.fetchUsers()
@@ -86,13 +94,6 @@ const editingUser = ref<SystemUser | null>(null)
 const selectedRole = ref('')
 const selectedZone = ref('')
 const selectedColor = ref('#ffffff')
-
-// Estado para el formulario de plantillas
-const editingTemplate = ref<Partial<VisitTemplate>>({})
-
-const isTemplateEditMode = computed(() => Boolean(editingTemplate.value.id))
-
-const availableServices = computed(() => settingsStore.businessData.serviceTypes || [])
 
 const roles = [
   'Administrador',
@@ -241,66 +242,6 @@ const saveBusinessData = async () => {
   } catch (error: any) {
     showToast({ title: 'Error', message: `No se pudo guardar: ${error.message}`, type: 'error' })
   }
-}
-
-const startEditingTemplate = (template: VisitTemplate) => {
-  editingTemplate.value = { ...template }
-  // Scroll to form for better UX
-  document.getElementById('template-form')?.scrollIntoView({ behavior: 'smooth' })
-}
-
-const cancelEditingTemplate = () => {
-  editingTemplate.value = {}
-}
-
-const saveTemplate = async () => {
-  if (!editingTemplate.value.templateName?.trim() || (editingTemplate.value.notesOnly
-    ? !editingTemplate.value.notas_visita?.trim()
-    : !editingTemplate.value.tipo_visita)) {
-    showToast({
-      title: 'Campos Incompletos',
-      message: editingTemplate.value.notesOnly ? 'Completa el nombre y la nota.' : 'Completa el nombre y el tipo de servicio.',
-      type: 'error',
-    })
-    return
-  }
-
-  try {
-    await planningStore.saveVisitTemplate(editingTemplate.value as any)
-    showToast({
-      title: 'Éxito',
-      message: `Plantilla "${editingTemplate.value.templateName}" guardada.`,
-      type: 'success',
-    })
-    cancelEditingTemplate()
-  } catch (error: any) {
-    showToast({
-      title: 'Error',
-      message: `No se pudo guardar la plantilla: ${error.message}`,
-      type: 'error',
-    })
-  }
-}
-
-const deleteTemplate = (template: VisitTemplate) => {
-  showDialog({
-    title: 'Confirmar Eliminación',
-    message: `¿Está seguro de que desea eliminar la plantilla "<strong>${template.templateName}</strong>"? Esta acción no se puede deshacer.`,
-    isConfirmation: true,
-    confirmationText: 'Sí, Eliminar',
-    async onConfirm() {
-      try {
-        await planningStore.deleteVisitTemplate(template.id)
-        showToast({ title: 'Éxito', message: 'Plantilla eliminada.', type: 'success' })
-      } catch (error: any) {
-        showToast({
-          title: 'Error',
-          message: `No se pudo eliminar la plantilla: ${error.message}`,
-          type: 'error',
-        })
-      }
-    },
-  })
 }
 
 const fetchLogs = () => {
@@ -509,168 +450,34 @@ const exportLogsToExcel = () => {
   XLSX.writeFile(workbook, fileName)
 }
 
-const handleExportTemplateClick = async () => {
-  const exportBtn = document.getElementById('exportTemplateBtn') as HTMLButtonElement | null
-  if (!exportBtn) return
-
-  const originalContent = exportBtn.innerHTML
-  exportBtn.disabled = true
-  exportBtn.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>Generando...'
-
-  try {
-    const fileData = await (clientsStore as any).generateImportTemplate()
-    const byteCharacters = atob(fileData)
-    const byteNumbers = new Array(byteCharacters.length)
-    for (let i = 0; i < byteCharacters.length; i++) {
-      byteNumbers[i] = byteCharacters.charCodeAt(i)
-    }
-    const byteArray = new Uint8Array(byteNumbers)
-    const blob = new Blob([byteArray], {
-      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-    })
-
-    const link = document.createElement('a')
-    link.href = URL.createObjectURL(blob)
-    link.download = 'Plantilla_Importacion_Clientes.xlsx'
-    link.click()
-    URL.revokeObjectURL(link.href)
-  } catch (error: any) {
-    showToast({
-      title: 'Error',
-      message: `No se pudo generar la plantilla: ${error.message}`,
-      type: 'error',
-    })
-  } finally {
-    exportBtn.disabled = false
-    exportBtn.innerHTML = originalContent
-  }
-}
-
-const handleImportClick = () => {
-  const fileInput = document.createElement('input')
-  fileInput.type = 'file'
-  fileInput.accept = '.xlsx, .xls'
-  fileInput.onchange = (e) => {
-    const target = e.target as HTMLInputElement
-    const file = target.files?.[0]
-    if (!file) return
-
-    const reader = new FileReader()
-    reader.onload = async (event) => {
-      try {
-        const data = new Uint8Array(event.target?.result as ArrayBuffer)
-        const workbook = XLSX.read(data, { type: 'array' })
-        const firstSheetName = workbook.SheetNames[0]
-        if (!firstSheetName) throw new Error('El archivo Excel no contiene hojas.')
-
-        const worksheet = workbook.Sheets[firstSheetName]
-        const clientsJson = XLSX.utils.sheet_to_json(worksheet as XLSX.WorkSheet)
-
-        if (clientsJson.length === 0) {
-          showToast({
-            title: 'Archivo Vacío',
-            message: 'El archivo no contiene datos.',
-            type: 'warning',
-          })
-          return
-        }
-
-        showDialog({
-          title: 'Confirmar Importación',
-          message: `Se encontraron <strong>${clientsJson.length}</strong> clientes. ¿Desea continuar con la importación?`,
-          isConfirmation: true,
-          confirmationText: 'Sí, Importar',
-          async onConfirm() {
-            const { totalImported, errors } = await (clientsStore as any).importClients(
-              clientsJson,
-              (progress: any) => {
-                console.log(`Import progress: ${progress.percentage}% - ${progress.message}`)
-              },
-            )
-            let summaryMessage = `¡Éxito! Se importaron ${totalImported} clientes.`
-            if (errors && errors.length > 0) {
-              const errorRows = errors
-                .map((e: { row: number; error: string }) => `<li>Fila ${e.row}: ${e.error}</li>`)
-                .join('')
-              summaryMessage = `<p>Importación completada con <strong>${errors.length} errores</strong>.</p><p>Importados: ${totalImported}</p><div class="max-h-48 overflow-y-auto bg-gray-900 p-2 mt-2 rounded custom-scrollbar"><ul>${errorRows}</ul></div>`
-            }
-            showDialog({
-              title: 'Resultados de Importación',
-              message: summaryMessage,
-              onConfirm: () => { },
-            })
-          },
-        })
-      } catch (error: any) {
-        showToast({
-          title: 'Error de Lectura',
-          message: `No se pudo procesar el archivo: ${error.message}`,
-          type: 'error',
-        })
-      }
-    }
-    reader.readAsArrayBuffer(file)
-  }
-  fileInput.click()
-}
 </script>
 
 <template>
-  <div class="h-full bg-[#0a0a0a] text-gray-100 flex flex-col p-4 md:p-6 overflow-y-auto custom-scrollbar">
-    <!-- Header -->
-    <header class="flex-shrink-0 mb-8 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+  <section class="settings-page space-y-4">
+    <header class="flex items-center gap-3 py-2">
+      <span class="settings-icon grid size-12 shrink-0 place-items-center rounded-xl text-xl"><i class="fas fa-gear" aria-hidden="true"></i></span>
       <div>
-        <h2 class="text-2xl md:text-3xl font-bold text-white flex items-center gap-2">
-          <i class="fas fa-cogs text-indigo-500"></i>
-          Configuración del Sistema
-        </h2>
-        <p class="text-sm text-gray-400 mt-1">Administración de datos maestros, usuarios e integraciones</p>
+        <h1 class="text-2xl font-extrabold tracking-tight sm:text-3xl">Configuración</h1>
+        <p class="settings-muted mt-1 text-sm">Administra catálogos, cuentas y preferencias de SisFumi.</p>
       </div>
     </header>
 
-    <div class="space-y-8">
+    <nav class="settings-nav flex flex-wrap gap-2 p-3" aria-label="Secciones de configuración">
+      <button v-for="item in visibleCategories" :key="item.id" type="button" class="settings-tab"
+        :aria-pressed="section === item.id" @click="section = item.id">
+        <i class="fas" :class="item.icon" aria-hidden="true"></i>{{ item.label }}
+      </button>
+    </nav>
 
-      <!-- Herramientas Administrativas -->
-      <section>
-        <div class="flex items-center gap-3 mb-4 text-gray-300">
-          <div class="h-px bg-white/10 flex-grow"></div>
-          <span class="text-sm font-bold uppercase tracking-wider"><i
-              class="fas fa-toolbox mr-2"></i>Herramientas</span>
-          <div class="h-px bg-white/10 flex-grow"></div>
-        </div>
-
-        <div
-          class="bg-[#151515] rounded-xl border border-white/10 shadow-lg p-6 flex flex-col md:flex-row justify-between items-center gap-6">
-          <div class="flex items-center gap-4">
-            <div class="bg-indigo-900/30 p-4 rounded-full text-indigo-400">
-              <i class="fas fa-file-import text-2xl"></i>
-            </div>
-            <div>
-              <h3 class="font-bold text-white text-lg">Importación Masiva de Clientes</h3>
-              <p class="text-gray-400 text-sm">Carga clientes rápidamente usando una plantilla de Excel estándar.</p>
-            </div>
-          </div>
-          <div class="flex gap-3 w-full md:w-auto">
-            <button id="exportTemplateBtn" @click="handleExportTemplateClick"
-              class="btn btn-secondary flex-1 justify-center">
-              <i class="fas fa-download mr-2"></i> Plantilla
-            </button>
-            <button @click="handleImportClick"
-              class="btn btn-primary bg-indigo-600 hover:bg-indigo-700 flex-1 justify-center shadow-lg shadow-indigo-500/30">
-              <i class="fas fa-upload mr-2"></i> Importar
-            </button>
-          </div>
-        </div>
-      </section>
-
-      <!-- Datos de Negocio (Grid) -->
-      <section>
+    <div class="space-y-4">
+      <!-- Datos de Negocio -->
+      <section v-show="section === 'business'">
         <div class="flex justify-between items-center mb-4">
-          <div class="flex items-center gap-3 text-gray-300 w-full">
-            <div class="h-px bg-white/10 w-8"></div>
+          <div class="flex items-center gap-3 text-[var(--shell-muted)] w-full">
+            <div class="h-px bg-[var(--shell-input)] w-8"></div>
             <span class="text-sm font-bold uppercase tracking-wider"><i class="fas fa-database mr-2"></i>Datos
               Maestros</span>
-            <div class="h-px bg-white/10 flex-grow"></div>
+            <div class="h-px bg-[var(--shell-input)] flex-grow"></div>
           </div>
           <button @click="saveBusinessData" :disabled="!canEditBusinessData"
             class="btn btn-primary bg-green-600 hover:bg-green-700 shrink-0 ml-4 shadow-lg shadow-green-500/20">
@@ -680,20 +487,20 @@ const handleImportClick = () => {
 
         <fieldset :disabled="!canEditBusinessData">
           <div v-if="settingsStore.loadingBusinessData"
-            class="bg-[#151515] rounded-xl p-12 text-center border border-white/10 border-dashed">
-            <i class="fas fa-spinner fa-spin text-3xl text-indigo-500"></i>
-            <p class="mt-4 text-gray-400">Cargando configuración...</p>
+            class="bg-[var(--shell-surface)] rounded-xl p-12 text-center border border-[var(--shell-border)] border-dashed">
+            <i class="fas fa-spinner fa-spin text-3xl text-[var(--settings-accent)]"></i>
+            <p class="mt-4 text-[var(--shell-muted)]">Cargando configuración...</p>
           </div>
 
           <div v-else class="grid grid-cols-1 md:grid-cols-3 gap-6">
           <!-- Zonas -->
-          <div class="bg-[#151515] rounded-xl border border-white/10 shadow-md flex flex-col overflow-hidden h-80">
-            <div class="bg-[#0a0a0a]/50 p-4 border-b border-white/10 flex justify-between items-center">
-              <h3 class="font-bold text-gray-200">Zonas de Negocio</h3>
-              <span class="bg-white/10 text-xs px-2 py-0.5 rounded-full text-gray-300">{{
+          <div class="bg-[var(--shell-surface)] rounded-xl border border-[var(--shell-border)] shadow-md flex flex-col overflow-hidden h-80">
+            <div class="bg-[var(--shell-input)] p-4 border-b border-[var(--shell-border)] flex justify-between items-center">
+              <h3 class="font-bold text-[var(--shell-muted)]">Zonas de Negocio</h3>
+              <span class="bg-[var(--shell-input)] text-xs px-2 py-0.5 rounded-full text-[var(--shell-muted)]">{{
                 settingsStore.businessData.businessZones?.length || 0 }}</span>
             </div>
-            <div class="p-4 bg-[#151515]/50 border-b border-white/10">
+            <div class="p-4 bg-[var(--shell-surface)] border-b border-[var(--shell-border)]">
               <div class="flex gap-2">
                 <input v-model="newZoneName" @keyup.enter="addZone" type="text" placeholder="Nueva Zona..."
                   class="input-field-dark flex-grow py-1.5 text-sm">
@@ -703,22 +510,22 @@ const handleImportClick = () => {
             </div>
             <div class="flex-grow overflow-y-auto custom-scrollbar p-2 space-y-1">
               <div v-for="(zone, index) in settingsStore.businessData.businessZones" :key="zone.name"
-                class="flex justify-between items-center p-2 rounded hover:bg-white/5 group transition-colors">
-                <span class="text-sm text-gray-300">{{ zone.name }}</span>
-                <button @click="removeZone(index)" class="text-gray-600 group-hover:text-red-400 transition-colors"><i
+                class="flex justify-between items-center p-2 rounded hover:bg-[var(--shell-input)] group transition-colors">
+                <span class="text-sm text-[var(--shell-muted)]">{{ zone.name }}</span>
+                <button @click="removeZone(index)" class="text-[var(--shell-muted)] group-hover:text-red-400 transition-colors"><i
                     class="fas fa-trash-alt"></i></button>
               </div>
             </div>
           </div>
 
           <!-- Aliados -->
-          <div class="bg-[#151515] rounded-xl border border-white/10 shadow-md flex flex-col overflow-hidden h-80">
-            <div class="bg-[#0a0a0a]/50 p-4 border-b border-white/10 flex justify-between items-center">
-              <h3 class="font-bold text-gray-200">Aliados</h3>
-              <span class="bg-white/10 text-xs px-2 py-0.5 rounded-full text-gray-300">{{
+          <div class="bg-[var(--shell-surface)] rounded-xl border border-[var(--shell-border)] shadow-md flex flex-col overflow-hidden h-80">
+            <div class="bg-[var(--shell-input)] p-4 border-b border-[var(--shell-border)] flex justify-between items-center">
+              <h3 class="font-bold text-[var(--shell-muted)]">Aliados</h3>
+              <span class="bg-[var(--shell-input)] text-xs px-2 py-0.5 rounded-full text-[var(--shell-muted)]">{{
                 settingsStore.businessData.alliesList?.length || 0 }}</span>
             </div>
-            <div class="p-4 bg-[#151515]/50 border-b border-white/10">
+            <div class="p-4 bg-[var(--shell-surface)] border-b border-[var(--shell-border)]">
               <div class="flex gap-2">
                 <input ref="allyInput" v-model="newAllyName" @keyup.enter="addAlly" type="text"
                   placeholder="Nuevo Aliado..." class="input-field-dark flex-grow py-1.5 text-sm">
@@ -728,22 +535,22 @@ const handleImportClick = () => {
             </div>
             <div class="flex-grow overflow-y-auto custom-scrollbar p-2 space-y-1">
               <div v-for="(ally, index) in settingsStore.businessData.alliesList" :key="ally"
-                class="flex justify-between items-center p-2 rounded hover:bg-white/5 group transition-colors">
-                <span class="text-sm text-gray-300">{{ ally }}</span>
-                <button @click="removeAlly(index)" class="text-gray-600 group-hover:text-red-400 transition-colors"><i
+                class="flex justify-between items-center p-2 rounded hover:bg-[var(--shell-input)] group transition-colors">
+                <span class="text-sm text-[var(--shell-muted)]">{{ ally }}</span>
+                <button @click="removeAlly(index)" class="text-[var(--shell-muted)] group-hover:text-red-400 transition-colors"><i
                     class="fas fa-trash-alt"></i></button>
               </div>
             </div>
           </div>
 
           <!-- Servicios -->
-          <div class="bg-[#151515] rounded-xl border border-white/10 shadow-md flex flex-col overflow-hidden h-80">
-            <div class="bg-[#0a0a0a]/50 p-4 border-b border-white/10 flex justify-between items-center">
-              <h3 class="font-bold text-gray-200">Tipos de Servicio</h3>
-              <span class="bg-white/10 text-xs px-2 py-0.5 rounded-full text-gray-300">{{
+          <div class="bg-[var(--shell-surface)] rounded-xl border border-[var(--shell-border)] shadow-md flex flex-col overflow-hidden h-80">
+            <div class="bg-[var(--shell-input)] p-4 border-b border-[var(--shell-border)] flex justify-between items-center">
+              <h3 class="font-bold text-[var(--shell-muted)]">Tipos de Servicio</h3>
+              <span class="bg-[var(--shell-input)] text-xs px-2 py-0.5 rounded-full text-[var(--shell-muted)]">{{
                 settingsStore.businessData.serviceTypes?.length || 0 }}</span>
             </div>
-            <div class="p-4 bg-[#151515]/50 border-b border-white/10">
+            <div class="p-4 bg-[var(--shell-surface)] border-b border-[var(--shell-border)]">
               <div class="flex gap-2">
                 <input v-model="newServiceTypeName" @keyup.enter="addServiceType" type="text"
                   placeholder="Nuevo Servicio..." class="input-field-dark flex-grow py-1.5 text-sm">
@@ -753,10 +560,10 @@ const handleImportClick = () => {
             </div>
             <div class="flex-grow overflow-y-auto custom-scrollbar p-2 space-y-1">
               <div v-for="(service, index) in settingsStore.businessData.serviceTypes" :key="service.name"
-                class="flex justify-between items-center p-2 rounded hover:bg-white/5 group transition-colors">
-                <span class="text-sm text-gray-300">{{ service.name }}</span>
+                class="flex justify-between items-center p-2 rounded hover:bg-[var(--shell-input)] group transition-colors">
+                <span class="text-sm text-[var(--shell-muted)]">{{ service.name }}</span>
                 <button @click="removeServiceType(index)"
-                  class="text-gray-600 group-hover:text-red-400 transition-colors"><i
+                  class="text-[var(--shell-muted)] group-hover:text-red-400 transition-colors"><i
                     class="fas fa-trash-alt"></i></button>
               </div>
             </div>
@@ -765,113 +572,33 @@ const handleImportClick = () => {
         </fieldset>
       </section>
 
-      <!-- Plantillas de Visita -->
-      <section v-if="!settingsStore.loadingBusinessData && availableServices.length > 0" id="template-form">
-        <div class="flex items-center gap-3 mb-4 text-gray-300">
-          <div class="h-px bg-white/10 flex-grow"></div>
-          <span class="text-sm font-bold uppercase tracking-wider"><i class="fas fa-clipboard-list mr-2"></i>Plantillas
-            de Visita</span>
-          <div class="h-px bg-white/10 flex-grow"></div>
-        </div>
-
-        <div
-          class="bg-[#151515] rounded-xl border border-white/10 shadow-lg overflow-hidden grid grid-cols-1 lg:grid-cols-2">
-          <!-- Formulario -->
-          <div class="p-6 border-b lg:border-b-0 lg:border-r border-white/10 bg-[#151515]">
-            <h3 class="text-lg font-bold text-white mb-4 flex items-center gap-2">
-              <i :class="isTemplateEditMode ? 'fas fa-edit text-yellow-500' : 'fas fa-plus-circle text-green-500'"></i>
-              {{ isTemplateEditMode ? 'Editar Plantilla' : 'Nueva Plantilla' }}
-            </h3>
-            <div class="space-y-4">
-              <div>
-                <label class="form-label">Nombre</label>
-                <input v-model="editingTemplate.templateName" type="text" class="input-field-dark w-full"
-                  placeholder="Ej: Mantenimiento Mensual">
-              </div>
-              <label class="flex items-center gap-2 text-sm">
-                <input v-model="editingTemplate.notesOnly" type="checkbox" /> Solo notas
-              </label>
-              <div v-if="!editingTemplate.notesOnly">
-                <label class="form-label">Tipo de Servicio</label>
-                <select v-model="editingTemplate.tipo_visita" class="input-field-dark w-full">
-                  <option disabled value="">Seleccione...</option>
-                  <option v-for="s in availableServices" :key="s.name" :value="s.name">{{ s.name }}</option>
-                </select>
-              </div>
-              <div>
-                <label class="form-label">Notas Predefinidas</label>
-                <textarea v-model="editingTemplate.notas_visita" rows="3" class="input-field-dark w-full resize-none"
-                  placeholder="Instrucciones para el técnico..."></textarea>
-              </div>
-              <div class="flex gap-3 pt-2">
-                <button @click="saveTemplate"
-                  class="btn btn-primary bg-indigo-600 hover:bg-indigo-700 flex-1 justify-center">
-                  <i class="fas fa-save mr-2"></i> Guardar
-                </button>
-                <button v-if="isTemplateEditMode" @click="cancelEditingTemplate"
-                  class="btn btn-secondary flex-1 justify-center">
-                  Cancelar
-                </button>
-              </div>
-            </div>
-          </div>
-
-          <!-- Lista -->
-          <div class="p-6 bg-[#0a0a0a]/30 max-h-96 overflow-y-auto custom-scrollbar">
-            <h3 class="text-lg font-bold text-white mb-4">Plantillas Guardadas</h3>
-            <div v-if="planningStore.visitTemplates.length === 0" class="text-gray-500 text-center py-8">
-              <i class="fas fa-folder-open text-3xl mb-2 opacity-50"></i>
-              <p>No hay plantillas.</p>
-            </div>
-            <div v-else class="space-y-3">
-              <div v-for="t in planningStore.visitTemplates" :key="t.id"
-                class="bg-white/5 border border-white/10 p-3 rounded-lg flex justify-between items-start hover:bg-white/10 transition-colors">
-                <div>
-                  <p class="font-bold text-white text-sm">{{ t.templateName }}</p>
-                  <span class="text-xs text-indigo-300 bg-indigo-900/30 px-2 py-0.5 rounded mt-1 inline-block">{{
-                    t.notesOnly ? 'Solo notas' : t.tipo_visita }}</span>
-                </div>
-                <div class="flex gap-1">
-                  <button @click="startEditingTemplate(t)"
-                    class="p-1.5 text-gray-400 hover:text-white rounded hover:bg-white/10"><i
-                      class="fas fa-pencil-alt"></i></button>
-                  <button @click="deleteTemplate(t)"
-                    class="p-1.5 text-gray-400 hover:text-red-400 rounded hover:bg-white/10"><i
-                      class="fas fa-trash-alt"></i></button>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </section>
-
       <!-- Auditoría -->
-      <section v-if="isAdminOrJefe && settingsStore.auditLogs.length > 0">
-        <div class="flex items-center gap-3 mb-4 text-gray-300">
-          <div class="h-px bg-white/10 flex-grow"></div>
+      <section v-if="isAdminOrJefe" v-show="section === 'audit'">
+        <div class="flex items-center gap-3 mb-4 text-[var(--shell-muted)]">
+          <div class="h-px bg-[var(--shell-input)] flex-grow"></div>
           <span class="text-sm font-bold uppercase tracking-wider"><i
               class="fas fa-shield-alt mr-2"></i>Auditoría</span>
-          <div class="h-px bg-white/10 flex-grow"></div>
+          <div class="h-px bg-[var(--shell-input)] flex-grow"></div>
         </div>
 
         <!-- Gráfico -->
-        <div class="bg-[#151515] rounded-xl border border-white/10 shadow-lg p-4 mb-6 h-72">
+        <div class="bg-[var(--shell-surface)] rounded-xl border border-[var(--shell-border)] shadow-lg p-4 mb-6 h-72">
           <Bar :data="chartData" :options="chartOptions" />
         </div>
 
         <!-- Tabla de Logs -->
-        <div class="bg-[#151515] rounded-xl border border-white/10 shadow-lg overflow-hidden">
+        <div class="bg-[var(--shell-surface)] rounded-xl border border-[var(--shell-border)] shadow-lg overflow-hidden">
           <!-- Filtros -->
-          <div class="p-4 border-b border-white/10 bg-[#0a0a0a]/30 flex flex-col md:flex-row gap-4 items-end">
+          <div class="p-4 border-b border-[var(--shell-border)] bg-[var(--shell-input)] flex flex-col md:flex-row gap-4 items-end">
             <div class="w-full md:w-auto">
-              <label class="text-xs font-bold text-gray-500 uppercase mb-1 block">Rango</label>
+              <label class="text-xs font-bold text-[var(--shell-muted)] uppercase mb-1 block">Rango</label>
               <div class="flex gap-2">
                 <input type="date" v-model="logFilters.startDate" class="input-field-dark text-sm py-1.5">
                 <input type="date" v-model="logFilters.endDate" class="input-field-dark text-sm py-1.5">
               </div>
             </div>
             <div class="flex-grow w-full md:w-auto">
-              <label class="text-xs font-bold text-gray-500 uppercase mb-1 block">Búsqueda</label>
+              <label class="text-xs font-bold text-[var(--shell-muted)] uppercase mb-1 block">Búsqueda</label>
               <div class="flex gap-2 w-full">
                 <input type="text" v-model="logFilters.keyword" placeholder="Buscar acción, detalle..."
                   class="input-field-dark w-full py-1.5 text-sm">
@@ -892,24 +619,25 @@ const handleImportClick = () => {
           <!-- Tabla -->
           <div class="overflow-x-auto max-h-[500px] custom-scrollbar">
             <table class="min-w-full divide-y divide-gray-700">
-              <thead class="bg-[#0a0a0a]/80 sticky top-0 z-10 backdrop-blur-sm">
+              <thead class="bg-[var(--shell-input)] sticky top-0 z-10 backdrop-blur-sm">
                 <tr>
-                  <th class="px-6 py-3 text-left text-xs font-bold text-gray-400 uppercase">Fecha</th>
-                  <th class="px-6 py-3 text-left text-xs font-bold text-gray-400 uppercase">Usuario</th>
-                  <th class="px-6 py-3 text-left text-xs font-bold text-gray-400 uppercase">Acción</th>
-                  <th class="px-6 py-3 text-left text-xs font-bold text-gray-400 uppercase">Detalles</th>
-                  <th class="px-6 py-3 text-center text-xs font-bold text-gray-400 uppercase"></th>
+                  <th class="px-6 py-3 text-left text-xs font-bold text-[var(--shell-muted)] uppercase">Fecha</th>
+                  <th class="px-6 py-3 text-left text-xs font-bold text-[var(--shell-muted)] uppercase">Usuario</th>
+                  <th class="px-6 py-3 text-left text-xs font-bold text-[var(--shell-muted)] uppercase">Acción</th>
+                  <th class="px-6 py-3 text-left text-xs font-bold text-[var(--shell-muted)] uppercase">Detalles</th>
+                  <th class="px-6 py-3 text-center text-xs font-bold text-[var(--shell-muted)] uppercase"></th>
                 </tr>
               </thead>
-              <tbody class="divide-y divide-white/5 bg-[#151515]">
-                <tr v-for="log in settingsStore.auditLogs" :key="log.id" class="hover:bg-white/5">
-                  <td class="px-6 py-3 text-xs text-gray-400 whitespace-nowrap">{{ formatLogTimestamp(log.timestamp) }}
+              <tbody class="divide-y divide-[var(--shell-border)] bg-[var(--shell-surface)]">
+                <tr v-if="!settingsStore.auditLogs.length"><td colspan="5" class="settings-muted px-6 py-4 text-sm">Sin registros para los filtros seleccionados.</td></tr>
+                <tr v-for="log in settingsStore.auditLogs" :key="log.id" class="hover:bg-[var(--shell-input)]">
+                  <td class="px-6 py-3 text-xs text-[var(--shell-muted)] whitespace-nowrap">{{ formatLogTimestamp(log.timestamp) }}
                   </td>
                   <td class="px-6 py-3 text-sm text-white font-medium">{{ log.adminEmail }}</td>
                   <td class="px-6 py-3"><span
-                      class="bg-white/10 text-gray-300 text-xs px-2 py-0.5 rounded border border-white/10">{{ log.action
+                      class="bg-[var(--shell-input)] text-[var(--shell-muted)] text-xs px-2 py-0.5 rounded border border-[var(--shell-border)]">{{ log.action
                       }}</span></td>
-                  <td class="px-6 py-3 text-sm text-gray-300 truncate max-w-xs" :title="log.details">{{ log.details }}
+                  <td class="px-6 py-3 text-sm text-[var(--shell-muted)] truncate max-w-xs" :title="log.details">{{ log.details }}
                   </td>
                   <td class="px-6 py-3 text-center">
                     <button v-if="log.action === 'UPDATE_USER_CONFIG' && log.previousState && !log.undone"
@@ -926,40 +654,40 @@ const handleImportClick = () => {
       </section>
 
       <!-- Gestión de Usuarios -->
-      <section v-if="isAdminOrJefe">
-        <div class="flex items-center gap-3 mb-4 text-gray-300">
-          <div class="h-px bg-white/10 flex-grow"></div>
+      <section v-if="isAdminOrJefe" v-show="section === 'users'">
+        <div class="flex items-center gap-3 mb-4 text-[var(--shell-muted)]">
+          <div class="h-px bg-[var(--shell-input)] flex-grow"></div>
           <span class="text-sm font-bold uppercase tracking-wider"><i class="fas fa-users-cog mr-2"></i>Usuarios del
             Sistema</span>
-          <div class="h-px bg-white/10 flex-grow"></div>
+          <div class="h-px bg-[var(--shell-input)] flex-grow"></div>
         </div>
 
-        <div class="bg-[#151515] rounded-xl border border-white/10 shadow-lg overflow-hidden">
+        <div class="bg-[var(--shell-surface)] rounded-xl border border-[var(--shell-border)] shadow-lg overflow-hidden">
           <div class="overflow-x-auto">
-            <table class="min-w-full divide-y divide-white/5">
-              <thead class="bg-[#0a0a0a]/50">
+            <table class="min-w-full divide-y divide-[var(--shell-border)]">
+              <thead class="bg-[var(--shell-input)]">
                 <tr>
-                  <th class="px-6 py-4 text-left text-xs font-bold text-gray-400 uppercase">Usuario</th>
-                  <th class="px-6 py-4 text-left text-xs font-bold text-gray-400 uppercase">Rol</th>
-                  <th class="px-6 py-4 text-left text-xs font-bold text-gray-400 uppercase">Zona Asignada</th>
-                  <th class="px-6 py-4 text-center text-xs font-bold text-gray-400 uppercase">Color</th>
-                  <th class="px-6 py-4 text-center text-xs font-bold text-gray-400 uppercase">Estado</th>
-                  <th class="px-6 py-4 text-center text-xs font-bold text-gray-400 uppercase">Acciones</th>
+                  <th class="px-6 py-4 text-left text-xs font-bold text-[var(--shell-muted)] uppercase">Usuario</th>
+                  <th class="px-6 py-4 text-left text-xs font-bold text-[var(--shell-muted)] uppercase">Rol</th>
+                  <th class="px-6 py-4 text-left text-xs font-bold text-[var(--shell-muted)] uppercase">Zona Asignada</th>
+                  <th class="px-6 py-4 text-center text-xs font-bold text-[var(--shell-muted)] uppercase">Color</th>
+                  <th class="px-6 py-4 text-center text-xs font-bold text-[var(--shell-muted)] uppercase">Estado</th>
+                  <th class="px-6 py-4 text-center text-xs font-bold text-[var(--shell-muted)] uppercase">Acciones</th>
                 </tr>
               </thead>
-              <tbody class="divide-y divide-white/5 bg-[#151515]">
-                <tr v-for="user in settingsStore.users" :key="user.uid" class="hover:bg-white/5 transition-colors">
+              <tbody class="divide-y divide-[var(--shell-border)] bg-[var(--shell-surface)]">
+                <tr v-for="user in settingsStore.users" :key="user.uid" class="hover:bg-[var(--shell-input)] transition-colors">
                   <td class="px-6 py-4 whitespace-nowrap">
                     <div class="flex items-center">
                       <div
-                        class="h-8 w-8 rounded-full bg-white/10 flex items-center justify-center text-xs font-bold text-gray-300 mr-3 overflow-hidden">
+                        class="h-8 w-8 rounded-full bg-[var(--shell-input)] flex items-center justify-center text-xs font-bold text-[var(--shell-muted)] mr-3 overflow-hidden">
                         <img v-if="(user as any).photoURL" :key="(user as any).photoURL" :src="(user as any).photoURL"
                           alt="Avatar" class="w-full h-full object-cover" />
                         <span v-else>{{ user.displayName?.charAt(0).toUpperCase() || 'U' }}</span>
                       </div>
                       <div>
-                        <div class="text-sm font-bold text-white">{{ user.displayName }}</div>
-                        <div class="text-xs text-gray-400">{{ user.email }}</div>
+                        <div class="text-sm font-bold text-[var(--shell-text)]">{{ user.displayName }}</div>
+                        <div class="text-xs text-[var(--shell-muted)]">{{ user.email }}</div>
                       </div>
                     </div>
                   </td>
@@ -972,13 +700,13 @@ const handleImportClick = () => {
                       </select>
                     </div>
                     <span v-else
-                      class="px-2 py-1 text-xs font-semibold rounded bg-indigo-900/30 text-indigo-300 border border-indigo-800">
+                      class="px-2 py-1 text-xs font-semibold rounded bg-[var(--settings-tint)] text-[var(--settings-accent)] border border-[var(--shell-border)]">
                       {{ user.role }}
                     </span>
                   </td>
 
                   <!-- Columna Zona Editable -->
-                  <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-300">
+                  <td class="px-6 py-4 whitespace-nowrap text-sm text-[var(--shell-muted)]">
                     <div v-if="editingUser?.uid === user.uid">
                       <select v-model="selectedZone" class="input-field-dark py-1 text-sm">
                         <option value="">Sin Zona</option>
@@ -1004,7 +732,7 @@ const handleImportClick = () => {
                   <td class="px-6 py-4 whitespace-nowrap text-center">
                     <div class="flex items-center justify-center gap-1.5">
                       <div class="w-2 h-2 rounded-full" :class="user.disabled ? 'bg-red-500' : 'bg-green-500'"></div>
-                      <span class="text-xs text-gray-400">{{ user.disabled ? 'Inactivo' : 'Activo' }}</span>
+                      <span class="text-xs text-[var(--shell-muted)]">{{ user.disabled ? 'Inactivo' : 'Activo' }}</span>
                     </div>
                   </td>
 
@@ -1021,10 +749,10 @@ const handleImportClick = () => {
                       </template>
                       <template v-else>
                         <button @click="startEditingUser(user)" :disabled="isCurrentUser(user.uid)"
-                          class="text-gray-400 hover:text-white p-1.5 disabled:opacity-30"><i
+                          class="text-[var(--shell-muted)] hover:text-[var(--shell-text)] p-1.5 disabled:opacity-30"><i
                             class="fas fa-pencil-alt"></i></button>
                         <button @click="toggleUserStatus(user)" :disabled="isCurrentUser(user.uid)"
-                          class="text-gray-400 hover:text-red-400 p-1.5 disabled:opacity-30"><i
+                          class="text-[var(--shell-muted)] hover:text-red-400 p-1.5 disabled:opacity-30"><i
                             :class="user.disabled ? 'fas fa-toggle-off' : 'fas fa-toggle-on'"></i></button>
                         <button v-if="!user.isConnected" @click="handleConnectGoogle(user.uid)"
                           class="text-blue-400 hover:text-blue-300 p-1.5" title="Conectar Google Calendar"><i
@@ -1040,23 +768,23 @@ const handleImportClick = () => {
       </section>
 
       <!-- Mi Cuenta de Google (Coordinadores y demás roles no-admin) -->
-      <section v-if="!isAdminOrJefe">
-        <div class="flex items-center gap-3 mb-4 text-gray-300">
-          <div class="h-px bg-white/10 flex-grow"></div>
+      <section v-if="!isAdminOrJefe" v-show="section === 'integrations'">
+        <div class="flex items-center gap-3 mb-4 text-[var(--shell-muted)]">
+          <div class="h-px bg-[var(--shell-input)] flex-grow"></div>
           <span class="text-sm font-bold uppercase tracking-wider"><i class="fab fa-google mr-2"></i>Mi Cuenta de
             Google</span>
-          <div class="h-px bg-white/10 flex-grow"></div>
+          <div class="h-px bg-[var(--shell-input)] flex-grow"></div>
         </div>
 
-        <div class="bg-[#151515] rounded-xl border border-white/10 shadow-lg p-6 flex items-center justify-between gap-4 flex-wrap">
+        <div class="bg-[var(--shell-surface)] rounded-xl border border-[var(--shell-border)] shadow-lg p-6 flex items-center justify-between gap-4 flex-wrap">
           <div class="flex items-center gap-3">
             <div class="w-2.5 h-2.5 rounded-full flex-shrink-0"
               :class="myIntegrationConnected ? 'bg-green-500' : 'bg-red-500'"></div>
             <div>
-              <p class="text-sm font-bold text-white">
+              <p class="text-sm font-bold text-[var(--shell-text)]">
                 {{ myIntegrationConnected ? 'Cuenta conectada correctamente' : 'Cuenta no conectada' }}
               </p>
-              <p class="text-xs text-gray-400">
+              <p class="text-xs text-[var(--shell-muted)]">
                 {{ myIntegrationConnected
                   ? 'Tu calendario y correo están sincronizados con SISFUMI.'
                   : 'Conecta tu cuenta de Google para recibir tus visitas en el calendario y las notificaciones por correo.' }}
@@ -1076,36 +804,37 @@ const handleImportClick = () => {
       </section>
 
       <!-- Integraciones -->
-      <section v-if="isAdminOrJefe && settingsStore.integrations.length > 0">
-        <div class="flex items-center gap-3 mb-4 text-gray-300">
-          <div class="h-px bg-white/10 flex-grow"></div>
+      <section v-if="isAdminOrJefe" v-show="section === 'integrations'">
+        <div class="flex items-center gap-3 mb-4 text-[var(--shell-muted)]">
+          <div class="h-px bg-[var(--shell-input)] flex-grow"></div>
           <span class="text-sm font-bold uppercase tracking-wider"><i class="fas fa-link mr-2"></i>Cuentas
             Vinculadas</span>
-          <div class="h-px bg-white/10 flex-grow"></div>
+          <div class="h-px bg-[var(--shell-input)] flex-grow"></div>
         </div>
 
-        <div class="bg-[#151515] rounded-xl border border-white/10 shadow-lg overflow-hidden">
+        <div class="bg-[var(--shell-surface)] rounded-xl border border-[var(--shell-border)] shadow-lg overflow-hidden">
           <div class="overflow-x-auto">
-            <table class="min-w-full divide-y divide-white/5">
-              <thead class="bg-[#0a0a0a]/50">
+            <table class="min-w-full divide-y divide-[var(--shell-border)]">
+              <thead class="bg-[var(--shell-input)]">
                 <tr>
-                  <th class="px-6 py-3 text-left text-xs font-bold text-gray-400 uppercase">Cuenta Google</th>
-                  <th class="px-6 py-3 text-left text-xs font-bold text-gray-400 uppercase">Zona</th>
-                  <th class="px-6 py-3 text-center text-xs font-bold text-gray-400 uppercase">Acciones</th>
+                  <th class="px-6 py-3 text-left text-xs font-bold text-[var(--shell-muted)] uppercase">Cuenta Google</th>
+                  <th class="px-6 py-3 text-left text-xs font-bold text-[var(--shell-muted)] uppercase">Zona</th>
+                  <th class="px-6 py-3 text-center text-xs font-bold text-[var(--shell-muted)] uppercase">Acciones</th>
                 </tr>
               </thead>
-              <tbody class="divide-y divide-white/5 bg-[#151515]">
-                <tr v-for="integration in settingsStore.integrations" :key="integration.uid" class="hover:bg-white/5">
+              <tbody class="divide-y divide-[var(--shell-border)] bg-[var(--shell-surface)]">
+                <tr v-if="!settingsStore.integrations.length"><td colspan="3" class="settings-muted px-6 py-4 text-sm">Sin cuentas vinculadas.</td></tr>
+                <tr v-for="integration in settingsStore.integrations" :key="integration.uid" class="hover:bg-[var(--shell-input)]">
                   <td class="px-6 py-4 whitespace-nowrap">
                     <div class="flex items-center gap-3">
-                      <i class="fab fa-google text-lg text-gray-400"></i>
+                      <i class="fab fa-google text-lg text-[var(--shell-muted)]"></i>
                       <div>
-                        <div class="text-sm font-bold text-white">{{ integration.googleUserName }}</div>
-                        <div class="text-xs text-gray-500">{{ integration.googleEmail }}</div>
+                        <div class="text-sm font-bold text-[var(--shell-text)]">{{ integration.googleUserName }}</div>
+                        <div class="text-xs text-[var(--shell-muted)]">{{ integration.googleEmail }}</div>
                       </div>
                     </div>
                   </td>
-                  <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-300">{{ integration.zona || '-' }}</td>
+                  <td class="px-6 py-4 whitespace-nowrap text-sm text-[var(--shell-muted)]">{{ integration.zona || '-' }}</td>
                   <td class="px-6 py-4 whitespace-nowrap text-center">
                     <button @click="handleDisconnect(integration)"
                       class="text-red-400 hover:text-red-300 text-xs font-bold uppercase tracking-wide border border-red-900/50 bg-red-900/20 px-3 py-1 rounded hover:bg-red-900/40 transition-colors">
@@ -1119,6 +848,32 @@ const handleImportClick = () => {
         </div>
       </section>
 
+      <section v-show="section === 'appearance'" class="settings-card p-5">
+        <h2 class="text-lg font-bold">Tema de la aplicación</h2>
+        <p class="settings-muted mt-1 text-sm">Elige cómo se ve SisFumi en este navegador.</p>
+        <div class="mt-4 grid max-w-lg gap-3 sm:grid-cols-2" role="group" aria-label="Tema de la aplicación">
+          <button v-for="option in [{ id: 'light', label: 'Claro', icon: 'fa-sun' }, { id: 'dark', label: 'Oscuro', icon: 'fa-moon' }]"
+            :key="option.id" type="button" class="settings-tab theme-choice" :aria-pressed="theme === option.id"
+            @click="theme = option.id"><i class="fas" :class="option.icon" aria-hidden="true"></i>{{ option.label }}</button>
+        </div>
+      </section>
     </div>
-  </div>
+  </section>
 </template>
+
+<style scoped>
+.settings-page { color: var(--shell-text); --settings-accent: #b8000b; --settings-tint: #fff0f1; }
+[data-theme='dark'] .settings-page { color-scheme: dark; --settings-accent: #ff858b; --settings-tint: #412328; }
+.settings-icon { color: var(--settings-accent); background: var(--settings-tint); }
+.settings-muted { color: var(--shell-muted); }
+.settings-nav, .settings-card { border: 1px solid var(--shell-border); border-radius: 0.9rem; background: var(--shell-surface); }
+.settings-tab { display: inline-flex; align-items: center; gap: 0.5rem; border: 1px solid transparent; border-radius: 0.55rem; padding: 0.55rem 0.75rem; color: var(--shell-muted); font-size: 0.85rem; font-weight: 650; }
+.settings-tab:hover { background: var(--shell-input); color: var(--shell-text); }
+.settings-tab[aria-pressed='true'] { color: var(--settings-accent); background: var(--settings-tint); border-color: var(--settings-accent); }
+.settings-tab:focus-visible { outline: 2px solid #e50914; outline-offset: 2px; }
+.theme-choice { padding: 0.8rem; border-color: var(--shell-border); }
+.settings-page :deep(.input-field-dark) { background: var(--shell-input); border: 1px solid var(--shell-border); border-radius: 0.55rem; color: var(--shell-text); }
+.settings-page :deep(.btn-secondary) { background: var(--shell-input); border: 1px solid var(--shell-border); color: var(--shell-text); }
+.settings-page :deep(.btn-primary) { background: #b8000b; color: #fff; }
+.settings-page :deep(.btn-primary:hover) { background: #950009; }
+</style>

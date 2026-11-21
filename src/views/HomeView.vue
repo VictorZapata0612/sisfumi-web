@@ -72,7 +72,6 @@ const metrics = computed(() => {
     { label: 'Clientes', value: kpis.totalClients, detail: kpis.totalBranches + ' sucursales', name: 'clientes', icon: 'fa-users' },
     { label: 'Visitas del mes', value: kpis.visitsThisMonth, detail: kpis.completionRateThisMonth + '% de cumplimiento', name: 'planeacion', icon: 'fa-calendar-check' },
     { label: 'Servicios activos', value: kpis.activeServices, name: 'servicios', icon: 'fa-check' },
-    { label: 'Facturación del mes', value: formatCurrency(kpis.revenueThisMonth), name: 'facturacion', icon: 'fa-dollar-sign' },
   ]
 })
 
@@ -91,13 +90,6 @@ const serviceTypeChartCanvas = ref<HTMLCanvasElement | null>(null)
 let visitsPerMonthChartInstance: Chart | null = null
 let serviceTypeChartInstance: Chart | null = null
 
-const formatCurrency = (value: number) => {
-  return new Intl.NumberFormat('es-CO', {
-    style: 'currency',
-    currency: 'COP',
-    minimumFractionDigits: 0,
-  }).format(value)
-}
 
 function destroyCharts() {
   visitsPerMonthChartInstance?.destroy()
@@ -224,7 +216,7 @@ watch(
     </div>
 
     <template v-else-if="dashboardStore.kpis">
-      <section aria-label="Indicadores" class="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <section aria-label="Indicadores" class="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
         <component v-for="metric in metrics" :key="metric.label"
           :is="canOpen(metric.name) ? RouterLink : 'div'"
           :to="canOpen(metric.name) ? { name: metric.name } : undefined"
