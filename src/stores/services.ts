@@ -21,6 +21,7 @@ export interface Service {
   recurrence?: {
     unit: 'WEEK' | 'MONTH'
     interval: number
+    startDate?: string
     visitsPerPeriod: number
     preferredDays?: number[]
     schedulingMode?: 'FIXED' | 'FLEXIBLE'

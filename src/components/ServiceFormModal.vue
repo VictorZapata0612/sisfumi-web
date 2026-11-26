@@ -48,6 +48,10 @@ const preferredDaysText = ref('')
 const serviceTypesList = computed(() => settingsStore.businessData?.serviceTypes || [])
 // Reemplaza los valores de este array con la lista EXACTA (mayúsculas/minúsculas) de tu bot
 const frequencyOptions = computed(() => ['UNICA', 'SEMANAL', 'QUINCENAL', 'MENSUAL', 'BIMESTRAL', 'TRIMESTRAL', 'SEMESTRAL', 'ANUAL'])
+const weekly = computed(() => ['SEMANAL', 'QUINCENAL'].includes(form.value.frecuencia))
+const recurrenceLimit = computed(() => weekly.value
+  ? (form.value.recurrence?.allowWeekends ? 7 : 5)
+  : (form.value.recurrence?.allowWeekends ? 28 : 20))
 const formattedValor = computed({
   get() {
     return form.value.valor.toLocaleString('es-CO')
@@ -200,15 +204,12 @@ const handleSave = async () => {
     includedVisits: 1,
     additionalVisitValue: form.value.valor,
   }
-  recurrence.interval = Math.max(1, Number(recurrence.interval) || 1)
-  recurrence.visitsPerPeriod = Math.max(1, Number(recurrence.visitsPerPeriod) || 1)
-  recurrence.preferredDays = preferredDaysText.value
-    .split(',')
-    .map((day) => Number(day.trim()))
-    .filter((day) => Number.isInteger(day) && day >= 1 && day <= 31)
-  if (recurrence.unit === 'WEEK') {
-    recurrence.preferredDays = recurrence.preferredDays.filter((day) => day >= 0 && day <= 6)
-  }
+  recurrence.unit = weekly.value ? 'WEEK' : 'MONTH'
+  recurrence.interval = ({ QUINCENAL: 2, BIMESTRAL: 2, BIMENSUAL: 2, TRIMESTRAL: 3, SEMESTRAL: 6, ANUAL: 12 } as Record<string, number>)[form.value.frecuencia] || 1
+  recurrence.visitsPerPeriod = Math.min(recurrenceLimit.value, Math.max(1, Math.floor(Number(recurrence.visitsPerPeriod)) || 1))
+  recurrence.preferredDays = [...new Set(preferredDaysText.value.split(',')
+    .map(day => day.trim()).filter(Boolean).map(Number)
+    .filter(day => Number.isInteger(day) && (weekly.value ? day >= 0 && day <= 6 : day >= 1 && day <= 31)))]
   billing.periodValue = Math.max(0, Number(billing.periodValue) || form.value.valor)
   billing.includedVisits = Math.max(1, Number(billing.includedVisits) || recurrence.visitsPerPeriod)
   billing.additionalVisitValue = Math.max(
@@ -342,17 +343,25 @@ const handleSave = async () => {
           <h3 class="editor-section-title"><i class="fas fa-calendar-alt" aria-hidden="true"></i> Planificación y facturación</h3>
           <div class="grid gap-3 sm:grid-cols-2">
             <div>
-              <label for="visitsPerPeriod" class="form-label">Visitas por periodo</label>
-              <input v-model.number="form.recurrence!.visitsPerPeriod" type="number" min="1"
+              <label for="visitsPerPeriod" class="form-label">Visitas por periodo y por sede</label>
+              <input v-model.number="form.recurrence!.visitsPerPeriod" type="number" min="1" :max="recurrenceLimit"
                 id="visitsPerPeriod" class="input-field-dark w-full" />
-              <p class="text-xs text-[var(--shell-muted)] mt-1">Para servicios antiguos se conserva una visita.</p>
+              <p class="text-xs text-[var(--shell-muted)] mt-1">La cantidad se aplica a cada sede seleccionada.</p>
             </div>
             <div>
               <label for="preferredDays" class="form-label">Días preferidos</label>
               <input v-model="preferredDaysText" type="text" id="preferredDays" class="input-field-dark w-full"
                 placeholder="Ej.: 2, 4, 6" />
-              <p class="text-xs text-[var(--shell-muted)] mt-1">Días del mes separados por coma.</p>
+              <p class="text-xs text-[var(--shell-muted)] mt-1">{{ weekly ? 'Días separados por coma. Lunes = 0, domingo = 6.' : 'Días del mes separados por coma.' }}</p>
             </div>
+            <div v-if="form.frecuencia && form.frecuencia !== 'UNICA'">
+              <label for="recurrenceStart" class="form-label">Fecha inicial del ciclo</label>
+              <input v-model="form.recurrence!.startDate" id="recurrenceStart" type="date" class="input-field-dark w-full" />
+              <p class="mt-1 text-xs text-[var(--shell-muted)]">Si se omite, se usa la fecha existente o la fecha de alta.</p>
+            </div>
+            <label v-if="form.frecuencia && form.frecuencia !== 'UNICA'" class="flex items-center gap-2 text-sm">
+              <input v-model="form.recurrence!.allowWeekends" type="checkbox" /> Permitir fines de semana
+            </label>
             <div>
               <label for="billingModel" class="form-label">Modelo de facturación</label>
               <select v-model="form.billing!.model" id="billingModel" class="input-field-dark w-full">

@@ -25,6 +25,8 @@ const {
 
 const { onObjectDeleted } = require('firebase-functions/v2/storage')
 const { onSchedule } = require('firebase-functions/v2/scheduler')
+const { colombiaDay, normalizeRecurrence, parseDay } = require('./recurrence')
+const { reconcileRecurringSheet } = require('./recurring-visits')
 const { logger } = require('firebase-functions')
 const { setGlobalOptions } = require('firebase-functions/options')
 const { defineSecret } = require('firebase-functions/params')
@@ -2391,6 +2393,9 @@ exports.updateVisit = protectedCall('planeacion', 'edit', { cors: true }, async 
     delete updatePayload.completedBy
     delete updatePayload.createdAt
     delete updatePayload.createdBy
+    for (const key of ['recurrenceKey', 'recurrenceVersion', 'recurrenceBranchId', 'periodoServicio', 'secuenciaPeriodo', 'cancellationReason']) {
+      delete updatePayload[key]
+    }
     delete updatePayload.id
 
     if (visitData.fecha_visita) {
@@ -5502,236 +5507,27 @@ exports.onFumigadorWrite = onDocumentWritten('fumigadores/{fumigadorId}', (event
 
 // --- Función Programada (Cron) ---
 exports.scheduleRecurringVisits = onSchedule(
-  {
-    schedule: 'every 1 hours',
-    timeZone: 'America/Bogota',
-  },
-  async (event) => {
-    logger.info('🤖 [BOT] Iniciando generación de visitas recurrentes...')
-
-    if (process.env.ENABLE_RECURRING_VISITS_V2 !== 'true') {
-      logger.warn(
-        '🤖 [BOT] Generación recurrente V2 desactivada. Configure ENABLE_RECURRING_VISITS_V2=true cuando finalice la migración.',
-      )
-      return
-    }
-
-    const servicesSnapshot = await db.collection('servicios').get()
-    const today = new Date()
-    today.setHours(0, 0, 0, 0)
-    const horizon = new Date(today)
-    horizon.setDate(horizon.getDate() + 90)
-    let createdCount = 0
-
-    const activeServices = []
-    for (const doc of servicesSnapshot.docs) {
-      const sheet = doc.data()
-      if (!sheet.services || !sheet.clientId) continue
-
-      for (const [serviceIndex, s] of sheet.services.entries()) {
-        if (s.estado_servicio !== 'Activo' || !s.frecuencia || s.frecuencia === 'UNICA') continue
-        const recurrence = normalizeRecurrence(s)
-        const billing = normalizeBilling(s)
-        activeServices.push({
-          serviceId: s.id || `${sheet.clientId}-service-${serviceIndex + 1}`,
-          clientId: sheet.clientId,
-          clientName: sheet.clientName || 'Cliente Sistema',
-          tipoServicio: s.tipo_servicio,
-          frecuencia: s.frecuencia,
-          recurrence,
-          billing,
-          zona: sheet.zona || 'Sin Zona',
-          ubicacion: sheet.direccion || 'Sede Principal',
-        })
+  { schedule: 'every 1 hours', timeZone: 'America/Bogota', timeoutSeconds: 540 },
+  async () => {
+    if (process.env.ENABLE_RECURRING_VISITS_V2 !== 'true') return
+    const sheets = await db.collection('servicios').select('clientId').get()
+    const failures = []
+    for (const sheet of sheets.docs) {
+      try {
+        const result = await reconcileRecurringSheet(db, admin, sheet.ref, { apply: true })
+        if (result.changes.length || result.warnings.length) {
+          logger.info('Conciliacion de visitas recurrentes', {
+            sheetId: sheet.id, changes: result.changes.length, warnings: result.warnings,
+          })
+        }
+      } catch (error) {
+        failures.push(sheet.id)
+        logger.error('Error conciliando visitas recurrentes', { sheetId: sheet.id, error })
       }
     }
-
-    if (activeServices.length === 0) {
-      logger.info('🤖 [BOT] No hay servicios activos recurrentes.')
-      return
-    }
-
-    const existingKeys = new Set()
-    const existingSnapshot = await db
-      .collection('visitas')
-      .where('fecha_visita', '>=', admin.firestore.Timestamp.fromDate(today))
-      .where('fecha_visita', '<=', admin.firestore.Timestamp.fromDate(horizon))
-      .get()
-    const existingLegacyKeys = new Set()
-    existingSnapshot.forEach((doc) => {
-      const visit = doc.data()
-      const key = visit.recurrenceKey
-      if (key) existingKeys.add(key)
-      if (visit.id_cliente && visit.tipo_visita && visit.fecha_visita?.toDate) {
-        existingLegacyKeys.add(
-          `${visit.id_cliente}_${visit.tipo_visita}_${visit.fecha_visita.toDate().toISOString().slice(0, 10)}`,
-        )
-      }
-    })
-
-    const visitsToCreate = []
-    for (const service of activeServices) {
-      const occurrences = buildRecurringOccurrences(service, today, horizon)
-      occurrences.forEach((occurrence) => {
-        if (existingKeys.has(occurrence.recurrenceKey)) return
-        const legacyKey = `${service.clientId}_${service.tipoServicio}_${occurrence.date.toISOString().slice(0, 10)}`
-        if (existingLegacyKeys.has(legacyKey)) return
-        existingKeys.add(occurrence.recurrenceKey)
-        existingLegacyKeys.add(legacyKey)
-        visitsToCreate.push({ service, ...occurrence })
-      })
-    }
-
-    const BATCH_LIMIT = 450
-    for (let i = 0; i < visitsToCreate.length; i += BATCH_LIMIT) {
-      const batch = db.batch()
-      visitsToCreate.slice(i, i + BATCH_LIMIT).forEach(({ service, date, period, sequence, recurrenceKey }) => {
-        const ref = db.collection('visitas').doc()
-        batch.set(ref, {
-          serviceId: service.serviceId,
-          id_cliente: service.clientId,
-          nombre_cliente: service.clientName,
-          fecha_visita: admin.firestore.Timestamp.fromDate(date),
-          tipo_visita: service.tipoServicio,
-          estado_visita: 'Programada',
-          estado_facturacion: 'Pendiente',
-          periodoServicio: period,
-          secuenciaPeriodo: sequence,
-          recurrenceKey,
-          recurrenceVersion: 2,
-          billingModel: service.billing.model,
-          periodValue: service.billing.periodValue,
-          includedVisits: service.billing.includedVisits,
-          additionalVisitValue: service.billing.additionalVisitValue,
-          valor_servicio: service.billing.model === 'PER_VISIT'
-            ? Number(service.billing.additionalVisitValue || 0)
-            : 0,
-          createdBy: 'SYSTEM',
-          createdAt: admin.firestore.FieldValue.serverTimestamp(),
-          fumigadores_asignados: [],
-          zona: service.zona,
-          ubicacion: service.ubicacion,
-        })
-        createdCount++
-      })
-      await batch.commit()
-    }
-
-    logger.info(`🤖 [BOT] Finalizado. Visitas recurrentes creadas: ${createdCount}`)
+    if (failures.length) throw new Error('Fallaron ' + failures.length + ' fichas de servicio.')
   },
 )
-
-function normalizeRecurrence(service) {
-  const legacyUnit = ['SEMANAL', 'QUINCENAL'].includes(service.frecuencia) ? 'WEEK' : 'MONTH'
-  const legacyInterval = {
-    BIMENSUAL: 2,
-    TRIMESTRAL: 3,
-    SEMESTRAL: 6,
-    ANUAL: 12,
-  }[service.frecuencia] || (service.frecuencia === 'QUINCENAL' ? 2 : 1)
-  const configured = service.recurrence || {}
-  return {
-    unit: configured.unit || legacyUnit,
-    interval: Math.max(1, Number(configured.interval) || legacyInterval),
-    visitsPerPeriod: Math.max(1, Number(configured.visitsPerPeriod) || 1),
-    preferredDays: Array.isArray(configured.preferredDays) ? configured.preferredDays : [],
-    schedulingMode: configured.schedulingMode || 'FLEXIBLE',
-    toleranceDays: Math.max(0, Number(configured.toleranceDays) || 2),
-    allowWeekends: configured.allowWeekends === true,
-  }
-}
-
-function normalizeBilling(service) {
-  const configured = service.billing || {}
-  const value = Math.max(0, Number(service.valor) || 0)
-  const model = configured.model || 'PER_VISIT'
-  return {
-    model,
-    periodValue: Math.max(0, Number(configured.periodValue) || (model === 'PER_VISIT' ? 0 : value)),
-    includedVisits: Math.max(1, Number(configured.includedVisits) || 1),
-    additionalVisitValue: Math.max(0, Number(configured.additionalVisitValue) || value),
-  }
-}
-
-function buildRecurringOccurrences(service, startDate, horizon) {
-  const { recurrence } = service
-  const occurrences = []
-  const periodDates = new Map()
-  const cursor = new Date(startDate)
-  cursor.setHours(0, 0, 0, 0)
-  if (recurrence.unit === 'MONTH') cursor.setDate(1)
-  while (cursor <= horizon) {
-    const period = recurrence.unit === 'WEEK'
-      ? getIsoWeekPeriod(cursor)
-      : `${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, '0')}`
-    if (!periodDates.has(period)) periodDates.set(period, [])
-    if (recurrence.unit === 'WEEK') {
-      cursor.setDate(cursor.getDate() + 7 * recurrence.interval)
-    } else {
-      cursor.setMonth(cursor.getMonth() + recurrence.interval)
-    }
-  }
-
-  for (const period of periodDates.keys()) {
-    const [year, monthOrWeek] = period.split('-').map(Number)
-    const dates = []
-    if (recurrence.unit === 'WEEK') {
-      const weekStart = getDateFromIsoWeek(year, monthOrWeek)
-      for (let i = 0; i < recurrence.visitsPerPeriod; i++) {
-        const preferred = recurrence.preferredDays.length
-          ? recurrence.preferredDays[i % recurrence.preferredDays.length]
-          : undefined
-        const offset = Number.isFinite(preferred) ? preferred : Math.floor((i * 6) / recurrence.visitsPerPeriod)
-        const date = new Date(weekStart)
-        date.setDate(date.getDate() + offset)
-        dates.push(date)
-      }
-    } else {
-      const daysInMonth = new Date(year, monthOrWeek, 0).getDate()
-      for (let i = 0; i < recurrence.visitsPerPeriod; i++) {
-        const preferred = recurrence.preferredDays[i]
-        const day = Math.min(
-          daysInMonth,
-          Math.max(1, Number(preferred) || Math.round(((i + 1) * daysInMonth) / (recurrence.visitsPerPeriod + 1))),
-        )
-        const date = new Date(year, monthOrWeek - 1, day)
-        if (!recurrence.allowWeekends && (date.getDay() === 0 || date.getDay() === 6)) {
-          date.setDate(date.getDate() + (date.getDay() === 6 ? 2 : 1))
-        }
-        dates.push(date)
-      }
-    }
-    dates
-      .filter((date) => date >= startDate && date <= horizon)
-      .forEach((date, index) => {
-        const sequence = index + 1
-        occurrences.push({
-          date,
-          period,
-          sequence,
-          recurrenceKey: `${service.serviceId}_${period}_${sequence}`,
-        })
-      })
-  }
-  return occurrences
-}
-
-function getIsoWeekPeriod(date) {
-  const copy = new Date(date)
-  copy.setHours(0, 0, 0, 0)
-  copy.setDate(copy.getDate() + 3 - ((copy.getDay() + 6) % 7))
-  const weekYear = copy.getFullYear()
-  const firstThursday = new Date(weekYear, 0, 4)
-  const week = 1 + Math.round(((copy - firstThursday) / 86400000 - 3 + ((firstThursday.getDay() + 6) % 7)) / 7)
-  return `${weekYear}-${week}`
-}
-
-function getDateFromIsoWeek(year, week) {
-  const date = new Date(year, 0, 4)
-  date.setDate(date.getDate() + (week - 1) * 7 - ((date.getDay() + 6) % 7))
-  date.setHours(0, 0, 0, 0)
-  return date
-}
 
 /**
  * Tarea programada para realizar backup de Firestore.
@@ -6722,10 +6518,22 @@ exports.saveServiceSheet = protectedCall('servicios', 'view',
       if (!canSetPrice && value > 0 && Number(previous?.valor || 0) !== value) {
         throw new HttpsError('permission-denied', 'No tienes permiso para asignar ese precio.')
       }
+      if (service.recurrence?.startDate && !parseDay(service.recurrence.startDate)) {
+        throw new HttpsError('invalid-argument', 'La fecha inicial de la recurrencia no es valida.')
+      }
+      const previousById = existingServices.find((item, storedIndex) =>
+        (item.id || sheetData.clientId + '-service-' + (storedIndex + 1)) === serviceId,
+      )
+      const recurrence = normalizeRecurrence(service,
+        parseDay(previousById?.recurrence?.startDate) ||
+        (previousById && (colombiaDay(previousById.createdAt) || colombiaDay(existingSheet?.createdAt))) ||
+        colombiaDay(new Date()),
+      )
       return {
         ...service,
         id: serviceId,
         valor: canSetPrice ? value : Number(previous?.valor || 0),
+        ...(recurrence ? { recurrence } : {}),
         sucursales_asignadas: assignedBranches,
       }
     })
@@ -6988,61 +6796,9 @@ exports.onVisitCompletedCheckService = onDocumentUpdated('visitas/{visitId}', as
   }
 })
 
-/**
- * Trigger: Cuando un servicio pasa a Inactivo, cancela automáticamente
- * las visitas futuras programadas para ese servicio.
- */
+/** Reconciles pending automatic visits when the service catalog changes. */
 exports.onServiceInactiveCancelVisits = onDocumentUpdated('servicios/{sheetId}', async (event) => {
-  const beforeData = event.data.before.data()
-  const afterData = event.data.after.data()
-
-  const servicesBefore = beforeData.services || []
-  const servicesAfter = afterData.services || []
-
-  // Encontrar servicios que acaban de pasar a "Inactivo"
-  const deactivatedServices = servicesAfter
-    .filter((afterSvc) => {
-      const beforeSvc = servicesBefore.find((s) => s.tipo_servicio === afterSvc.tipo_servicio)
-      return (
-        beforeSvc &&
-        beforeSvc.estado_servicio === 'Activo' &&
-        afterSvc.estado_servicio === 'Inactivo'
-      )
-    })
-    .map((s) => s.tipo_servicio)
-
-  if (deactivatedServices.length === 0) return null
-
-  const clientId = afterData.clientId
-  const now = new Date()
-
-  try {
-    // Buscar visitas futuras programadas para esos servicios
-    const visitsSnapshot = await admin
-      .firestore()
-      .collection('visitas')
-      .where('id_cliente', '==', clientId)
-      .where('estado_visita', '==', 'Programada')
-      .where('tipo_visita', 'in', deactivatedServices)
-      .where('fecha_visita', '>=', now)
-      .get()
-
-    if (visitsSnapshot.empty) return null
-
-    const batch = admin.firestore().batch()
-    visitsSnapshot.forEach((doc) => {
-      batch.update(doc.ref, {
-        estado_visita: 'Cancelada',
-        notas_realizacion: 'Cancelada automáticamente: El servicio fue suspendido/inactivado.',
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      })
-    })
-
-    await batch.commit()
-    logger.info(
-      `Se cancelaron ${visitsSnapshot.size} visitas futuras para el cliente ${clientId} por servicios inactivos.`,
-    )
-  } catch (error) {
-    logger.error('Error al cancelar visitas por inactivación de servicio:', error)
-  }
+  if (process.env.ENABLE_RECURRING_VISITS_V2 !== 'true') return
+  if (require('node:util').isDeepStrictEqual(event.data.before.data()?.services, event.data.after.data()?.services)) return
+  await reconcileRecurringSheet(db, admin, event.data.after.ref, { apply: true })
 })
