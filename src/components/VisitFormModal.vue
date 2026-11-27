@@ -464,22 +464,22 @@ const handleSubmit = async () => {
   isSubmitting.value = true
 
   const client = planningStore.clients.find((c: Client) => c.id === localVisit.value.id_cliente)
-  let visitZone = client?.zona || 'Sin Zona'
-  let sucursalNombre = '' // <-- NUEVO
-
-  if (client && client.sucursales) {
-    const sucursalMatch = client.sucursales.find((s: any) => s.direccion === localVisit.value.ubicacion)
-    if (sucursalMatch) {
-      if (sucursalMatch.zona) visitZone = sucursalMatch.zona
-      sucursalNombre = sucursalMatch.nombre // <-- AQUí CAPTURAMOS EL NOMBRE (Ej: "Qbano")
-    }
-  }
-
-  localVisit.value.zona = visitZone
+  const savedVisit = props.visit?.extendedProps || props.visit
+  const sameLocation = savedVisit?.id &&
+    savedVisit.id_cliente === localVisit.value.id_cliente &&
+    savedVisit.ubicacion === localVisit.value.ubicacion
+  const branch = sameLocation && savedVisit.sucursal ? undefined : client?.sucursales?.find(
+    item => item.direccion === localVisit.value.ubicacion,
+  )
+  const visitZone = (sameLocation ? savedVisit.zona : undefined) || branch?.zona || client?.zona || 'Sin Zona'
+  const branchName = sameLocation && typeof savedVisit.sucursal === 'string' && savedVisit.sucursal
+    ? savedVisit.sucursal
+    : (branch?.nombre || '')
 
   const visitToSave: typeof localVisit.value & { duracion_minutos?: number; sucursal: string } = {
     ...localVisit.value,
-    sucursal: sucursalNombre // <-- LO INCLUIDOS EN EL OBJETO QUE VIAJA A FIREBASE
+    zona: visitZone,
+    sucursal: branchName,
   }
   visitToSave.duracion_minutos = durationMinutes.value
   const combinedDateTime = new Date(visitStart.value)

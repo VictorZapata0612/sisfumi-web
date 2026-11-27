@@ -47,7 +47,7 @@ const preferredDaysText = ref('')
 
 const serviceTypesList = computed(() => settingsStore.businessData?.serviceTypes || [])
 // Reemplaza los valores de este array con la lista EXACTA (mayúsculas/minúsculas) de tu bot
-const frequencyOptions = computed(() => ['UNICA', 'SEMANAL', 'QUINCENAL', 'MENSUAL', 'BIMESTRAL', 'TRIMESTRAL', 'SEMESTRAL', 'ANUAL'])
+const frequencyOptions = computed(() => ['UNICA', 'Ocasional', 'SEMANAL', 'QUINCENAL', 'MENSUAL', 'BIMESTRAL', 'TRIMESTRAL', 'SEMESTRAL', 'ANUAL'])
 const weekly = computed(() => ['SEMANAL', 'QUINCENAL'].includes(form.value.frecuencia))
 const recurrenceLimit = computed(() => weekly.value
   ? (form.value.recurrence?.allowWeekends ? 7 : 5)
@@ -342,27 +342,28 @@ const handleSave = async () => {
         <section class="service-editor-card">
           <h3 class="editor-section-title"><i class="fas fa-calendar-alt" aria-hidden="true"></i> Planificación y facturación</h3>
           <div class="grid gap-3 sm:grid-cols-2">
-            <div>
+            <div v-if="form.frecuencia !== 'Ocasional'">
               <label for="visitsPerPeriod" class="form-label">Visitas por periodo y por sede</label>
               <input v-model.number="form.recurrence!.visitsPerPeriod" type="number" min="1" :max="recurrenceLimit"
                 id="visitsPerPeriod" class="input-field-dark w-full" />
               <p class="text-xs text-[var(--shell-muted)] mt-1">La cantidad se aplica a cada sede seleccionada.</p>
             </div>
-            <div>
+            <div v-if="form.frecuencia !== 'Ocasional'">
               <label for="preferredDays" class="form-label">Días preferidos</label>
               <input v-model="preferredDaysText" type="text" id="preferredDays" class="input-field-dark w-full"
                 placeholder="Ej.: 2, 4, 6" />
               <p class="text-xs text-[var(--shell-muted)] mt-1">{{ weekly ? 'Días separados por coma. Lunes = 0, domingo = 6.' : 'Días del mes separados por coma.' }}</p>
             </div>
-            <div v-if="form.frecuencia && form.frecuencia !== 'UNICA'">
+            <div v-if="form.frecuencia && form.frecuencia !== 'UNICA' && form.frecuencia !== 'Ocasional'">
               <label for="recurrenceStart" class="form-label">Fecha inicial del ciclo</label>
               <input v-model="form.recurrence!.startDate" id="recurrenceStart" type="date" class="input-field-dark w-full" />
               <p class="mt-1 text-xs text-[var(--shell-muted)]">Si se omite, se usa la fecha existente o la fecha de alta.</p>
             </div>
-            <label v-if="form.frecuencia && form.frecuencia !== 'UNICA'" class="flex items-center gap-2 text-sm">
+            <label v-if="form.frecuencia && form.frecuencia !== 'UNICA' && form.frecuencia !== 'Ocasional'" class="flex items-center gap-2 text-sm">
               <input v-model="form.recurrence!.allowWeekends" type="checkbox" /> Permitir fines de semana
             </label>
             <div>
+              <p v-if="form.frecuencia === 'Ocasional'" class="mb-3 text-xs text-[var(--shell-muted)]">Las visitas se programan manualmente en Planeación.</p>
               <label for="billingModel" class="form-label">Modelo de facturación</label>
               <select v-model="form.billing!.model" id="billingModel" class="input-field-dark w-full">
                 <option value="PER_VISIT">Por visita</option>

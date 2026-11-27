@@ -6518,12 +6518,15 @@ exports.saveServiceSheet = protectedCall('servicios', 'view',
       if (!canSetPrice && value > 0 && Number(previous?.valor || 0) !== value) {
         throw new HttpsError('permission-denied', 'No tienes permiso para asignar ese precio.')
       }
-      if (service.recurrence?.startDate && !parseDay(service.recurrence.startDate)) {
-        throw new HttpsError('invalid-argument', 'La fecha inicial de la recurrencia no es valida.')
-      }
       const previousById = existingServices.find((item, storedIndex) =>
         (item.id || sheetData.clientId + '-service-' + (storedIndex + 1)) === serviceId,
       )
+      if (previousById && require('node:util').isDeepStrictEqual(
+        { ...previousById, id: serviceId }, { ...service, id: serviceId },
+      )) return { ...previousById, id: serviceId }
+      if (service.recurrence?.startDate && !parseDay(service.recurrence.startDate)) {
+        throw new HttpsError('invalid-argument', 'La fecha inicial de la recurrencia no es valida.')
+      }
       const recurrence = normalizeRecurrence(service,
         parseDay(previousById?.recurrence?.startDate) ||
         (previousById && (colombiaDay(previousById.createdAt) || colombiaDay(existingSheet?.createdAt))) ||

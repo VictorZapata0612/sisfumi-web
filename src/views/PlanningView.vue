@@ -1089,6 +1089,7 @@ const handleQuickComplete = (visit: Visit) => {
                   {{ event.extendedProps?.tipo_visita }} - {{ event.extendedProps?.ubicacion }}
                 </p>
 
+                <span v-if="event.source === 'internal' && event.extendedProps?.createdBy === 'SYSTEM' && event.extendedProps?.estado_visita === 'Programada' && !event.extendedProps?.fumigadores_asignados?.length" class="mt-1 inline-block rounded bg-[var(--planning-tint)] px-2 py-0.5 text-xs text-[var(--planning-accent)]">Automática · Sin técnico</span>
                 <div
                   v-if="event.source === 'internal'"
                   class="mt-2 flex items-center justify-between"
@@ -1242,6 +1243,7 @@ const handleQuickComplete = (visit: Visit) => {
               <div>
                 <h4 class="font-bold text-[var(--shell-text)] text-sm">{{ event.title }}</h4>
                 <p class="text-xs text-[var(--shell-muted)] mt-1">{{ event.extendedProps?.tipo_visita }}</p>
+                <span v-if="event.source === 'internal' && event.extendedProps?.createdBy === 'SYSTEM' && event.extendedProps?.estado_visita === 'Programada' && !event.extendedProps?.fumigadores_asignados?.length" class="mt-1 inline-block rounded bg-[var(--planning-tint)] px-2 py-0.5 text-xs text-[var(--planning-accent)]">Automática · Sin técnico</span>
               </div>
               <span
                 v-if="event.source === 'internal'"

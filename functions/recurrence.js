@@ -73,7 +73,12 @@ function buildOccurrences(recurrence, from, through) {
       const offset = preferred === undefined
         ? Math.round(((index + 1) * (count + 1)) / (recurrence.visitsPerPeriod + 1)) - 1
         : Math.min(count - 1, preferred - (recurrence.unit === 'MONTH' ? 1 : 0))
-      const target = +period + offset * DAY
+      let target = +period + offset * DAY
+      const weekday = new Date(target).getUTCDay()
+      if (!recurrence.allowWeekends && [0, 6].includes(weekday)) {
+        const monday = target + (weekday === 6 ? 2 : 1) * DAY
+        if (monday <= +end) target = monday
+      }
       // In a tie, prefer the later working day without leaving the period.
       const nearest = available.reduce((best, date, pos) =>
         Math.abs(+date - target) <= Math.abs(+available[best] - target) ? pos : best, 0)

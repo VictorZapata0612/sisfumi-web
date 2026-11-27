@@ -31,6 +31,7 @@ function normalizeRecurrence(service) {
     }[frequency] || (frequency === 'QUINCENAL' ? 2 : 1)
 
   return {
+    ...configured,
     unit,
     interval: Math.max(1, Number(configured.interval) || legacyInterval),
     visitsPerPeriod: Math.max(1, Number(configured.visitsPerPeriod) || 1),
