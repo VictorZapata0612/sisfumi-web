@@ -100,10 +100,31 @@ const loadInitialData = async () => {
   }
 }
 
+const steps = ['Identidad', 'Ubicación y clasificación', 'Contactos', 'Sucursales']
+const step = ref(0)
+
+function advance() {
+  if (step.value === 0 && (!form.value.nombreComercial.trim() || !normalizeNit(String(form.value.nit)))) {
+    errorMessage.value = 'Completa el nombre comercial y el documento.'
+    return
+  }
+  if (step.value === 1 && (!form.value.departamento || !form.value.ciudad || !form.value.direccion.trim())) {
+    errorMessage.value = 'Completa el departamento, la ciudad y la dirección.'
+    return
+  }
+  if (step.value === 2 && (emailPrincipalError.value || emailFinancieroError.value)) {
+    errorMessage.value = 'Revisa los correos de contacto.'
+    return
+  }
+  errorMessage.value = null
+  step.value++
+}
+
 watch(
   () => props.show,
   (newVal) => {
     if (newVal) {
+      step.value = 0
       loadInitialData()
     }
   },
@@ -112,6 +133,10 @@ watch(
 
 const handleSave = async () => {
   if (loading.value || loadFailed.value) return
+  if (step.value < steps.length - 1) {
+    advance()
+    return
+  }
   saving.value = true
   loading.value = true
   errorMessage.value = null
@@ -328,13 +353,23 @@ const emailFinancieroError = computed(() => {
       </p>
 
       <!-- Content -->
+      <div class="grid min-h-0 flex-1 md:grid-cols-[15rem_minmax(0,1fr)]">
+        <ol class="flex gap-2 overflow-x-auto border-b border-[var(--shell-border)] bg-[var(--shell-input)] p-4 md:flex-col md:border-b-0 md:border-r" aria-label="Pasos del registro">
+          <li v-for="(label, index) in steps" :key="label" :aria-current="index === step ? 'step' : undefined">
+            <button type="button" class="flex items-center gap-2 rounded-lg p-2 text-left text-sm" :class="index === step ? 'font-bold' : 'text-[var(--shell-muted)]'" :disabled="loading || index >= step" @click="step = index; errorMessage = null">
+              <span class="grid size-7 shrink-0 place-items-center rounded-full" :class="index === step ? 'bg-[#E50914] text-white' : 'border border-[var(--shell-border)]'">{{ index + 1 }}</span>
+              {{ label }}
+            </button>
+          </li>
+        </ol>
       <form v-if="(!loading || saving) && !loadFailed" id="client-editor" novalidate @submit.prevent="handleSave" class="form-body min-h-0 overflow-y-auto p-4 sm:p-5">
         <fieldset :disabled="loading">
-        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <h3 class="mb-5 text-2xl font-extrabold">{{ step === 0 ? 'Identidad del cliente' : steps[step] }}</h3>
+        <div class="space-y-4">
           <!-- Columna Izquierda: Datos Principales -->
           <div class="space-y-6">
             <!-- Datos Generales -->
-            <div class="bg-[var(--shell-input)] rounded-lg p-4 border border-[var(--shell-border)]">
+            <div v-show="step === 0" class="bg-[var(--shell-input)] rounded-lg p-4 border border-[var(--shell-border)]">
               <h4 class="text-sm font-bold form-section-title border-b border-[var(--shell-border)] pb-2 mb-4">
                 <i class="fas fa-id-card mr-2"></i> Datos Generales
               </h4>
@@ -360,8 +395,8 @@ const emailFinancieroError = computed(() => {
             </div>
 
             <!-- Ubicación -->
-            <div class="bg-[var(--shell-input)] rounded-lg p-4 border border-[var(--shell-border)]">
-              <h4 class="text-sm font-bold text-cyan-400 uppercase tracking-wide border-b border-[var(--shell-border)] pb-2 mb-4">
+            <div v-show="step === 1" class="bg-[var(--shell-input)] rounded-lg p-4 border border-[var(--shell-border)]">
+              <h4 class="text-sm font-bold form-section-title uppercase tracking-wide border-b border-[var(--shell-border)] pb-2 mb-4">
                 <i class="fas fa-map-marker-alt mr-2"></i> Ubicación Principal
               </h4>
               <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -401,8 +436,8 @@ const emailFinancieroError = computed(() => {
             </div>
 
             <!-- Clasificación -->
-            <div class="bg-[var(--shell-input)] rounded-lg p-4 border border-[var(--shell-border)]">
-              <h4 class="text-sm font-bold text-cyan-400 uppercase tracking-wide border-b border-[var(--shell-border)] pb-2 mb-4">
+            <div v-show="step === 1" class="bg-[var(--shell-input)] rounded-lg p-4 border border-[var(--shell-border)]">
+              <h4 class="text-sm font-bold form-section-title uppercase tracking-wide border-b border-[var(--shell-border)] pb-2 mb-4">
                 <i class="fas fa-tags mr-2"></i> Clasificación
               </h4>
               <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -454,8 +489,8 @@ const emailFinancieroError = computed(() => {
           <!-- Columna Derecha: Contactos y Sucursales -->
           <div class="space-y-6">
             <!-- Contactos -->
-            <div class="bg-[var(--shell-input)] rounded-lg p-4 border border-[var(--shell-border)]">
-              <h4 class="text-sm font-bold text-cyan-400 uppercase tracking-wide border-b border-[var(--shell-border)] pb-2 mb-4">
+            <div v-show="step === 2" class="bg-[var(--shell-input)] rounded-lg p-4 border border-[var(--shell-border)]">
+              <h4 class="text-sm font-bold form-section-title uppercase tracking-wide border-b border-[var(--shell-border)] pb-2 mb-4">
                 <i class="fas fa-address-book mr-2"></i> Contactos
               </h4>
               <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -502,9 +537,9 @@ const emailFinancieroError = computed(() => {
             </div>
 
             <!-- Sucursales -->
-            <div class="bg-[var(--shell-input)] rounded-lg p-4 border border-[var(--shell-border)] flex flex-col h-[320px]">
+            <div v-show="step === 3" class="bg-[var(--shell-input)] rounded-lg p-4 border border-[var(--shell-border)] flex flex-col h-[320px]">
               <div class="flex justify-between items-center border-b border-[var(--shell-border)] pb-2 mb-4">
-                <h4 class="text-sm font-bold text-cyan-400 uppercase tracking-wide">
+                <h4 class="text-sm font-bold form-section-title uppercase tracking-wide">
                   <i class="fas fa-store-alt mr-2"></i> Sucursales
                 </h4>
                 <button @click="addSucursal" type="button" class="btn btn-secondary text-xs !py-1 !px-2">
@@ -540,7 +575,7 @@ const emailFinancieroError = computed(() => {
             </div>
 
             <!-- Estado -->
-            <div class="bg-[var(--shell-input)] rounded-lg p-4 border border-[var(--shell-border)] flex items-center justify-between">
+            <div v-show="step === 0" class="bg-[var(--shell-input)] rounded-lg p-4 border border-[var(--shell-border)] flex items-center justify-between">
               <label for="clientStatus" class="font-bold text-[var(--shell-muted)]">Estado del Cliente</label>
               <select v-model="form.estado" id="clientStatus" class="input-field-dark px-3 py-1.5 w-40" :class="form.estado === 'Activo'
                 ? 'border-green-500 text-green-400'
@@ -555,6 +590,7 @@ const emailFinancieroError = computed(() => {
 
         </fieldset>
       </form>
+      </div>
 
       <p v-if="errorMessage" role="alert" class="form-error mx-4 my-2 max-h-24 shrink-0 overflow-y-auto whitespace-pre-line rounded-lg px-3 py-2 text-sm">
         {{ errorMessage }}
@@ -567,9 +603,10 @@ const emailFinancieroError = computed(() => {
         </button>
         <div class="ml-auto flex flex-wrap justify-end gap-2">
           <button type="button" class="form-button" :disabled="loading" @click="emit('close')">Cancelar</button>
+          <button v-if="step > 0 && !loadFailed" type="button" class="form-button" :disabled="loading" @click="step--; errorMessage = null">Atrás</button>
           <button v-if="loadFailed" type="button" class="form-button form-primary" @click="loadInitialData">Reintentar</button>
           <button v-else type="submit" form="client-editor" class="form-button form-primary" :disabled="loading">
-            {{ isEditMode ? 'Guardar cambios' : 'Crear cliente' }}
+            {{ step < steps.length - 1 ? 'Continuar a ' + steps[step + 1]?.toLowerCase() : isEditMode ? 'Guardar cambios' : 'Crear cliente' }}
           </button>
         </div>
       </footer>

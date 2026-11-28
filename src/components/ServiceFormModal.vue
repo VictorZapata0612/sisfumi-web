@@ -1,6 +1,6 @@
 <!-- eslint-disable @typescript-eslint/no-explicit-any -->
 <script setup lang="ts">
-import { ref, watch, computed, nextTick, onUnmounted } from 'vue'
+import { ref, watch, computed, nextTick } from 'vue'
 import type { Service } from '@/stores/services'
 import { useServicesStore } from '@/stores/services'
 import { useAuthStore } from '@/stores/auth'
@@ -52,6 +52,15 @@ const weekly = computed(() => ['SEMANAL', 'QUINCENAL'].includes(form.value.frecu
 const recurrenceLimit = computed(() => weekly.value
   ? (form.value.recurrence?.allowWeekends ? 7 : 5)
   : (form.value.recurrence?.allowWeekends ? 28 : 20))
+const selectableTypes = computed(() => [...new Set([
+  ...serviceTypesList.value.map(type => type.name),
+  ...(props.service?.tipo_servicio ? [props.service.tipo_servicio] : []),
+])])
+const selectableFrequencies = computed(() => [...new Set([
+  ...frequencyOptions.value,
+  ...(props.service?.frecuencia ? [props.service.frecuencia] : []),
+])])
+const billingLabels = { PER_VISIT: 'Por visita', FIXED_PERIOD: 'Fija por periodo', INCLUDED_PLUS_ADDITIONAL: 'Incluidas + adicionales' }
 const formattedValor = computed({
   get() {
     return form.value.valor.toLocaleString('es-CO')
@@ -70,29 +79,8 @@ const canSetPrice = computed(
     authStore.userRole === 'Coordinador Nacional',
 )
 
-const showTooltip = ref(false)
 const isSaving = ref(false)
 const priceInput = ref<HTMLInputElement>()
-let tooltipTimer: ReturnType<typeof setTimeout>
-
-const handleTooltipEnter = () => {
-  showTooltip.value = true
-  resetTooltipTimer()
-}
-
-const handleTooltipLeave = () => {
-  showTooltip.value = false
-  clearTimeout(tooltipTimer)
-}
-
-const resetTooltipTimer = () => {
-  clearTimeout(tooltipTimer)
-  tooltipTimer = setTimeout(() => {
-    showTooltip.value = false
-  }, 3000)
-}
-
-onUnmounted(() => clearTimeout(tooltipTimer))
 
 const sucursalesOptions = computed(() => {
   const client = servicesStore.selectedClient
@@ -290,52 +278,30 @@ const handleSave = async () => {
       </header>
 
       <form @submit.prevent="handleSave" id="service-editor" class="service-editor-body min-h-0 overflow-y-auto p-4 sm:p-5" :class="{ 'price-body': priceMode }" :aria-busy="isSaving">
-        <!-- Configuración Básica -->
-        <section class="service-editor-card">
-          <h3 class="editor-section-title"><i class="fas fa-clipboard-list" aria-hidden="true"></i> Datos del servicio</h3>
-          <div class="grid gap-3 sm:grid-cols-2">
-            <div>
-              <label for="serviceType" class="form-label">Tipo de Servicio <span class="text-red-400">*</span></label>
-              <div class="relative">
-                <select v-model="form.tipo_servicio" id="serviceType" class="input-field-dark w-full appearance-none"
-                  required>
-                  <option disabled value="">Seleccione...</option>
-                  <option v-for="s in serviceTypesList" :key="s.name" :value="s.name">
-                    {{ s.name }}
-                  </option>
-                </select>
-                <div class="absolute inset-y-0 right-0 flex items-center px-2 pointer-events-none text-[var(--shell-muted)]">
-                  <i class="fas fa-chevron-down text-xs"></i>
-                </div>
-              </div>
-            </div>
-            <div>
-              <label for="serviceFrequency" class="form-label flex items-center gap-2">
-                Frecuencia <span class="text-red-400">*</span>
-                <div class="relative" @mouseenter="handleTooltipEnter" @mouseleave="handleTooltipLeave"
-                  @mousemove="resetTooltipTimer">
-                  <i class="fas fa-info-circle text-[var(--shell-muted)] hover:text-cyan-400 cursor-help text-xs"></i>
-                  <div
-                    class="absolute bottom-full left-1/2 transform -translate-x-1/2 mb-2 w-48 bg-gray-800 text-xs text-gray-200 p-2 rounded shadow-lg transition-opacity duration-300 ease-in-out pointer-events-none z-10 border border-[var(--shell-border)] text-center"
-                    :class="showTooltip ? 'opacity-100' : 'opacity-0'">
-                    Opciones: Mensual, Bimestral, Trimestral, Semestral, Anual, Ocasional.
-                  </div>
-                </div>
+        <div class="grid items-start gap-4" :class="{ 'lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]': !priceMode }">
+        <div class="flex min-w-0 flex-col gap-4">
+        <section class="service-editor-card space-y-4">
+          <fieldset>
+            <legend class="mb-2 text-lg font-bold">¿Qué servicio vas a ofrecer?</legend>
+            <div class="grid gap-2 sm:grid-cols-2">
+              <label v-for="type in selectableTypes" :key="type" class="cursor-pointer">
+                <input v-model="form.tipo_servicio" type="radio" name="service-type" :value="type" class="peer sr-only" required />
+                <span class="flex h-full items-center gap-2 rounded-lg border border-[var(--shell-border)] p-3 text-sm font-semibold peer-checked:border-[#E50914] peer-checked:bg-red-500/10 peer-focus-visible:ring-2 peer-focus-visible:ring-red-500">
+                  <i class="fas fa-clipboard-list" aria-hidden="true"></i>{{ type }}
+                </span>
               </label>
-              <div class="relative">
-                <select v-model="form.frecuencia" id="serviceFrequency" class="input-field-dark w-full appearance-none"
-                  required>
-                  <option disabled value="">Seleccione...</option>
-                  <option v-for="f in frequencyOptions" :key="f" :value="f">
-                    {{ f }}
-                  </option>
-                </select>
-                <div class="absolute inset-y-0 right-0 flex items-center px-2 pointer-events-none text-[var(--shell-muted)]">
-                  <i class="fas fa-chevron-down text-xs"></i>
-                </div>
-              </div>
             </div>
-          </div>
+            <p v-if="!selectableTypes.length" class="text-sm text-[var(--shell-muted)]">No hay tipos de servicio disponibles.</p>
+          </fieldset>
+          <fieldset>
+            <legend class="mb-2 font-bold">¿Cada cuánto?</legend>
+            <div class="flex flex-wrap gap-2">
+              <label v-for="frequency in selectableFrequencies" :key="frequency" class="cursor-pointer">
+                <input v-model="form.frecuencia" type="radio" name="service-frequency" :value="frequency" class="peer sr-only" required />
+                <span class="block rounded-full border border-[var(--shell-border)] px-3 py-2 text-xs capitalize peer-checked:border-[#E50914] peer-checked:bg-[#E50914] peer-checked:text-white peer-focus-visible:ring-2 peer-focus-visible:ring-red-500">{{ frequency.toLowerCase() }}</span>
+              </label>
+            </div>
+          </fieldset>
         </section>
 
         <!-- Planificación y facturación -->
@@ -440,6 +406,19 @@ const handleSave = async () => {
           </div>
           <p class="mt-2 text-xs text-[var(--shell-muted)]">{{ form.sucursales_asignadas.length ? form.sucursales_asignadas.length + ' seleccionadas' : 'Aplica a todas las sucursales si no seleccionas ninguna.' }}</p>
         </section>
+        </div>
+        <aside v-if="!priceMode" class="service-editor-card self-start lg:sticky lg:top-0">
+          <h3 class="editor-section-title">Resumen del servicio</h3>
+          <dl class="divide-y divide-[var(--shell-border)]">
+            <div class="py-3"><dt class="form-label">Servicio</dt><dd>{{ form.tipo_servicio || 'Selecciona un servicio' }}</dd></div>
+            <div class="py-3"><dt class="form-label">Frecuencia</dt><dd>{{ form.frecuencia || 'Selecciona una frecuencia' }}</dd></div>
+            <div class="py-3"><dt class="form-label">Visitas por periodo y sede</dt><dd>{{ form.recurrence?.visitsPerPeriod || 1 }}</dd></div>
+            <div class="py-3"><dt class="form-label">Cobertura</dt><dd>{{ sucursalesOptions.filter(option => form.sucursales_asignadas.includes(option.value)).map(option => option.text).join(', ') || 'Todas las sucursales' }}</dd></div>
+            <div class="py-3"><dt class="form-label">Facturación</dt><dd>{{ billingLabels[form.billing?.model || 'PER_VISIT'] }}</dd></div>
+            <div class="py-3"><dt class="form-label">Estado</dt><dd>{{ form.estado_servicio }}</dd></div>
+          </dl>
+        </aside>
+        </div>
       </form>
 
       <footer class="flex shrink-0 flex-wrap justify-end gap-2 border-t border-[var(--shell-border)] bg-[var(--shell-input)] p-4 sm:px-5">
@@ -455,7 +434,7 @@ const handleSave = async () => {
 </template>
 
 <style scoped>
-.service-editor-panel { max-width: 58rem; max-height: calc(100dvh - 2rem); color: var(--shell-text); }
+.service-editor-panel { max-width: 72rem; max-height: calc(100dvh - 2rem); color: var(--shell-text); }
 .price-editor { max-width: 42rem; }
 .service-editor-body { display: grid; gap: 0.85rem; scrollbar-color: var(--shell-scroll-thumb) var(--shell-scroll-track); }
 .service-editor-card { min-width: 0; padding: 0.9rem; border: 1px solid var(--shell-border); border-radius: 0.75rem; }
@@ -466,9 +445,7 @@ const handleSave = async () => {
 }
 .editor-section-title i { color: var(--service-accent); }
 .pricing-note { padding: 0.6rem; border-radius: 0.55rem; background: var(--service-tint); color: var(--service-accent); font-size: 0.8rem; }
-@media (min-width: 900px) {
-  .service-editor-body:not(.price-body) { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: start; }
-}
+
 
 .service-form-heading { border-bottom: 1px solid var(--shell-border); background: linear-gradient(115deg, var(--service-tint), var(--shell-surface) 72%); }
 .service-form-icon { background: var(--service-tint); color: var(--service-accent); }

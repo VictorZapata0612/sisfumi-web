@@ -126,19 +126,19 @@ function deleteSelectedNoteTemplate() {
   if (!template || !canSaveNoteTemplate.value || savingTemplate.value) return
   showDialog({
     appearance: 'planning',
-    title: 'Eliminar plantilla',
-    message: 'La plantilla dejará de estar disponible para futuras visitas. Las notas ya copiadas se conservarán.',
+    title: 'Archivar plantilla',
+    message: 'La plantilla se conservará en el archivo. Las notas copiadas a las visitas seguirán disponibles.',
     isConfirmation: true,
-    confirmationText: 'Eliminar plantilla',
+    confirmationText: 'Archivar plantilla',
     async onConfirm() {
       savingTemplate.value = true
       try {
         await planningStore.deleteVisitTemplate(template.id)
         managedTemplateId.value = ''
         if (editingNoteTemplate.value?.id === template.id) namingTemplate.value = false
-        showToast({ title: 'Plantilla eliminada', message: template.templateName, type: 'success' })
+        showToast({ title: 'Plantilla archivada', message: template.templateName, type: 'success' })
       } catch (error) {
-        showToast({ title: 'Error al eliminar la plantilla', message: error instanceof Error ? error.message : 'Inténtalo de nuevo.', type: 'error' })
+        showToast({ title: 'Error al archivar la plantilla', message: error instanceof Error ? error.message : 'Inténtalo de nuevo.', type: 'error' })
       } finally {
         savingTemplate.value = false
       }
@@ -342,6 +342,7 @@ watch(
 
         localVisit.value = {
           ...actualVisitData,
+          internalNotes: [...(actualVisitData.internalNotes || [])],
           fecha_visita_date: colombiaDateTime?.date || '',
           fecha_visita_time: !isNaN(dateObj.getTime())
             ? colombiaDateTime?.time || '08:00'
@@ -481,6 +482,9 @@ const handleSubmit = async () => {
     zona: visitZone,
     sucursal: branchName,
   }
+  if (savedVisit && (visitToSave.notas_visita ?? '') === (savedVisit.notas_visita ?? '')) {
+    delete visitToSave.notas_visita
+  }
   visitToSave.duracion_minutos = durationMinutes.value
   const combinedDateTime = new Date(visitStart.value)
   visitToSave.fecha_visita = combinedDateTime.toISOString()
@@ -578,7 +582,7 @@ const sortedTechnicians = computed(() => {
 const addChatNote = () => {
   if (!newChatNote.value.trim()) return
   const note = {
-    id: Date.now().toString(),
+    id: crypto.randomUUID(),
     text: newChatNote.value,
     author: authStore.user?.displayName || authStore.user?.email || 'Usuario',
     timestamp: new Date().toISOString()
@@ -587,6 +591,51 @@ const addChatNote = () => {
   localVisit.value.internalNotes.push(note)
   newChatNote.value = ''
 }
+const agendaHours = computed(() => {
+  const settings = settingsStore.workspacePreferences.operations
+  const opens = Number(settings.opensAt.slice(0, 2))
+  const closes = Number(settings.closesAt.slice(0, 2)) + Number(settings.closesAt.slice(3)) / 60
+  const selected = Number(localVisit.value.fecha_visita_time?.slice(0, 2) || opens)
+  const first = Math.min(opens, selected)
+  const last = Math.min(24, Math.max(Math.ceil(closes), selected + 1))
+  return Array.from({ length: last - first }, (_, index) => String(first + index).padStart(2, '0') + ':00')
+})
+
+const agendaByTechnician = computed(() => {
+  const dayStart = colombiaTimestamp((localVisit.value.fecha_visita_date || '') + 'T00:00')
+  const dayEnd = dayStart + 86_400_000
+  const byTechnician = new Map<string, { start: number; end: number }[]>()
+  for (const visit of planningStore.monthlyVisits) {
+    if (visit.id === localVisit.value.id || visit.estado_visita === 'Cancelada') continue
+    const start = new Date(visit.fecha_visita).getTime()
+    const end = start + (visit.duracion_minutos || 60) * 60_000
+    if (!(start < dayEnd && end > dayStart)) continue
+    for (const name of visit.fumigadores_asignados || []) {
+      const slots = byTechnician.get(name) || []
+      slots.push({ start, end })
+      byTechnician.set(name, slots)
+    }
+  }
+  return byTechnician
+})
+
+function slotStatus(hour: string, technician: string) {
+  const start = colombiaTimestamp((localVisit.value.fecha_visita_date || '') + 'T' + hour)
+  const end = start + 3_600_000
+  const busy = agendaByTechnician.value.get(technician)?.some(slot => slot.start < end && slot.end > start)
+  const selected = localVisit.value.fumigadores_asignados?.includes(technician) &&
+    visitStart.value < end && colombiaTimestamp(visitEnd.value) > start
+  if (selected) return busy ? 'Posible cruce' : 'Esta visita'
+  return busy ? 'Ocupado' : '—'
+}
+
+function chooseSlot(hour: string, technician: string) {
+  localVisit.value.fecha_visita_time = hour
+  shiftVisitEnd()
+  const assigned = localVisit.value.fumigadores_asignados || []
+  if (!assigned.includes(technician)) localVisit.value.fumigadores_asignados = [...assigned, technician]
+}
+
 </script>
 
 <template>
@@ -597,7 +646,7 @@ const addChatNote = () => {
 
     <!-- Modal Panel -->
     <div
-      class="relative bg-[var(--shell-surface)] rounded-2xl border border-[var(--shell-border)] shadow-2xl w-full max-w-4xl flex flex-col max-h-[calc(100dvh-2rem)] overflow-hidden transform transition-all animate-fade-in">
+      class="relative bg-[var(--shell-surface)] rounded-2xl border border-[var(--shell-border)] shadow-2xl w-full max-w-7xl flex flex-col max-h-[calc(100dvh-2rem)] overflow-hidden transform transition-all animate-fade-in">
 
       <!-- Header -->
       <div class="visit-form-header flex shrink-0 items-start justify-between gap-3 p-4 sm:p-5">
@@ -698,12 +747,43 @@ const addChatNote = () => {
             </div>
           </div>
 
+          <div class="grid items-start gap-4 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
+            <section class="min-w-0 rounded-xl border border-[var(--shell-border)] bg-[var(--shell-input)] p-4">
+              <h3 class="text-lg font-bold">Agenda del equipo</h3>
+              <label class="mt-3 block text-sm font-semibold">Fecha de inicio
+                <input type="date" aria-label="Fecha de inicio" v-model="localVisit.fecha_visita_date" @change="shiftVisitEnd" class="input-field-dark w-full" required />
+              </label>
+              <p class="my-3 text-xs text-[var(--shell-muted)]">Consulta las visitas cargadas. Los cruces se verifican al guardar.</p>
+              <div v-if="sortedTechnicians.length" class="max-h-96 overflow-auto rounded-lg border border-[var(--shell-border)]">
+                <table class="w-full border-collapse text-center text-xs">
+                  <thead class="sticky top-0 bg-[var(--shell-surface)]">
+                    <tr>
+                      <th scope="col" class="p-2">Hora</th>
+                      <th v-for="tech in sortedTechnicians" :key="tech.id" scope="col" class="min-w-28 border-l border-[var(--shell-border)] p-2">{{ tech.nombreCompleto }}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="hour in agendaHours" :key="hour" class="border-t border-[var(--shell-border)]">
+                      <th scope="row" class="p-2 tabular-nums">{{ hour }}</th>
+                      <td v-for="tech in sortedTechnicians" :key="tech.id" class="border-l border-[var(--shell-border)] p-1">
+                        <button type="button" class="w-full rounded p-2 hover:ring-1 hover:ring-red-500"
+                          :class="{ 'bg-red-500/15 font-bold': ['Esta visita', 'Posible cruce'].includes(slotStatus(hour, tech.nombreCompleto)) }"
+                          :aria-label="tech.nombreCompleto + ', ' + hour + ', ' + slotStatus(hour, tech.nombreCompleto)"
+                          :disabled="!localVisit.fecha_visita_date" @click="chooseSlot(hour, tech.nombreCompleto)">
+                          {{ slotStatus(hour, tech.nombreCompleto) }}
+                        </button>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <p v-else class="text-sm text-[var(--shell-muted)]">No hay técnicos disponibles en la selección actual.</p>
+            </section>
+            <section class="min-w-0 space-y-4 rounded-xl border border-[var(--shell-border)] p-4">
+              <h3 class="text-lg font-bold">Detalles de la visita</h3>
           <!-- Sección: Fecha, Hora y Estado -->
           <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <div>
-              <label class="text-xs font-bold text-[var(--shell-muted)] uppercase tracking-wider mb-2 block">Fecha</label>
-              <input type="date" aria-label="Fecha de inicio" v-model="localVisit.fecha_visita_date" @change="shiftVisitEnd" class="input-field-dark w-full" required />
-            </div>
+
             <div>
               <label class="text-xs font-bold text-[var(--shell-muted)] uppercase tracking-wider mb-2 block">Hora de inicio</label>
               <input type="time" aria-label="Hora de inicio" v-model="localVisit.fecha_visita_time" class="input-field-dark w-full" required @change="shiftVisitEnd" />
@@ -750,10 +830,9 @@ const addChatNote = () => {
             </div>
           </div>
 
-          <!-- Sección: Notas -->
-          <div>
-            <label class="text-xs font-bold text-[var(--shell-muted)] uppercase tracking-wider mb-2 block">Observaciones y
-              Notas</label>
+          <details class="rounded-lg border border-[var(--shell-border)] p-3">
+            <summary class="cursor-pointer font-semibold">Notas y plantillas</summary>
+            <div class="mt-3">
             <section v-if="availableTemplates.length || canSaveNoteTemplate"
               class="mb-3 rounded-xl border border-[var(--shell-border)] bg-[var(--shell-input)] p-3" aria-label="Plantillas">
               <h3 class="mb-2 text-sm font-bold"><i class="fas fa-file-alt visit-active mr-1" aria-hidden="true"></i> Plantillas</h3>
@@ -776,7 +855,7 @@ const addChatNote = () => {
                   <button v-if="selectedTemplate" type="button" class="visit-form-button" :disabled="savingTemplate"
                     @click="editSelectedNoteTemplate">Editar</button>
                   <button v-if="selectedTemplate" type="button" class="visit-form-button visit-active" :disabled="savingTemplate"
-                    @click="deleteSelectedNoteTemplate">Eliminar</button>
+                    @click="deleteSelectedNoteTemplate">Archivar</button>
                 </template>
               </div>
             <div v-if="namingTemplate" class="mt-3 grid gap-2 rounded-lg border border-[var(--shell-border)] bg-[var(--shell-surface)] p-3">
@@ -799,7 +878,8 @@ const addChatNote = () => {
             </section>
             <textarea v-model="localVisit.notas_visita" rows="3" class="input-field-dark w-full resize-none"
               placeholder="Escribe instrucciones especiales para los técnicos..."></textarea>
-          </div>
+            </div>
+          </details>
 
           <!-- Sección: Urgencia y Organizador -->
           <div class="flex flex-col sm:flex-row items-center justify-between gap-4 pt-4 border-t border-[var(--shell-border)]">
@@ -827,10 +907,9 @@ const addChatNote = () => {
               </p>
             </div>
           </div>
-        </div>
-
-<!-- Sección: Correos de Clientes Invitados (Dinámico por Cliente) -->
-          <div class="p-4 bg-[var(--shell-input)] rounded-xl border border-[var(--shell-border)] space-y-3">
+          <details class="rounded-lg border border-[var(--shell-border)] p-3">
+            <summary class="cursor-pointer font-semibold">Invitados y Google Calendar</summary>
+            <div class="mt-3 space-y-3">
             <label class="text-xs font-bold text-[var(--shell-muted)] uppercase tracking-wider flex items-center gap-2">
               <i class="fas fa-envelope text-[#d60000]"></i> Correos del Cliente a Invitar ({{ currentClientName }})
             </label>
@@ -892,6 +971,11 @@ const addChatNote = () => {
               </button>
             </div>
           </div>
+
+          </details>
+            </section>
+          </div>
+        </div>
 
         <!-- Pestaña: HISTORIAL -->
         <div v-show="activeTab === 'history'" class="space-y-4 animate-fade-in">

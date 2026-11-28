@@ -25,7 +25,7 @@ const {
 
 const { onObjectDeleted } = require('firebase-functions/v2/storage')
 const { onSchedule } = require('firebase-functions/v2/scheduler')
-const { colombiaDay, normalizeRecurrence, parseDay } = require('./recurrence')
+const { COLOMBIA_OFFSET, DAY, colombiaDay, normalizeRecurrence, parseDay } = require('./recurrence')
 const { reconcileRecurringSheet } = require('./recurring-visits')
 const { logger } = require('firebase-functions')
 const { setGlobalOptions } = require('firebase-functions/options')
@@ -1920,7 +1920,7 @@ exports.getVisitTemplates = protectedCall('planeacion', 'view', { cors: true }, 
   assertVisitManager(request)
   try {
     const snapshot = await db.collection('visit_templates').orderBy('templateName').get()
-    const templates = snapshot.docs.map((doc) => ({
+    const templates = snapshot.docs.filter(doc => !doc.get('archivedAt')).map((doc) => ({
       id: doc.id,
       ...doc.data(),
     }))
@@ -1943,14 +1943,27 @@ exports.saveVisitTemplate = protectedCall('planeacion', 'edit', { cors: true }, 
   }
 
   try {
-    const { id, ...data } = templateData
+    const { id, templateName, tipo_visita, notas_visita, notesOnly } = templateData
+    const data = { templateName }
+    if (typeof tipo_visita === 'string') data.tipo_visita = tipo_visita
+    if (typeof notas_visita === 'string') data.notas_visita = notas_visita
+    if (typeof notesOnly === 'boolean') data.notesOnly = notesOnly
     const collectionRef = db.collection('visit_templates')
 
     if (id) {
-      // Actualizar plantilla existente
-      await collectionRef.doc(id).update({
-        ...data,
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      const ref = collectionRef.doc(id)
+      await db.runTransaction(async transaction => {
+        const current = await transaction.get(ref)
+        if (!current.exists || current.get('archivedAt')) {
+          throw new HttpsError('not-found', 'La plantilla no está disponible.')
+        }
+        const timestamp = admin.firestore.FieldValue.serverTimestamp()
+        transaction.create(ref.collection('versions').doc(), {
+          ...current.data(),
+          preservedAt: timestamp,
+          preservedBy: request.auth.uid,
+        })
+        transaction.update(ref, { ...data, updatedAt: timestamp, updatedBy: request.auth.uid })
       })
       await createAuditLog(
         'UPDATE_VISIT_TEMPLATE',
@@ -1973,12 +1986,13 @@ exports.saveVisitTemplate = protectedCall('planeacion', 'edit', { cors: true }, 
     }
   } catch (error) {
     logger.error('Error al guardar la plantilla de visita:', error)
+    if (error instanceof HttpsError) throw error
     throw new HttpsError('internal', 'No se pudo guardar la plantilla.')
   }
 })
 
 /**
- * Elimina una plantilla de visita.
+ * Archiva una plantilla de visita y conserva su contenido.
  */
 exports.deleteVisitTemplate = protectedCall('planeacion', 'delete', { cors: true }, async (request) => {
   assertRole(request, ['Administrador', 'Jefe'])
@@ -1990,20 +2004,24 @@ exports.deleteVisitTemplate = protectedCall('planeacion', 'delete', { cors: true
 
   try {
     const docRef = db.collection('visit_templates').doc(templateId)
-    const doc = await docRef.get()
-    if (!doc.exists) {
-      throw new HttpsError('not-found', 'La plantilla no fue encontrada.')
-    }
-    const templateName = doc.data().templateName
-
-    await docRef.delete()
-    await createAuditLog('DELETE_VISIT_TEMPLATE', `Plantilla eliminada: ${templateName}`, request)
+    await db.runTransaction(async transaction => {
+      const doc = await transaction.get(docRef)
+      if (!doc.exists) {
+        throw new HttpsError('not-found', 'La plantilla no fue encontrada.')
+      }
+      if (doc.get('archivedAt')) return
+      transaction.update(docRef, {
+        archivedAt: admin.firestore.FieldValue.serverTimestamp(),
+        archivedBy: request.auth.uid,
+      })
+    })
+    await createAuditLog('ARCHIVE_VISIT_TEMPLATE', `Plantilla archivada: ${templateId}`, request)
 
     return { success: true }
   } catch (error) {
     logger.error(`Error al eliminar la plantilla ${templateId}:`, error)
     if (error instanceof HttpsError) throw error
-    throw new HttpsError('internal', 'No se pudo eliminar la plantilla.')
+    throw new HttpsError('internal', 'No se pudo archivar la plantilla.')
   }
 })
 
@@ -2355,7 +2373,6 @@ exports.updateVisit = protectedCall('planeacion', 'edit', { cors: true }, async 
 
   // --- LOG INICIAL ---
   logger.info(`[updateVisit] Iniciando actualización. Visita ID: ${visitId}`)
-  logger.info(`[updateVisit] Datos crudos recibidos del frontend:`, visitData)
 
   try {
     const { ref, data: existingVisit } = await getAuthorizedVisit(request, visitId)
@@ -2408,9 +2425,26 @@ exports.updateVisit = protectedCall('planeacion', 'edit', { cors: true }, async 
     updatePayload.updatedBy = request.auth.uid
 
     // --- LOG ANTES DE GUARDAR ---
-    logger.info(`[updateVisit] Payload final limpio para Firestore:`, updatePayload)
 
-    await ref.update(updatePayload)
+    await db.runTransaction(async transaction => {
+      const current = await transaction.get(ref)
+      if (!current.exists) throw new HttpsError('not-found', 'La visita no existe.')
+      const data = current.data()
+      assertVisitZoneAccess(request, data)
+      if (Array.isArray(updatePayload.internalNotes)) {
+        const previous = Array.isArray(data.internalNotes) ? data.internalNotes : []
+        const ids = new Set(previous.map(note => note?.id))
+        const added = updatePayload.internalNotes.filter(note => {
+          if (!note?.id || ids.has(note.id)) return false
+          ids.add(note.id)
+          return true
+        })
+        transaction.update(ref, { ...updatePayload, internalNotes: [...previous, ...added] })
+      } else {
+        delete updatePayload.internalNotes
+        transaction.update(ref, updatePayload)
+      }
+    })
 
     // --- LOG ÉXITO ---
     logger.info(`[updateVisit] ÉXITO: Visita ${visitId} actualizada en Firestore.`)
@@ -2874,6 +2908,50 @@ exports.quickCompleteVisit = protectedCall('planeacion', 'edit', { cors: true },
     if (e instanceof HttpsError) throw e
     throw new HttpsError('internal', e.message)
   }
+})
+
+exports.completeVisitsByDay = protectedCall('planeacion', 'edit', { cors: true }, async (request) => {
+  const access = assertVisitManager(request)
+  const { date, zone } = request.data || {}
+  const day = parseDay(date)
+  if (!day || (typeof zone !== 'string' || !zone.trim() || zone.length > 100)) {
+    throw new HttpsError('invalid-argument', 'Indica una fecha y una zona válidas.')
+  }
+  const targetZone = access.isGlobal ? (zone === 'Todos' ? null : zone) : access.zona
+  const start = new Date(+day + COLOMBIA_OFFSET)
+  const end = new Date(+start + DAY)
+  let query = db.collection('visitas').where('fecha_visita', '>=', start).where('fecha_visita', '<', end)
+  if (targetZone) query = query.where('zona', '==', targetZone)
+  const snapshot = await query.get()
+  const refs = snapshot.docs.filter(doc => doc.get('estado_visita') === 'Programada' && doc.get('zona'))
+    .map(doc => doc.ref)
+  const completedIds = []
+  const limit = 400
+  for (let i = 0; i < refs.length; i += limit) {
+    const group = refs.slice(i, i + limit)
+    const updated = await db.runTransaction(async transaction => {
+      const latest = await transaction.getAll(...group)
+      const completedAt = admin.firestore.FieldValue.serverTimestamp()
+      const ids = []
+      for (const visit of latest) {
+        const data = visit.data()
+        const scheduledAt = data?.fecha_visita?.toMillis?.()
+        if (data?.estado_visita !== 'Programada' || !data.zona ||
+          (targetZone && data.zona !== targetZone) ||
+          !Number.isFinite(scheduledAt) || scheduledAt < +start || scheduledAt >= +end) continue
+        transaction.update(visit.ref, {
+          estado_visita: 'Realizada',
+          estado_facturacion: data.estado_facturacion || 'Pendiente',
+          completedAt,
+          completedBy: request.auth.uid,
+        })
+        ids.push(visit.id)
+      }
+      return ids
+    })
+    completedIds.push(...updated)
+  }
+  return { completedIds }
 })
 
 /**
@@ -5379,6 +5457,42 @@ function visitCalendarKey(visit) {
   })
 
 }
+
+exports.archiveVisitNotes = onDocumentWritten(
+  { document: 'visitas/{visitId}', retry: true },
+  async (event) => {
+    const before = event.data?.before?.data()
+    const after = event.data?.after?.data()
+    const notesOf = data => ({
+      notas_visita: data?.notas_visita ?? '',
+      internalNotes: data?.internalNotes ?? [],
+    })
+    const hasNotes = notes => Boolean(notes.notas_visita || notes.internalNotes.length)
+    const previous = notesOf(before)
+    const next = notesOf(after)
+    if (!hasNotes(previous) && !hasNotes(next)) return
+    if (before && after && require('node:util').isDeepStrictEqual(previous, next)) return
+
+    const versions = db.collection('visit_note_history').doc(event.params.visitId).collection('versions')
+    const key = require('node:crypto').createHash('sha256').update(event.id).digest('hex')
+    const batch = db.batch()
+    const archive = (side, data, notes) => {
+      if (!data) return
+      batch.set(versions.doc(key + '-' + side), {
+        ...notes,
+        clientId: data.id_cliente ?? null,
+        zone: data.zona ?? null,
+        lastEditedBy: data.updatedBy || data.createdBy || null,
+        eventTime: event.time,
+        operation: !before ? 'create' : !after ? 'delete' : 'update',
+        side,
+      })
+    }
+    archive('before', before, previous)
+    archive('after', after, next)
+    await batch.commit()
+  },
+)
 
 exports.handleVisitWrite = onDocumentWritten(
   { document: 'visitas/{visitId}', secrets: [googleClientSecret] },

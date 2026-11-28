@@ -48,6 +48,7 @@ const colorOptions = [
   { id: '11', name: 'Tomate', hex: '#d50000' },
 ]
 
+const initials = computed(() => form.value.nombreCompleto.trim().split(/\s+/).slice(0, 2).map(part => part[0]).join('').toUpperCase() || 'T')
 const currentColorHex = computed(() => {
   return colorOptions.find(c => c.id === form.value.googleColorId)?.hex || '#616161'
 })
@@ -130,7 +131,7 @@ function handleDelete() {
 
     <!-- Modal Panel -->
     <div
-      class="relative bg-[var(--shell-surface)] rounded-xl border border-[var(--shell-border)] shadow-2xl w-full max-w-xl transform transition-all flex flex-col max-h-[calc(100dvh-2rem)] overflow-hidden">
+      class="relative bg-[var(--shell-surface)] rounded-xl border border-[var(--shell-border)] shadow-2xl w-full max-w-4xl transform transition-all flex flex-col max-h-[calc(100dvh-2rem)] overflow-hidden">
 
       <!-- Header -->
       <div class="tech-form-header flex shrink-0 items-start justify-between gap-3 p-4 sm:p-5">
@@ -156,6 +157,8 @@ function handleDelete() {
           <p class="text-[var(--tech-accent)] text-sm">{{ formError }}</p>
         </div>
 
+        <div class="grid gap-5 md:grid-cols-[3fr_2fr]">
+          <div class="min-w-0 space-y-4">
         <!-- Sección 1: Información Personal -->
         <div class="bg-[var(--shell-input)] rounded-lg p-4 border border-[var(--shell-border)] space-y-4">
           <h4 class="text-xs font-bold text-[var(--shell-text)] border-b border-[var(--shell-border)] pb-2 mb-4">
@@ -203,25 +206,17 @@ function handleDelete() {
               </div>
             </div>
 
-            <div>
-              <label for="techColor" class="form-label">Color en Calendario</label>
-              <div class="flex items-center gap-3">
-                <div class="relative flex-grow">
-                  <select id="techColor" v-model="form.googleColorId" class="input-field-dark w-full appearance-none">
-                    <option v-for="color in colorOptions" :key="color.id" :value="color.id">
-                      {{ color.name }}
-                    </option>
-                  </select>
-                  <div class="absolute inset-y-0 right-0 flex items-center px-2 pointer-events-none text-[var(--shell-muted)]">
-                    <i class="fas fa-chevron-down text-xs"></i>
-                  </div>
-                </div>
-                <!-- Previsualización del Color -->
-                <div
-                  class="w-10 h-10 rounded-lg border border-[var(--shell-border)] shadow-lg flex-shrink-0 transition-colors duration-300"
-                  :style="{ backgroundColor: currentColorHex }" :title="currentColorHex"></div>
+            <fieldset class="min-w-0">
+              <legend class="form-label">Color en calendario</legend>
+              <div class="flex flex-wrap gap-2">
+                <label v-for="color in colorOptions" :key="color.id" :title="color.name" class="cursor-pointer">
+                  <input v-model="form.googleColorId" type="radio" name="tech-calendar-color" :value="color.id" :aria-label="color.name" class="peer sr-only" />
+                  <span class="grid size-8 place-items-center rounded-md text-black peer-focus-visible:ring-2 peer-focus-visible:ring-red-500" :style="{ backgroundColor: color.hex }">
+                    <i v-if="form.googleColorId === color.id" class="fas fa-check rounded bg-white p-0.5" aria-hidden="true"></i>
+                  </span>
+                </label>
               </div>
-            </div>
+            </fieldset>
           </div>
           <p class="text-xs text-[var(--shell-muted)] italic mt-2">
             <i class="fas fa-info-circle mr-1"></i> El color seleccionado se utilizará para sincronizar los eventos en
@@ -229,6 +224,24 @@ function handleDelete() {
           </p>
         </div>
 
+          </div>
+          <aside class="space-y-4 rounded-xl border border-[var(--shell-border)] bg-[var(--shell-input)] p-5">
+            <h3 class="text-lg font-bold">Vista previa</h3>
+            <div class="flex items-center gap-3">
+              <span class="grid size-12 shrink-0 place-items-center rounded-full bg-[var(--shell-surface)] font-bold" :style="{ border: '2px solid ' + currentColorHex }">{{ initials }}</span>
+              <div class="min-w-0 break-words">
+                <p class="font-bold">{{ form.nombreCompleto || 'Nombre del técnico' }}</p>
+                <p class="text-sm text-[var(--shell-muted)]">{{ form.zona || 'Zona de operación' }}</p>
+              </div>
+            </div>
+            <div class="border-t border-[var(--shell-border)] pt-4">
+              <h4 class="text-sm font-semibold">Así se verá en la agenda</h4>
+              <p class="mt-2 rounded-lg border-l-4 bg-[var(--shell-surface)] p-3 text-sm" :style="{ borderLeftColor: currentColorHex }">
+                Visita de servicio<br /><span class="text-[var(--shell-muted)]">09:00–10:00 · Ejemplo</span>
+              </p>
+            </div>
+          </aside>
+        </div>
       </form>
 
       <!-- Footer Actions -->

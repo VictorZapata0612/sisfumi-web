@@ -351,6 +351,19 @@ export const usePlanningStore = defineStore('planning', () => {
     }
   }
 
+  async function completeVisitsByDay(date: string, zone: string) {
+    const completeDay = httpsCallable<{ date: string; zone: string }, { completedIds: string[] }>(
+      functions, 'completeVisitsByDay',
+    )
+    const { data } = await completeDay({ date, zone })
+    const ids = new Set(data.completedIds)
+    for (const visit of monthlyVisits.value) {
+      if (ids.has(visit.id)) visit.estado_visita = 'Realizada'
+    }
+    pendingVisits.value = pendingVisits.value.filter(visit => !ids.has(visit.id))
+    return ids.size
+  }
+
   /**
    * Obtiene el historial de cambios para una visita específica.
    */
@@ -391,6 +404,7 @@ export const usePlanningStore = defineStore('planning', () => {
     deleteVisit,
     batchAssignVisits,
     quickCompleteVisit,
+    completeVisitsByDay,
     clearCalendarData,
     saveVisitTemplate,
     deleteVisitTemplate,

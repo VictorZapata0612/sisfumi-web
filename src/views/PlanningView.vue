@@ -574,6 +574,61 @@ const hideTooltip = () => {
   }, 200)
 }
 
+const isCompletingDay = ref(false)
+const colombiaDate = new Intl.DateTimeFormat('sv-SE', {
+  timeZone: 'America/Bogota', year: 'numeric', month: '2-digit', day: '2-digit',
+})
+const selectedDayKey = computed(() => {
+  const date = selectedDate.value
+  if (!date) return null
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${date.getFullYear()}-${month}-${day}`
+})
+const scheduledDayCount = computed(() => planningStore.monthlyVisits.filter(visit =>
+  visit.estado_visita === 'Programada' && visit.zona &&
+  (selectedZone.value === 'Todos' || visit.zona === selectedZone.value) &&
+  colombiaDate.format(new Date(visit.fecha_visita)) === selectedDayKey.value,
+).length)
+const canCompleteDay = computed(() => authStore.canAccess('planeacion', 'edit') && scheduledDayCount.value > 0)
+
+function handleCompleteDay() {
+  const date = selectedDayKey.value
+  const selected = selectedDate.value
+  if (!date || !selected || !canCompleteDay.value || isCompletingDay.value || planningStore.loading) return
+  const zone = selectedZone.value
+  const dayLabel = selected.toLocaleDateString('es-CO', { dateStyle: 'long' })
+  showDialog({
+    appearance: 'planning',
+    title: 'Marcar visitas del día como realizadas',
+    message: `Se actualizarán todas las visitas internas que sigan programadas el ${dayLabel} en la zona seleccionada. La vista tiene ${scheduledDayCount.value} visitas programadas para ese día.`,
+    isConfirmation: true,
+    confirmationText: 'Marcar como realizadas',
+    async onConfirm() {
+      if (isCompletingDay.value) return
+      isCompletingDay.value = true
+      try {
+        const count = await planningStore.completeVisitsByDay(date, zone)
+        showToast({
+          title: count ? 'Visitas actualizadas' : 'Sin visitas pendientes',
+          message: count === 1 ? 'Se marcó 1 visita como realizada.'
+            : count ? `Se marcaron ${count} visitas como realizadas.` : 'Ya no hay visitas programadas para este día.',
+          type: count ? 'success' : 'info',
+        })
+      } catch (error: unknown) {
+        showToast({
+          title: 'No se pudo completar la operación',
+          message: error instanceof Error ? error.message : 'Revisa el estado de las visitas en Planeación.',
+          type: 'error',
+        })
+      } finally {
+        loadData()
+        isCompletingDay.value = false
+      }
+    },
+  })
+}
+
 const handleQuickComplete = (visit: Visit) => {
   showDialog({
     appearance: 'planning',
@@ -1035,6 +1090,12 @@ const handleQuickComplete = (visit: Visit) => {
                 })
               }}
             </h3>
+            <button v-if="canCompleteDay || isCompletingDay" type="button"
+              class="mt-3 inline-flex items-center gap-2 rounded-lg bg-[#b8000b] px-3 py-2 text-xs font-bold text-white hover:bg-[#9d0009] disabled:opacity-60"
+              :disabled="isCompletingDay || planningStore.loading" @click="handleCompleteDay">
+              <i class="fas fa-check-double" aria-hidden="true"></i>
+              {{ isCompletingDay ? 'Actualizando visitas…' : 'Marcar visitas del día como realizadas' }}
+            </button>
             <!-- Filtros Estado -->
             <div class="flex flex-wrap gap-1 mt-3">
               <button
@@ -1214,6 +1275,14 @@ const handleQuickComplete = (visit: Visit) => {
           </button>
         </div>
 
+        <div v-if="canCompleteDay || isCompletingDay" class="border-b border-[var(--shell-border)] px-4 pb-3">
+            <button v-if="canCompleteDay || isCompletingDay" type="button"
+              class="mt-3 inline-flex items-center gap-2 rounded-lg bg-[#b8000b] px-3 py-2 text-xs font-bold text-white hover:bg-[#9d0009] disabled:opacity-60"
+              :disabled="isCompletingDay || planningStore.loading" @click="handleCompleteDay">
+              <i class="fas fa-check-double" aria-hidden="true"></i>
+              {{ isCompletingDay ? 'Actualizando visitas…' : 'Marcar visitas del día como realizadas' }}
+            </button>
+        </div>
         <div class="flex-grow overflow-y-auto p-4 space-y-3 pb-8">
           <div v-if="!filteredSelectedDateEvents.length" class="text-center py-8 text-[var(--shell-muted)]">
             No hay visitas programadas.
